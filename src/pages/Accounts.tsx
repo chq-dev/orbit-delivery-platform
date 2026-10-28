@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
+import { FeishuIntegrationCard } from '../components/FeishuIntegrationCard'
 import { platformMeta } from '../appConfig'
 import { useData } from '../store'
 import type { PlatformKey, WorkItemType } from '../types'
@@ -71,7 +72,7 @@ function parseImport(text: string) {
 }
 
 export function Accounts() {
-  const { accounts, addAccount, importAccounts } = useData()
+  const { accounts, addAccount, importAccounts, feishuIntegration } = useData()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | PlatformKey>('all')
   const [modalOpen, setModalOpen] = useState(false)
@@ -185,6 +186,8 @@ export function Accounts() {
         </span>
       </div>
 
+      <FeishuIntegrationCard />
+
       <div className="platform-grid">
         {platformOrder.map((key) => {
           const meta = platformMeta[key]
@@ -205,7 +208,9 @@ export function Accounts() {
                 <span className="bound-count">{items.length}</span>
               </div>
               <div className="platform-account-preview">
-                {items.length > 0 ? (
+                {key === 'feishu' && feishuIntegration.connected && items.length === 0 ? (
+                  <div className="platform-empty">项目 {feishuIntegration.projectKey} 已接入</div>
+                ) : items.length > 0 ? (
                   items.slice(0, 2).map((account) => (
                     <span key={account.id}>
                       <span className="mini-avatar">{account.username.slice(0, 1).toUpperCase()}</span>
@@ -230,9 +235,22 @@ export function Accounts() {
                   </button>
                 </div>
               )}
-              <button className="platform-add" onClick={() => openManual(key)}>
-                <Plus size={14} /> 添加账号
-              </button>
+              {key === 'feishu' ? (
+                <button
+                  className="platform-add"
+                  onClick={() =>
+                    document
+                      .getElementById('feishu-integration')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                >
+                  <KeyRound size={14} /> 应用绑定
+                </button>
+              ) : (
+                <button className="platform-add" onClick={() => openManual(key)}>
+                  <Plus size={14} /> 添加账号
+                </button>
+              )}
             </article>
           )
         })}

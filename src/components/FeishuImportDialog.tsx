@@ -14,7 +14,7 @@ export function FeishuImportDialog({
   mode: WorkItemType
   onClose: () => void
 }) {
-  const { repositories, workItems, feishuInbox, importWorkItems } = useData()
+  const { repositories, workItems, feishuInbox, feishuIntegration, importWorkItems } = useData()
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const available = useMemo(
@@ -105,7 +105,12 @@ export function FeishuImportDialog({
           <span>{sourceUrl}</span>
         </div>
         <span className="feishu-local-connected">
-          <CheckCircle2 size={13} /> 本地导入队列
+          <CheckCircle2 size={13} />{' '}
+          {feishuIntegration.connected
+            ? feishuIntegration.lastSyncStatus === 'failed'
+              ? '飞书同步异常'
+              : '飞书项目已同步'
+            : '本地导入队列'}
         </span>
       </div>
 

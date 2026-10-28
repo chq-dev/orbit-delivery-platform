@@ -9,6 +9,7 @@ export function buildLocalSkillInstruction(item: WorkItem, repository?: Reposito
     '',
     `Project: ${repository?.name ?? 'sme-main'}`,
     `Repository: ${repository?.url ?? 'http://cloudgit.rj.link/sme/sme-main.git'}`,
+    `Local checkout: ${repository?.localPath || 'configure in repository settings'}`,
     `Branch: ${item.branch}`,
     `Work item: ${item.title}`,
     `Type: ${workItemType}`,
@@ -23,14 +24,14 @@ export function buildLocalSkillInstruction(item: WorkItem, repository?: Reposito
       .join(' → ')}.`,
     'Use $design-to-l1 or $design-to-l2 only when architecture knowledge also needs normalization.',
     '',
-    'Work only in the existing local sme-main checkout. For web/ changes read web/AGENTS.md first; for lua/ changes read lua/AGENTS.md and preserve the api -> service -> middle -> utils layering.',
+    'Work only in the configured local checkout. For web/ changes read web/AGENTS.md first; for lua/ changes read lua/AGENTS.md and preserve the api -> service -> middle -> utils layering.',
     'Keep the whole workflow local. First analyze the requirement and produce a development design report covering requirement interpretation, affected modules, implementation plan, compatibility, and test strategy.',
     'Then implement the code changes and targeted unit tests according to that design.',
     'Run integration validation next: project-native type checks, Lua module tests, static analysis, firmware/web build checks, and the narrowest useful regression. Produce an integration report with actual results, compatibility findings, and remaining risks.',
-    'Only after the design and integration reports exist, create a local commit linked to the work item. Do not push the branch automatically.',
+    'Only after the design and integration reports exist, create a local commit linked to the work item. The platform pushes the configured branch only after test acceptance; do not push earlier.',
     'Build the artifact, run the authorized AC/AP or switch firmware upgrade and automated tests, then archive the test report with real evidence.',
     'Store the design report, integration report, and test report under the project report directory (or delivery-artifacts/<work-item-id>/ if the project has no convention). Never fabricate report content or results.',
-    'Do not open Git or Feishu web pages. Ask before any remote push, shared-branch change, production OTA, or other external write.',
+    'Do not open Git or Feishu web pages. Ask before a shared-branch change, production OTA, or any external write other than the configured acceptance push.',
   ]
     .filter((line, index, lines) => line !== '' || lines[index - 1] !== '')
     .join('\n')

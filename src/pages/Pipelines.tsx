@@ -9,6 +9,7 @@ import {
   Code2,
   FileBarChart2,
   FileText,
+  FolderGit2,
   GitBranch,
   GitCommit,
   GitMerge,
@@ -118,7 +119,14 @@ export function Pipelines({
     () =>
       pipelines.filter((run) => {
         const filterMatches = filter === 'all' || run.status === filter
-        const textMatches = [run.title, run.id, run.workItemId, run.repoName, run.branch]
+        const textMatches = [
+          run.title,
+          run.id,
+          run.workItemId,
+          run.repoName,
+          run.branch,
+          run.localPath,
+        ]
           .join(' ')
           .toLowerCase()
           .includes(search.toLowerCase())
@@ -349,14 +357,25 @@ export function Pipelines({
                     <div><small>目标版本</small><strong className="version-strong">{run.version}</strong></div>
                     <div><small>代码仓库</small><strong>{run.repoName}</strong></div>
                     <div><small>目标分支</small><strong><GitBranch size={12} /> {run.branch}</strong></div>
+                    <div>
+                      <small>本地路径</small>
+                      <strong className="mono run-path" title={run.localPath || '未配置'}>
+                        <FolderGit2 size={12} /> {run.localPath || '模拟模式'}
+                      </strong>
+                    </div>
                     <div><small>提交哈希</small><strong className="mono">{run.commit}</strong></div>
+                    <div><small>执行模式</small><strong>{run.simulation ? '模拟交付' : '真实 Git'}</strong></div>
                     <div><small>开始时间</small><strong>{run.createdAt}</strong></div>
                     <div><small>执行节点</small><strong>runner-01 / 上海</strong></div>
                   </div>
                   <div className="run-config-flags">
-                    <span><CheckCircle2 size={13} /> 自动提交代码</span>
+                    <span>
+                      <CheckCircle2 size={13} /> {run.autoCommit ? '自动提交代码' : '跳过提交'}
+                    </span>
                     <span><CheckCircle2 size={13} /> 自动设备升级</span>
-                    <span><CheckCircle2 size={13} /> 缺陷自动关闭</span>
+                    <span>
+                      <CheckCircle2 size={13} /> {run.autoClose ? '缺陷自动关闭' : '人工关闭缺陷'}
+                    </span>
                   </div>
                 </article>
 
@@ -408,6 +427,7 @@ export function Pipelines({
               <div className="terminal-body">
                 <div><span className="term-info">INFO</span> pipeline {run.id} started by {run.triggeredBy}</div>
                 <div><span className="term-info">INFO</span> resolve work item: {run.workItemId}</div>
+                <div><span className="term-info">INFO</span> checkout: {run.localPath || 'simulation'}</div>
                 {run.stages.filter((stage) => stage.status !== 'pending').map((stage) => (
                   <div key={stage.key}>
                     <span className={stage.status === 'failed' ? 'term-error' : 'term-success'}>

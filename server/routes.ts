@@ -1,8 +1,16 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
 import type { CredentialVault } from './security/vault.js'
 import { createAccount, importAccounts, listAccounts } from './services/accountService.js'
+import {
+  connectFeishu,
+  disconnectFeishu,
+  getFeishuStatus,
+  handleFeishuEvent,
+  syncFeishu,
+  testFeishuConnection,
+} from './services/feishuIntegrationService.js'
 import { listFeishuInbox } from './services/inboxService.js'
 import {
   advancePipeline,
@@ -15,6 +23,7 @@ import { getTestReport, listTestReports, reportAsMarkdown } from './services/rep
 import {
   createRepository,
   listRepositories,
+  updateRepositorySettings,
 } from './services/repositoryService.js'
 import {
   createWorkItem,
@@ -38,6 +47,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       pipelines: listPipelines(db),
       reports: listTestReports(db),
       feishuInbox: listFeishuInbox(db),
+      feishuIntegration: getFeishuStatus(db),
     })
   })
 
@@ -47,6 +57,12 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.post('/repositories', (request, response) => {
     response.status(201).json(createRepository(db, request.body))
+  })
+
+  router.patch('/repositories/:id', (request, response) => {
+    response.json(
+      updateRepositorySettings(db, request.params.id, request.body ?? {}),
+    )
   })
 
   router.get('/accounts', (_request, response) => {
@@ -68,6 +84,31 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.get('/feishu/inbox', (_request, response) => {
     response.json(listFeishuInbox(db))
+  })
+
+  router.get('/integrations/feishu/status', (_request, response) => {
+    response.json(getFeishuStatus(db))
+  })
+
+  router.post('/integrations/feishu/connect', async (request, response) => {
+    response.status(201).json(await connectFeishu(db, vault, request.body))
+  })
+
+  router.post('/integrations/feishu/test', async (_request, response) => {
+    response.json(await testFeishuConnection(db, vault))
+  })
+
+  router.post('/integrations/feishu/sync', async (_request, response) => {
+    response.json(await syncFeishu(db, vault, 'manual'))
+  })
+
+  router.post('/integrations/feishu/disconnect', (_request, response) => {
+    response.json(disconnectFeishu(db))
+  })
+
+  router.post('/integrations/feishu/events', (request, response) => {
+    const rawBody = (request as Request & { rawBody?: Buffer }).rawBody
+    response.json(handleFeishuEvent(db, vault, request.body, rawBody, request.headers))
   })
 
   router.get('/work-items', (_request, response) => {

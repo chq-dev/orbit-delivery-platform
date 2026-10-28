@@ -9,7 +9,14 @@ import type { CredentialVault } from './security/vault.js'
 export function createApp(db: AppDatabase, vault: CredentialVault) {
   const app = express()
   app.disable('x-powered-by')
-  app.use(express.json({ limit: '2mb' }))
+  app.use(
+    express.json({
+      limit: '2mb',
+      verify: (request, _response, buffer) => {
+        ;(request as typeof request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer)
+      },
+    }),
+  )
   app.use('/api', createApiRouter(db, vault))
 
   const webRoot = resolve(process.cwd(), 'dist')

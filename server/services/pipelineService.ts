@@ -14,6 +14,12 @@ import type {
   WorkItemType,
 } from '../domain/types.js'
 import { booleanValue, optionalText, requiredText } from '../domain/validation.js'
+import { enqueueFeishuCloseOutbox } from './feishuIntegrationService.js'
+import {
+  commitLocalChanges,
+  inspectLocalRepository,
+  pushLocalCommit,
+} from './gitService.js'
 import { createTestReport, type TestReportSource } from './reportService.js'
 
 const stageDefinitions: StageDefinition[] = [
@@ -36,6 +42,7 @@ interface PipelineRow {
   repo_id: string
   repo_name: string
   branch: string
+  local_path: string
   commit_hash: string
   version: string
   status: PipelineStatus
@@ -82,9 +89,9 @@ export interface StartPipelineInput {
 }
 
 function pipelineSelect(): string {
-  return `SELECT id, work_item_id, title, item_type, repo_id, repo_name, branch, commit_hash,
-                 version, status, progress, current_stage, triggered_by, auto_commit,
-                 auto_close, simulation, created_at
+  return `SELECT id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
+                 commit_hash, version, status, progress, current_stage, triggered_by,
+                 auto_commit, auto_close, simulation, created_at
           FROM pipelines`
 }
 
@@ -141,6 +148,7 @@ function hydratePipeline(db: AppDatabase, row: PipelineRow): PipelineRun {
     repoId: row.repo_id,
     repoName: row.repo_name,
     branch: row.branch,
+    localPath: row.local_path || undefined,
     commit: row.commit_hash,
     version: row.version,
     status: row.status,
@@ -196,14 +204,20 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
     if (active) throw conflict('该工作项已有执行中的交付流水线', { pipelineId: active.id })
 
     const repoId = optionalText(rawInput.repoId, '代码仓库', 200) ?? workItem.repo_id
+    const repoQuery = `SELECT id, name, branch, local_path, latest_version
+                       FROM repositories`
     const repo = (
       repoId
-        ? db
-            .prepare('SELECT id, name, branch, latest_version FROM repositories WHERE id = ?')
-            .get(repoId)
-        : db.prepare('SELECT id, name, branch, latest_version FROM repositories LIMIT 1').get()
+        ? db.prepare(`${repoQuery} WHERE id = ?`).get(repoId)
+        : db.prepare(`${repoQuery} LIMIT 1`).get()
     ) as
-      | { id: string; name: string; branch: string; latest_version: string }
+      | {
+          id: string
+          name: string
+          branch: string
+          local_path: string
+          latest_version: string
+        }
       | undefined
     if (!repo) throw notFound('代码仓库')
 
@@ -211,15 +225,19 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
     const revision = nextSequence(db, 'build_revision', 18)
     const id = `RUN-${runNumber}`
     const now = nowIso()
-    const commit = randomBytes(4).toString('hex')
+    const useLocalGit = Boolean(repo.local_path && autoCommit)
+    const localHead = useLocalGit
+      ? inspectLocalRepository(repo.local_path, repo.branch)
+      : undefined
+    const commit = localHead?.head.slice(0, 8) ?? randomBytes(4).toString('hex')
     const version = versionFor(repo, revision)
 
     db.prepare(
       `INSERT INTO pipelines
-        (id, work_item_id, title, item_type, repo_id, repo_name, branch, commit_hash, version,
-         status, progress, current_stage, triggered_by, auto_commit, auto_close, simulation,
-         created_at, updated_at, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 8, 0, ?, ?, ?, 1, ?, ?, ?)`,
+        (id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
+         commit_hash, version, status, progress, current_stage, triggered_by, auto_commit,
+         auto_close, simulation, created_at, updated_at, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 8, 0, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       workItem.id,
@@ -228,11 +246,13 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
       repo.id,
       repo.name,
       repo.branch,
+      repo.local_path,
       commit,
       version,
       triggeredBy,
       autoCommit ? 1 : 0,
       autoClose ? 1 : 0,
+      useLocalGit ? 0 : 1,
       now,
       now,
       now,
@@ -274,7 +294,9 @@ function stageSuccessLog(index: number, row: PipelineRow): string {
     '自动需求编码完成，代码变更与单元测试已生成',
     '集成验证完成，接口兼容性、冲突扫描与静态检查通过',
     row.auto_commit === 1
-      ? `变更已提交至 ${row.branch}，提交 ${row.commit_hash}`
+      ? row.local_path
+        ? `已在 ${row.local_path} 创建真实提交 ${row.commit_hash}`
+        : `变更已提交至 ${row.branch}，提交 ${row.commit_hash}`
       : '已按交付配置跳过自动提交，本地变更等待人工确认',
     `编译成功，已产出 ${row.version} 固件包`,
     'AC/AP 与交换机测试设备升级完成，固件版本校验通过',
@@ -348,29 +370,84 @@ function insertArtifact(
   })
 }
 
+const advancingPipelines = new Set<string>()
+
 export function advancePipeline(db: AppDatabase, id: string): PipelineRun {
+  if (advancingPipelines.has(id)) {
+    throw conflict('流水线正在推进，请稍后重试')
+  }
+  advancingPipelines.add(id)
+  try {
+    return advancePipelineOnce(db, id)
+  } finally {
+    advancingPipelines.delete(id)
+  }
+}
+
+function advancePipelineOnce(db: AppDatabase, id: string): PipelineRun {
+  const row = db
+    .prepare(`${pipelineSelect()} WHERE id = ?`)
+    .get(id) as PipelineRow | undefined
+  if (!row) throw notFound('交付流水线')
+  if (row.status !== 'running') return getPipeline(db, id)
+
+  const current = db
+    .prepare(
+      `SELECT stage_index, stage_key, name, description, status, duration, log, started_at
+       FROM pipeline_stages WHERE pipeline_id = ? AND status = 'running'
+       ORDER BY stage_index ASC LIMIT 1`,
+    )
+    .get(id) as StageRow | undefined
+  if (!current) throw new Error(`流水线 ${id} 没有运行中的阶段`)
+
+  const usesLocalGit = Boolean(row.local_path && row.auto_commit === 1)
+  let commitSummary = ''
+  let pushSummary = ''
+
+  try {
+    if (current.stage_index === 4 && usesLocalGit) {
+      const result = commitLocalChanges(
+        row.local_path,
+        row.branch,
+        `${row.work_item_id}: ${row.title}`,
+      )
+      row.commit_hash = result.commit
+      commitSummary = result.message
+    }
+
+    if (current.stage_index === stageDefinitions.length - 1 && usesLocalGit) {
+      const result = pushLocalCommit(row.local_path, row.branch, row.commit_hash)
+      pushSummary = `，${result.output}`
+    }
+  } catch (error) {
+    failPipeline(db, id, row, current, error)
+    throw error
+  }
+
   db.transaction(() => {
-    const row = db
+    const latest = db
       .prepare(`${pipelineSelect()} WHERE id = ?`)
       .get(id) as PipelineRow | undefined
-    if (!row) throw notFound('交付流水线')
-    if (row.status !== 'running') return
-
-    const current = db
-      .prepare(
-        `SELECT stage_index, stage_key, name, description, status, duration, log, started_at
-         FROM pipeline_stages WHERE pipeline_id = ? AND status = 'running'
-         ORDER BY stage_index ASC LIMIT 1`,
-      )
-      .get(id) as StageRow | undefined
-    if (!current) throw new Error(`流水线 ${id} 没有运行中的阶段`)
+    if (!latest || latest.status !== 'running') return
 
     const now = nowIso()
     const duration = formatDuration(current.started_at, now)
+    if (current.stage_index === 4 && usesLocalGit) {
+      db.prepare('UPDATE pipelines SET commit_hash = ?, simulation = 0 WHERE id = ?').run(
+        row.commit_hash,
+        id,
+      )
+    }
     db.prepare(
       `UPDATE pipeline_stages SET status = 'success', duration = ?, log = ?, finished_at = ?
        WHERE pipeline_id = ? AND stage_index = ?`,
-    ).run(duration, stageSuccessLog(current.stage_index, row), now, id, current.stage_index)
+    ).run(
+      duration,
+      commitSummary || stageSuccessLog(current.stage_index, row),
+      now,
+      id,
+      current.stage_index,
+    )
 
     if (current.stage_index === 1) insertArtifact(db, row, 'design', now)
     if (current.stage_index === 3) insertArtifact(db, row, 'integration', now)
@@ -411,14 +488,16 @@ export function advancePipeline(db: AppDatabase, id: string): PipelineRun {
       now,
       row.work_item_id,
     )
+    if (finalStatus === '已关闭') enqueueFeishuCloseOutbox(db, row.work_item_id)
     db.prepare(
       'UPDATE repositories SET latest_version = ?, last_sync = ?, updated_at = ? WHERE id = ?',
     ).run(row.version, now, now, row.repo_id)
 
-    const reportLog =
+    const reportLog = `${
       finalStatus === '已关闭'
         ? `报告已归档，缺陷 ${row.work_item_id} 已自动关闭`
         : `报告已归档，工作项 ${row.work_item_id} 已标记交付`
+    }${pushSummary}`
     db.prepare(
       `UPDATE pipeline_stages SET log = ? WHERE pipeline_id = ? AND stage_index = ?`,
     ).run(reportLog, id, current.stage_index)
@@ -429,6 +508,29 @@ export function advancePipeline(db: AppDatabase, id: string): PipelineRun {
   })()
 
   return getPipeline(db, id)
+}
+
+function failPipeline(
+  db: AppDatabase,
+  id: string,
+  row: PipelineRow,
+  current: StageRow,
+  error: unknown,
+): void {
+  const now = nowIso()
+  const message = error instanceof Error ? error.message : '未知 Git 错误'
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE pipeline_stages SET status = 'failed', duration = ?, log = ?, finished_at = ?
+       WHERE pipeline_id = ? AND stage_index = ?`,
+    ).run(formatDuration(current.started_at, now), message, now, id, current.stage_index)
+    db.prepare(
+      `UPDATE pipelines SET status = 'failed', updated_at = ?, finished_at = ? WHERE id = ?`,
+    ).run(now, now, id)
+    db.prepare(
+      "UPDATE work_items SET status = '待处理', updated_at = ? WHERE id = ? AND status = '进行中'",
+    ).run(now, row.work_item_id)
+  })()
 }
 
 export function advanceRunningPipelines(db: AppDatabase): number {

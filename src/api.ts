@@ -1,6 +1,8 @@
 import type {
   Account,
   FeishuInboxItem,
+  FeishuIntegrationStatus,
+  FeishuSyncResult,
   PipelineRun,
   PlatformKey,
   Priority,
@@ -19,14 +21,35 @@ export interface BootstrapData {
   pipelines: PipelineRun[]
   reports: TestReport[]
   feishuInbox: FeishuInboxItem[]
+  feishuIntegration: FeishuIntegrationStatus
+}
+
+export interface FeishuConnectInput {
+  accessToken?: string
+  pluginId?: string
+  pluginSecret?: string
+  userKey?: string
+  projectKey: string
+  defaultRepoId: string
+  requirementTypeKey: string
+  defectTypeKey: string
+  defaultOwner?: string
+  closeTransitionId?: string
+  webhookSecret?: string
 }
 
 export interface RepositoryInput {
   name: string
   url: string
   branch: string
+  localPath?: string
   language: string
   accountId: string
+}
+
+export interface RepositorySettingsInput {
+  branch?: string
+  localPath?: string
 }
 
 export interface AccountInput {
@@ -101,6 +124,11 @@ export const api = {
   bootstrap: () => request<BootstrapData>('/bootstrap'),
   createRepository: (input: RepositoryInput) =>
     request<Repository>('/repositories', { method: 'POST', body: JSON.stringify(input) }),
+  updateRepositorySettings: (id: string, input: RepositorySettingsInput) =>
+    request<Repository>(`/repositories/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
   createAccount: (input: AccountInput) =>
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(input) }),
   importAccounts: (accounts: AccountInput[]) =>
@@ -114,6 +142,23 @@ export const api = {
     request<ImportResult<WorkItem>>('/work-items/import', {
       method: 'POST',
       body: JSON.stringify({ items }),
+    }),
+  connectFeishu: (input: FeishuConnectInput) =>
+    request<FeishuIntegrationStatus>('/integrations/feishu/connect', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  testFeishu: () =>
+    request<{ ok: true; projectName?: string }>('/integrations/feishu/test', {
+      method: 'POST',
+    }),
+  syncFeishu: () =>
+    request<FeishuSyncResult>('/integrations/feishu/sync', {
+      method: 'POST',
+    }),
+  disconnectFeishu: () =>
+    request<FeishuIntegrationStatus>('/integrations/feishu/disconnect', {
+      method: 'POST',
     }),
   startPipeline: (input: PipelineInput) =>
     request<PipelineRun>('/pipelines', { method: 'POST', body: JSON.stringify(input) }),

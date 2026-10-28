@@ -26,9 +26,23 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
   if (currentVersion < SCHEMA_VERSION) {
     db.transaction(() => {
       db.exec(schemaSql)
+      ensureColumn(db, 'repositories', 'local_path', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(db, 'pipelines', 'local_path', "TEXT NOT NULL DEFAULT ''")
       db.pragma(`user_version = ${SCHEMA_VERSION}`)
     })()
   }
 
   return db
+}
+
+function ensureColumn(
+  db: AppDatabase,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const columns = db.pragma(`table_info(${table})`) as { name: string }[]
+  if (!columns.some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  }
 }

@@ -3172,6 +3172,52 @@ p {
   font-size: 7px;
 }
 
+.repo-branch-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  color: #8d94a8;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 7px;
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.repo-branch-edit:hover {
+  color: var(--primary);
+}
+
+.repo-local-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 0 2px;
+  color: #7d8599;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 7.5px;
+}
+
+.repo-local-path svg {
+  flex: 0 0 14px;
+  color: #8d94a8;
+}
+
+.repo-local-path span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-local-path-empty {
+  color: #a0a6b6;
+  font-family: var(--font-sans);
+}
+
 .repo-meta-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3324,6 +3370,186 @@ p {
   background: #effaf7;
   font-size: 7.5px;
   white-space: nowrap;
+}
+
+.feishu-integration-card {
+  margin-bottom: 17px;
+  padding: 17px 18px;
+  border-color: #dce7ff;
+  background: linear-gradient(135deg, #ffffff 0%, #f7faff 100%);
+}
+
+.feishu-integration-head,
+.feishu-integration-title,
+.feishu-integration-actions,
+.feishu-integration-status-row {
+  display: flex;
+  align-items: center;
+}
+
+.feishu-integration-head {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.feishu-integration-title {
+  min-width: 0;
+  gap: 10px;
+}
+
+.feishu-integration-logo {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  color: #2f69d8;
+  border-radius: 10px;
+  background: #e9f1ff;
+}
+
+.feishu-integration-title h2 {
+  color: #34405f;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.feishu-integration-title p {
+  margin-top: 2px;
+  color: #7d88a1;
+  font-size: 9.5px;
+}
+
+.feishu-integration-body {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e4ebf8;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.feishu-integration-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px 14px;
+}
+
+.feishu-integration-meta > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.feishu-integration-meta small {
+  color: #959db0;
+  font-size: 8.5px;
+}
+
+.feishu-integration-meta strong {
+  overflow: hidden;
+  color: #47526e;
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feishu-integration-status-row {
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px dashed #e5ebf6;
+  color: #70809c;
+  font-size: 8.5px;
+}
+
+.feishu-integration-status-row > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.feishu-integration-status-row > span.is-error {
+  color: #b46a55;
+}
+
+.feishu-integration-status-row code {
+  overflow: hidden;
+  color: #68769a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feishu-integration-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 13px;
+  padding: 12px;
+  color: #6d7892;
+  border: 1px dashed #dbe4f4;
+  border-radius: 9px;
+  background: #f9fbff;
+}
+
+.feishu-integration-empty svg {
+  margin-top: 2px;
+  color: #5676ca;
+}
+
+.feishu-integration-empty strong {
+  color: #4c5874;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.feishu-integration-empty p {
+  margin-top: 2px;
+  font-size: 8.5px;
+}
+
+.feishu-integration-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.feishu-integration-actions .btn {
+  min-height: 31px;
+  padding: 0 12px;
+  font-size: 9px;
+}
+
+.feishu-disconnect {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: #b26b61;
+}
+
+.feishu-disconnect:disabled {
+  color: #b9beca;
+}
+
+.feishu-connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.feishu-connect-form .credential-note code {
+  color: #526db4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.feishu-connect-form .form-error {
+  margin-top: 0;
 }
 
 .platform-grid {
@@ -4865,6 +5091,11 @@ p {
   color: #5556cc;
   font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 8.5px;
+}
+
+.run-info-list .run-path {
+  max-width: 68%;
+  font-family: 'SFMono-Regular', Consolas, monospace;
 }
 
 .run-config-flags {

@@ -23,6 +23,7 @@ export interface Repository {
   name: string
   url: string
   branch: string
+  localPath: string
   language: string
   accountId: string
   lastSync: string
@@ -76,6 +77,7 @@ export interface PipelineRun {
   repoId: string
   repoName: string
   branch: string
+  localPath?: string
   commit: string
   version: string
   status: PipelineStatus

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 4
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS repositories (
   name TEXT NOT NULL,
   url TEXT NOT NULL UNIQUE,
   branch TEXT NOT NULL,
+  local_path TEXT NOT NULL DEFAULT '',
   language TEXT NOT NULL,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
   last_sync TEXT NOT NULL,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
   repo_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE RESTRICT,
   repo_name TEXT NOT NULL,
   branch TEXT NOT NULL,
+  local_path TEXT NOT NULL DEFAULT '',
   commit_hash TEXT NOT NULL,
   version TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'success', 'failed')),
@@ -155,6 +157,76 @@ CREATE TABLE IF NOT EXISTS feishu_inbox (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feishu_integrations (
+  id TEXT PRIMARY KEY,
+  project_key TEXT NOT NULL,
+  plugin_id TEXT NOT NULL,
+  plugin_secret_ciphertext TEXT NOT NULL,
+  plugin_secret_iv TEXT NOT NULL,
+  plugin_secret_tag TEXT NOT NULL,
+  plugin_secret_hint TEXT NOT NULL,
+  user_key TEXT NOT NULL,
+  default_repo_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE RESTRICT,
+  requirement_type_key TEXT NOT NULL,
+  defect_type_key TEXT NOT NULL,
+  default_owner TEXT NOT NULL,
+  close_transition_id TEXT,
+  webhook_secret_ciphertext TEXT,
+  webhook_secret_iv TEXT,
+  webhook_secret_tag TEXT,
+  webhook_secret_hint TEXT,
+  status TEXT NOT NULL CHECK (status IN ('active', 'error')),
+  last_sync_at TEXT,
+  last_sync_status TEXT CHECK (last_sync_status IN ('success', 'failed')),
+  last_sync_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_sync_logs (
+  id TEXT PRIMARY KEY,
+  integration_id TEXT NOT NULL REFERENCES feishu_integrations(id) ON DELETE CASCADE,
+  trigger_type TEXT NOT NULL CHECK (trigger_type IN ('manual', 'event', 'schedule')),
+  status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+  fetched INTEGER NOT NULL CHECK (fetched >= 0),
+  upserted INTEGER NOT NULL CHECK (upserted >= 0),
+  skipped INTEGER NOT NULL CHECK (skipped >= 0),
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_access_tokens (
+  integration_id TEXT PRIMARY KEY REFERENCES feishu_integrations(id) ON DELETE CASCADE,
+  token_ciphertext TEXT NOT NULL,
+  token_iv TEXT NOT NULL,
+  token_tag TEXT NOT NULL,
+  token_hint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_event_dedup (
+  event_key TEXT PRIMARY KEY,
+  received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_outbox (
+  id TEXT PRIMARY KEY,
+  integration_id TEXT NOT NULL REFERENCES feishu_integrations(id) ON DELETE CASCADE,
+  work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('close')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'sent', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (work_item_id, action)
+);
+
 CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
 CREATE INDEX IF NOT EXISTS idx_work_items_repo ON work_items(repo_id);
+CREATE INDEX IF NOT EXISTS idx_feishu_sync_logs_created ON feishu_sync_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_feishu_outbox_pending ON feishu_outbox(status, next_attempt_at);
 `

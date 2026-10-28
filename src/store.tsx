@@ -12,13 +12,17 @@ import {
   api,
   type AccountInput,
   type BootstrapData,
+  type FeishuConnectInput,
   type PipelineInput,
   type RepositoryInput,
+  type RepositorySettingsInput,
   type WorkItemInput,
 } from './api'
 import {
   type Account,
   type FeishuInboxItem,
+  type FeishuIntegrationStatus,
+  type FeishuSyncResult,
   type PipelineRun,
   type Repository,
   type TestReport,
@@ -33,13 +37,22 @@ interface DataContextValue {
   pipelines: PipelineRun[]
   reports: TestReport[]
   feishuInbox: FeishuInboxItem[]
+  feishuIntegration: FeishuIntegrationStatus
   loading: boolean
   toasts: ToastMessage[]
   addRepository: (input: RepositoryInput) => Promise<Repository>
+  updateRepositorySettings: (
+    id: string,
+    input: RepositorySettingsInput,
+  ) => Promise<Repository>
   addAccount: (input: AccountInput) => Promise<Account>
   importAccounts: (inputs: AccountInput[]) => Promise<number>
   addWorkItem: (input: WorkItemInput) => Promise<WorkItem>
   importWorkItems: (inputs: WorkItemInput[]) => Promise<number>
+  connectFeishu: (input: FeishuConnectInput) => Promise<FeishuIntegrationStatus>
+  testFeishu: () => Promise<{ ok: true; projectName?: string }>
+  syncFeishu: () => Promise<FeishuSyncResult>
+  disconnectFeishu: () => Promise<FeishuIntegrationStatus>
   startPipeline: (input: PipelineInput) => Promise<PipelineRun>
   reload: (silent?: boolean) => Promise<void>
   dismissToast: (id: number) => void
@@ -55,6 +68,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [pipelines, setPipelines] = useState<PipelineRun[]>([])
   const [reports, setReports] = useState<TestReport[]>([])
   const [feishuInbox, setFeishuInbox] = useState<FeishuInboxItem[]>([])
+  const [feishuIntegration, setFeishuIntegration] = useState<FeishuIntegrationStatus>({
+    connected: false,
+    webhookConfigured: false,
+    eventPath: '/api/integrations/feishu/events',
+  })
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const toastSequence = useRef(0)
@@ -91,6 +109,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setPipelines(data.pipelines)
       setReports(data.reports)
       setFeishuInbox(data.feishuInbox)
+      setFeishuIntegration(data.feishuIntegration)
       pipelineStatuses.current = new Map(data.pipelines.map((run) => [run.id, run.status]))
 
       if (completed.length > 0) {
@@ -155,6 +174,31 @@ export function DataProvider({ children }: { children: ReactNode }) {
         return repository
       } catch (error) {
         reportApiError('仓库接入失败', error)
+        throw error
+      }
+    },
+    [notify, reportApiError],
+  )
+
+  const updateRepositorySettings = useCallback(
+    async (id: string, input: RepositorySettingsInput) => {
+      try {
+        const repository = await api.updateRepositorySettings(id, input)
+        setRepositories((current) =>
+          current.map((item) => (item.id === repository.id ? repository : item)),
+        )
+        setWorkItems((current) =>
+          current.map((item) =>
+            item.repoId === repository.id ? { ...item, branch: repository.branch } : item,
+          ),
+        )
+        notify(
+          '仓库配置已更新',
+          `${repository.name} · ${repository.branch}${repository.localPath ? ` · ${repository.localPath}` : ''}`,
+        )
+        return repository
+      } catch (error) {
+        reportApiError('仓库配置更新失败', error)
         throw error
       }
     },
@@ -243,6 +287,60 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [notify, reportApiError],
   )
 
+  const connectFeishu = useCallback(
+    async (input: FeishuConnectInput) => {
+      try {
+        const integration = await api.connectFeishu(input)
+        setFeishuIntegration(integration)
+        notify('飞书项目已绑定', `${integration.projectKey} 已通过连接校验`)
+        return integration
+      } catch (error) {
+        reportApiError('飞书项目绑定失败', error)
+        throw error
+      }
+    },
+    [notify, reportApiError],
+  )
+
+  const testFeishu = useCallback(async () => {
+    try {
+      const result = await api.testFeishu()
+      notify('飞书连接正常', result.projectName ?? '插件、项目和工作项类型权限校验通过')
+      await reload(true)
+      return result
+    } catch (error) {
+      reportApiError('飞书连接测试失败', error)
+      throw error
+    }
+  }, [notify, reload, reportApiError])
+
+  const syncFeishu = useCallback(async () => {
+    try {
+      const result = await api.syncFeishu()
+      notify(
+        '飞书工作项已同步',
+        result.skipped > 0 ? `${result.message}，${result.skipped} 条已跳过` : result.message,
+      )
+      await reload(true)
+      return result
+    } catch (error) {
+      reportApiError('飞书工作项同步失败', error)
+      throw error
+    }
+  }, [notify, reload, reportApiError])
+
+  const disconnectFeishu = useCallback(async () => {
+    try {
+      const integration = await api.disconnectFeishu()
+      setFeishuIntegration(integration)
+      notify('飞书项目已解除绑定', '本地已同步的工作项会保留', 'info')
+      return integration
+    } catch (error) {
+      reportApiError('解除飞书绑定失败', error)
+      throw error
+    }
+  }, [notify, reportApiError])
+
   const startPipeline = useCallback(
     async (input: PipelineInput) => {
       try {
@@ -272,13 +370,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
       pipelines,
       reports,
       feishuInbox,
+      feishuIntegration,
       loading,
       toasts,
       addRepository,
+      updateRepositorySettings,
       addAccount,
       importAccounts,
       addWorkItem,
       importWorkItems,
+      connectFeishu,
+      testFeishu,
+      syncFeishu,
+      disconnectFeishu,
       startPipeline,
       reload,
       dismissToast,
@@ -289,8 +393,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addAccount,
       addRepository,
       addWorkItem,
+      connectFeishu,
+      disconnectFeishu,
       dismissToast,
       feishuInbox,
+      feishuIntegration,
       importAccounts,
       importWorkItems,
       loading,
@@ -300,6 +407,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reports,
       repositories,
       startPipeline,
+      updateRepositorySettings,
+      syncFeishu,
+      testFeishu,
       toasts,
       workItems,
     ],

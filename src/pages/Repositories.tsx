@@ -4,9 +4,11 @@ import {
   CheckCircle2,
   Clock3,
   Copy,
+  FolderGit2,
   GitBranch,
   GitFork,
   Link2,
+  Pencil,
   Plus,
   Search,
   Settings2,
@@ -26,7 +28,15 @@ export function Repositories({
 }: {
   onNavigate: (page: PageKey, runId?: string) => void
 }) {
-  const { repositories, accounts, workItems, pipelines, addRepository, notify } = useData()
+  const {
+    repositories,
+    accounts,
+    workItems,
+    pipelines,
+    addRepository,
+    updateRepositorySettings,
+    notify,
+  } = useData()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'healthy' | 'warning'>('all')
   const [modalOpen, setModalOpen] = useState(false)
@@ -35,16 +45,21 @@ export function Repositories({
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
   const [branch, setBranch] = useState('develop')
+  const [localPath, setLocalPath] = useState('')
   const [language, setLanguage] = useState('Vue 3 + Lua')
   const [accountId, setAccountId] = useState(
     accounts.find((account) => account.platform === 'git')?.id ?? '',
   )
+  const [branchRepo, setBranchRepo] = useState<Repository | null>(null)
+  const [branchDraft, setBranchDraft] = useState('')
+  const [localPathDraft, setLocalPathDraft] = useState('')
+  const [branchSaving, setBranchSaving] = useState(false)
 
   const gitAccounts = accounts.filter((account) => account.platform === 'git')
   const filtered = useMemo(
     () =>
       repositories.filter((repo) => {
-        const matchesSearch = [repo.name, repo.url, repo.branch, repo.language]
+        const matchesSearch = [repo.name, repo.url, repo.branch, repo.localPath, repo.language]
           .join(' ')
           .toLowerCase()
           .includes(search.toLowerCase())
@@ -75,6 +90,7 @@ export function Repositories({
         name: name.trim(),
         url: url.trim(),
         branch: branch.trim(),
+        localPath: localPath.trim(),
         language,
         accountId,
       })
@@ -82,6 +98,7 @@ export function Repositories({
       setUrl('')
       setName('')
       setBranch('develop')
+      setLocalPath('')
     } catch {
       // The data provider already reports the API error as a toast.
     }
@@ -93,6 +110,28 @@ export function Repositories({
       notify('仓库地址已复制', `${repo.name} · ${repo.url}`, 'info')
     } catch {
       notify('复制失败', '浏览器未授予剪贴板权限，请手动选择地址', 'warning')
+    }
+  }
+
+  const openSettingsModal = (repo: Repository) => {
+    setBranchRepo(repo)
+    setBranchDraft(repo.branch)
+    setLocalPathDraft(repo.localPath)
+  }
+
+  const submitSettings = async () => {
+    if (!branchRepo || !branchDraft.trim()) return
+    setBranchSaving(true)
+    try {
+      await updateRepositorySettings(branchRepo.id, {
+        branch: branchDraft.trim(),
+        localPath: localPathDraft.trim(),
+      })
+      setBranchRepo(null)
+    } catch {
+      // The data provider already reports the API error as a toast.
+    } finally {
+      setBranchSaving(false)
     }
   }
 
@@ -221,7 +260,21 @@ export function Repositories({
               <div className="repo-branch-pill">
                 <GitBranch size={15} />
                 <span>{repo.branch}</span>
+                <button
+                  className="repo-branch-edit"
+                  onClick={() => openSettingsModal(repo)}
+                  title="修改分支与本地路径"
+                >
+                  <Pencil size={11} /> 修改
+                </button>
                 <small>默认分支</small>
+              </div>
+
+              <div className={`repo-local-path ${repo.localPath ? '' : 'repo-local-path-empty'}`}>
+                <FolderGit2 size={14} />
+                <span title={repo.localPath || undefined}>
+                  {repo.localPath || '未配置本地代码路径，交付将按模拟模式执行'}
+                </span>
               </div>
 
               <div className="repo-meta-grid">
@@ -298,7 +351,7 @@ export function Repositories({
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         title="接入 Git 仓库"
-        subtitle="配置仓库地址、目标分支与认证账号"
+        subtitle="配置仓库地址、目标分支、本地代码路径与认证账号"
         footer={
           <>
             <span className="modal-footer-hint">
@@ -350,6 +403,19 @@ export function Repositories({
             </div>
           </Field>
         </div>
+        <Field
+          label="本地代码路径"
+          hint="可选，必须是本机已存在的绝对目录；配置后交付会执行真实提交与推送"
+        >
+          <div className="input-with-icon">
+            <FolderGit2 size={15} />
+            <input
+              value={localPath}
+              onChange={(event) => setLocalPath(event.target.value)}
+              placeholder="/Users/name/sme/sme-main"
+            />
+          </div>
+        </Field>
         <div className="field-row">
           <Field label="主要语言">
             <select value={language} onChange={(event) => setLanguage(event.target.value)}>
@@ -381,6 +447,67 @@ export function Repositories({
             尚未绑定 Git 账号？前往 <button className="inline-link" onClick={() => onNavigate('accounts')}>账号中心</button> 添加
           </span>
         </div>
+      </Modal>
+
+      <Modal
+        open={branchRepo !== null}
+        onClose={() => setBranchRepo(null)}
+        title="仓库配置"
+        subtitle={branchRepo ? `${branchRepo.name} · ${branchRepo.url}` : undefined}
+        footer={
+          <>
+            <span className="modal-footer-hint">
+              <CheckCircle2 size={15} /> 修改分支会同步关联工作项；本地路径用于真实提交与验收后推送
+            </span>
+            <div className="modal-footer-actions">
+              <button className="btn btn-secondary" onClick={() => setBranchRepo(null)}>
+                取消
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={submitSettings}
+                disabled={!branchDraft.trim() || branchSaving}
+              >
+                {branchSaving ? '正在保存…' : '保存配置'}
+              </button>
+            </div>
+          </>
+        }
+      >
+        <Field
+          label="默认管理分支"
+          required
+          hint="支持 develop、release/v12.0 等分支名；修改后关联工作项的分支会同步更新"
+        >
+          <div className="input-with-icon">
+            <GitBranch size={15} />
+            <input
+              value={branchDraft}
+              onChange={(event) => setBranchDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void submitSettings()
+              }}
+              placeholder="develop 或 release/v12.0"
+              autoFocus
+            />
+          </div>
+        </Field>
+        <Field
+          label="本地代码路径"
+          hint="必须是本机已存在的绝对目录；留空则后续交付使用模拟提交"
+        >
+          <div className="input-with-icon">
+            <FolderGit2 size={15} />
+            <input
+              value={localPathDraft}
+              onChange={(event) => setLocalPathDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void submitSettings()
+              }}
+              placeholder="/Users/name/sme/sme-main"
+            />
+          </div>
+        </Field>
       </Modal>
 
       <DeliveryDialog

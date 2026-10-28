@@ -1,4 +1,12 @@
-import { ArrowRight, FileText, GitBranch, GitMerge, ShieldCheck, Sparkles } from 'lucide-react'
+import {
+  ArrowRight,
+  FileText,
+  FolderGit2,
+  GitBranch,
+  GitMerge,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useData } from '../store'
 import type { PipelineRun } from '../types'
@@ -67,7 +75,7 @@ export function DeliveryDialog({
       footer={
         <>
           <span className="modal-footer-hint">
-            <ShieldCheck size={15} /> 凭据由账号池安全注入，不会写入代码仓库
+            <ShieldCheck size={15} /> 提交到配置的本地路径，测试验收通过后推送目标分支
           </span>
           <div className="modal-footer-actions">
             <button className="btn btn-secondary" onClick={onClose}>
@@ -113,13 +121,27 @@ export function DeliveryDialog({
             </Field>
           </div>
 
+          <Field
+            label="本地代码路径"
+            hint={
+              selectedRepo?.localPath
+                ? '提交阶段在此目录创建真实 Git 提交，测试通过后推送到远端目标分支'
+                : '未配置本地路径，本次交付按模拟模式执行'
+            }
+          >
+            <div className="input-with-icon readonly-input">
+              <FolderGit2 size={15} />
+              <span>{selectedRepo?.localPath || '未配置'}</span>
+            </div>
+          </Field>
+
           <div className="automation-options">
             <label className="check-row">
               <input type="checkbox" checked={autoCommit} onChange={(e) => setAutoCommit(e.target.checked)} />
               <span className="custom-check" />
               <span>
                 <strong>自动提交代码</strong>
-                <small>将修订提交至目标分支并关联工作项</small>
+                <small>在本地路径创建提交，验收通过后推送目标分支</small>
               </span>
             </label>
             <label className="check-row">
@@ -158,7 +180,7 @@ export function DeliveryDialog({
             <div>
               <GitMerge size={15} />
               <span>集成报告 · 提交 · 编译 · 升级 · 测试</span>
-              <small>验证通过后提交并生成测试报告</small>
+              <small>验证通过后推送 {selectedRepo?.branch ?? '目标分支'} 并生成测试报告</small>
             </div>
           </div>
           <div className="preview-footer">

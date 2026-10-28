@@ -13,6 +13,7 @@ export interface Repository {
   name: string
   url: string
   branch: string
+  localPath: string
   language: string
   accountId: string
   lastSync: string
@@ -83,6 +84,7 @@ export interface PipelineRun {
   repoId: string
   repoName: string
   branch: string
+  localPath?: string
   commit: string
   version: string
   status: PipelineStatus
@@ -137,6 +139,36 @@ export interface FeishuInboxItem {
   repoId: string
   owner: string
   updatedAt: string
+}
+
+export interface FeishuIntegrationStatus {
+  connected: boolean
+  status?: 'active' | 'error'
+  authMode?: 'token' | 'plugin'
+  projectKey?: string
+  pluginId?: string
+  pluginSecretHint?: string
+  accessTokenHint?: string
+  userKey?: string
+  defaultRepoId?: string
+  requirementTypeKey?: string
+  defectTypeKey?: string
+  defaultOwner?: string
+  closeTransitionId?: string
+  webhookConfigured: boolean
+  webhookSecretHint?: string
+  lastSyncAt?: string
+  lastSyncStatus?: 'success' | 'failed'
+  lastSyncMessage?: string
+  eventPath: string
+}
+
+export interface FeishuSyncResult {
+  fetched: number
+  upserted: number
+  skipped: number
+  message: string
+  syncedAt: string
 }
 
 export interface ToastMessage {
