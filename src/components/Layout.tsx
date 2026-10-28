@@ -46,6 +46,11 @@ const navGroups: { label: string; items: { key: PageKey; icon: typeof LayoutDash
   },
 ]
 
+const localOperator = {
+  name: '本地管理员',
+  role: '研发效能管理员',
+}
+
 export function Layout({
   page,
   onNavigate,
@@ -126,16 +131,16 @@ export function Layout({
               <span />
             </div>
             <div>
-              <strong>自动化运行器在线</strong>
-              <span>4 个执行节点 · 延迟 38ms</span>
+              <strong>后端数据服务</strong>
+              <span>SQLite 持久化 · 实时同步</span>
             </div>
             <span className="online-dot" />
           </div>
           <button className="sidebar-user" onClick={() => setProfileOpen((value) => !value)}>
-            <Avatar name="陈华" />
+            <Avatar name={localOperator.name} />
             <span>
-              <strong>陈华</strong>
-              <small>研发效能管理员</small>
+              <strong>{localOperator.name}</strong>
+              <small>{localOperator.role}</small>
             </span>
             <ChevronDown size={14} className={profileOpen ? 'rotate-180' : ''} />
           </button>
@@ -165,31 +170,30 @@ export function Layout({
             <button
               className="icon-btn topbar-icon"
               aria-label="帮助"
-              onClick={() => notify('帮助中心', '文档与接入指南已在新窗口就绪', 'info')}
+              onClick={() => notify('帮助中心', '部署与接入说明请参考项目 README.md', 'info')}
             >
               <CircleHelp size={19} />
             </button>
             <button
-              className="icon-btn topbar-icon has-indicator"
+              className="icon-btn topbar-icon"
               aria-label="通知"
-              onClick={() => notify('3 条新通知', '1 条交付完成，2 条待审批', 'info')}
+              onClick={() => notify('通知中心', '当前没有新的系统通知', 'info')}
             >
               <Bell size={19} />
-              <span />
             </button>
             <div className="topbar-divider" />
             <button className="topbar-profile" onClick={() => setProfileOpen((value) => !value)}>
-              <Avatar name="陈华" size="sm" />
-              <span>陈华</span>
+              <Avatar name={localOperator.name} size="sm" />
+              <span>{localOperator.name}</span>
               <ChevronDown size={13} />
             </button>
             {profileOpen && (
               <div className="profile-menu">
                 <div className="profile-menu-head">
-                  <Avatar name="陈华" />
+                  <Avatar name={localOperator.name} />
                   <div>
-                    <strong>陈华</strong>
-                    <span>chen.hua@rjcloud.com</span>
+                    <strong>{localOperator.name}</strong>
+                    <span>本地部署工作区</span>
                   </div>
                 </div>
                 <button onClick={() => navigate('accounts')}>
@@ -199,7 +203,7 @@ export function Layout({
                   <Workflow size={15} /> 查看执行记录
                 </button>
                 <div className="profile-menu-tip">
-                  <Sparkles size={14} /> ORBIT Pro 工作区
+                  <Sparkles size={14} /> ORBIT 本地工作区
                 </div>
               </div>
             )}

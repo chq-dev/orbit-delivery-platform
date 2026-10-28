@@ -1209,6 +1209,26 @@ p {
   box-shadow: 0 16px 38px rgba(20, 25, 50, 0.17);
 }
 
+.active-delivery-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+}
+
+.active-delivery-empty h2 {
+  color: #fff;
+  font-size: 24px;
+}
+
+.active-delivery-empty p {
+  max-width: 480px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 .hero-grid-pattern {
   position: absolute;
   inset: 0;

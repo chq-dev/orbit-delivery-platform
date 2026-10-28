@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
-import { platformMeta } from '../mockData'
+import { platformMeta } from '../appConfig'
 import { useData } from '../store'
 import type { PlatformKey, WorkItemType } from '../types'
 import { Field, Modal, StatusBadge } from '../components/ui'
@@ -117,19 +117,27 @@ export function Accounts() {
     setModalOpen(true)
   }
 
-  const submitManual = () => {
+  const submitManual = async () => {
     if (!username.trim() || !password.trim()) return
-    addAccount({ platform, username: username.trim(), password, label: label.trim() })
-    setModalOpen(false)
+    try {
+      await addAccount({ platform, username: username.trim(), password, label: label.trim() })
+      setModalOpen(false)
+    } catch {
+      // The data provider already reports the API error as a toast.
+    }
   }
 
-  const submitImport = () => {
+  const submitImport = async () => {
     if (parsed.rows.length === 0) {
       setImportError('未识别到有效账号，请检查格式后重试')
       return
     }
-    importAccounts(parsed.rows)
-    setModalOpen(false)
+    try {
+      await importAccounts(parsed.rows)
+      setModalOpen(false)
+    } catch {
+      // The data provider already reports the API error as a toast.
+    }
   }
 
   const readFile = (file: File | undefined) => {
@@ -170,10 +178,10 @@ export function Accounts() {
         </span>
         <div>
           <strong>凭据保险箱已启用</strong>
-          <p>所有密码使用 AES-256 加密存储，仅由流水线运行时按需注入，前端不会展示明文。</p>
+          <p>所有密码使用 AES-256-GCM 加密存储，仅由流水线运行时按需注入，前端不会展示明文。</p>
         </div>
         <span className="security-status">
-          <CheckCircle2 size={14} /> 最近校验 2 分钟前
+          <CheckCircle2 size={14} /> 加密存储已启用
         </span>
       </div>
 
@@ -316,6 +324,16 @@ export function Accounts() {
                   </td>
                 </tr>
               ))}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="empty-state table-empty">
+                      <h3>暂无平台账号</h3>
+                      <p>绑定账号或批量导入后，账号会加密保存并显示在这里。</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

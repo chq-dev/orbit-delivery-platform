@@ -128,6 +128,17 @@ export interface TestReport {
   failedCases: FailedCase[]
 }
 
+export interface FeishuInboxItem {
+  externalId: string
+  type: WorkItemType
+  title: string
+  description: string
+  priority: Priority
+  repoId: string
+  owner: string
+  updatedAt: string
+}
+
 export interface ToastMessage {
   id: number
   title: string

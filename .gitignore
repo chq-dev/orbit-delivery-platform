@@ -3,4 +3,9 @@ dist
 .DS_Store
 *.local
 npm-debug.log*
+data
+*.db
+*.db-shm
+*.db-wal
+.env
 

@@ -30,6 +30,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from
 import { DeliveryDialog } from '../components/DeliveryDialog'
 import { PipelineSteps } from '../components/PipelineSteps'
 import { Modal, StatusBadge } from '../components/ui'
+import { averageDuration } from '../duration'
 import { useData } from '../store'
 import type { PageKey, PipelineReport, PipelineRun, PipelineStage } from '../types'
 
@@ -45,18 +46,6 @@ const stageIcons: Record<string, ReactNode> = {
   upgrade: <Smartphone size={16} />,
   test: <TestTube2 size={16} />,
   report: <FileBarChart2 size={16} />,
-}
-
-const stageTimeMap: Record<string, string> = {
-  analysis: '10:42:08',
-  design: '10:43:14',
-  coding: '10:44:26',
-  integration: '10:47:42',
-  commit: '10:49:08',
-  build: '10:52:14',
-  upgrade: '10:58:36',
-  test: '11:04:02',
-  report: '11:14:18',
 }
 
 function stageIcon(stage: PipelineStage) {
@@ -144,6 +133,7 @@ export function Pipelines({
   const runningCount = pipelines.filter((entry) => entry.status === 'running').length
   const successCount = pipelines.filter((entry) => entry.status === 'success').length
   const failedCount = pipelines.filter((entry) => entry.status === 'failed').length
+  const averageTestDuration = averageDuration(reports.map((entry) => entry.duration))
 
   return (
     <div className="page-enter">
@@ -167,9 +157,9 @@ export function Pipelines({
 
       <div className="pipeline-stats-row">
         <div><span className="dot-blue" /><small>执行中</small><strong>{runningCount}</strong></div>
-        <div><span className="dot-green" /><small>本周成功</small><strong>{successCount + 26}</strong></div>
-        <div><span className="dot-red" /><small>本周失败</small><strong>{failedCount}</strong></div>
-        <div><TimerReset size={15} /><small>平均交付耗时</small><strong>22m 18s</strong></div>
+        <div><span className="dot-green" /><small>累计成功</small><strong>{successCount}</strong></div>
+        <div><span className="dot-red" /><small>累计失败</small><strong>{failedCount}</strong></div>
+        <div><TimerReset size={15} /><small>平均测试耗时</small><strong>{averageTestDuration}</strong></div>
         <div className="pipeline-live-note"><span className="online-dot" /> 实时更新中</div>
       </div>
 
@@ -321,7 +311,6 @@ export function Pipelines({
                             <small>
                               <Clock3 size={11} />
                               {stage.duration ?? '执行中…'}
-                              {stage.status !== 'pending' && ` · ${stageTimeMap[stage.key]}`}
                             </small>
                           )}
                           {stage.key === 'design' && run.designReport && (
@@ -417,11 +406,10 @@ export function Pipelines({
                 </div>
               </div>
               <div className="terminal-body">
-                <div><span className="term-time">10:42:08</span><span className="term-info">INFO</span> pipeline {run.id} started by {run.triggeredBy}</div>
-                <div><span className="term-time">10:42:09</span><span className="term-info">INFO</span> resolve work item: {run.workItemId}</div>
+                <div><span className="term-info">INFO</span> pipeline {run.id} started by {run.triggeredBy}</div>
+                <div><span className="term-info">INFO</span> resolve work item: {run.workItemId}</div>
                 {run.stages.filter((stage) => stage.status !== 'pending').map((stage) => (
                   <div key={stage.key}>
-                    <span className="term-time">{stageTimeMap[stage.key]}</span>
                     <span className={stage.status === 'failed' ? 'term-error' : 'term-success'}>
                       {stage.status === 'failed' ? 'ERROR' : 'OK'}
                     </span>
@@ -429,6 +417,19 @@ export function Pipelines({
                   </div>
                 ))}
                 {run.status === 'running' && <div className="terminal-cursor-line"><span className="terminal-cursor" /> 等待下一阶段输出…</div>}
+              </div>
+            </article>
+          </section>
+        )}
+        {!run && (
+          <section className="pipeline-detail">
+            <article className="pipeline-detail-card card">
+              <div className="empty-state">
+                <h3>暂无交付流水线</h3>
+                <p>请先创建账号、接入仓库并录入工作项，然后启动交付。</p>
+                <button className="btn btn-primary" onClick={() => setDeliveryOpen(true)}>
+                  <Rocket size={15} /> 启动交付
+                </button>
               </div>
             </article>
           </section>

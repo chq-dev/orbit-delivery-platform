@@ -1,8 +1,14 @@
 import { X, CheckCircle2, Info, AlertTriangle } from 'lucide-react'
 import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { teamColors } from '../mockData'
 import { useData } from '../store'
+
+const avatarColors = ['#5b5ce2', '#0f9f87', '#ef7b32', '#d14f8e', '#2575d9', '#64748b']
+
+function avatarColor(name: string) {
+  const hash = [...name].reduce((total, char) => total + char.charCodeAt(0), 0)
+  return avatarColors[hash % avatarColors.length]
+}
 
 export function Modal({
   open,
@@ -100,7 +106,7 @@ export function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md'
   return (
     <span
       className={`avatar avatar-${size}`}
-      style={{ background: teamColors[name] ?? '#64748b' }}
+      style={{ background: avatarColor(name) }}
       title={name}
     >
       {name.slice(0, 1)}

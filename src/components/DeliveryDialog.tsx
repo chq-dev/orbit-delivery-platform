@@ -20,6 +20,7 @@ export function DeliveryDialog({
   const [repoId, setRepoId] = useState('')
   const [autoCommit, setAutoCommit] = useState(true)
   const [autoClose, setAutoClose] = useState(true)
+  const [launching, setLaunching] = useState(false)
 
   const availableItems = workItems.filter((item) => item.status !== '已关闭')
   const selectedItem = workItems.find((item) => item.id === workItemId)
@@ -42,11 +43,18 @@ export function DeliveryDialog({
     if (item) setRepoId(item.repoId)
   }
 
-  const launch = () => {
-    const run = startPipeline({ workItemId, repoId, autoCommit, autoClose })
-    if (!run) return
-    onClose()
-    onStarted(run)
+  const launch = async () => {
+    if (launching) return
+    setLaunching(true)
+    try {
+      const run = await startPipeline({ workItemId, repoId, autoCommit, autoClose })
+      onClose()
+      onStarted(run)
+    } catch {
+      // The data provider already reports the API error as a toast.
+    } finally {
+      setLaunching(false)
+    }
   }
 
   return (
@@ -65,8 +73,12 @@ export function DeliveryDialog({
             <button className="btn btn-secondary" onClick={onClose}>
               取消
             </button>
-            <button className="btn btn-primary" onClick={launch} disabled={!workItemId || !repoId}>
-              启动交付 <ArrowRight size={16} />
+            <button
+              className="btn btn-primary"
+              onClick={launch}
+              disabled={!workItemId || !repoId || launching}
+            >
+              {launching ? '启动中…' : '启动交付'} <ArrowRight size={16} />
             </button>
           </div>
         </>

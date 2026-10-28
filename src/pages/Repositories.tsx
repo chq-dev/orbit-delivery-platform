@@ -68,19 +68,23 @@ export function Repositories({
     if (!name && inferred) setName(inferred)
   }
 
-  const submitRepo = () => {
+  const submitRepo = async () => {
     if (!url.trim() || !name.trim() || !branch.trim() || !accountId) return
-    addRepository({
-      name: name.trim(),
-      url: url.trim(),
-      branch: branch.trim(),
-      language,
-      accountId,
-    })
-    setModalOpen(false)
-    setUrl('')
-    setName('')
-    setBranch('develop')
+    try {
+      await addRepository({
+        name: name.trim(),
+        url: url.trim(),
+        branch: branch.trim(),
+        language,
+        accountId,
+      })
+      setModalOpen(false)
+      setUrl('')
+      setName('')
+      setBranch('develop')
+    } catch {
+      // The data provider already reports the API error as a toast.
+    }
   }
 
   const copyRepositoryUrl = async (repo: Repository) => {
@@ -93,6 +97,8 @@ export function Repositories({
   }
 
   const healthyCount = repositories.filter((repo) => repo.status === 'healthy').length
+  const branchCount = new Set(repositories.map((repo) => repo.branch)).size
+  const latestSync = repositories[0]?.lastSync
 
   return (
     <div className="page-enter">
@@ -138,8 +144,8 @@ export function Repositories({
             <GitBranch size={18} />
           </span>
           <span>
-            <small>受保护分支</small>
-            <strong>{repositories.filter((repo) => repo.branch.includes('release')).length}</strong>
+            <small>默认分支</small>
+            <strong>{branchCount}</strong>
           </span>
         </div>
         <div>
@@ -148,7 +154,7 @@ export function Repositories({
           </span>
           <span>
             <small>最近同步</small>
-            <strong>3 分钟前</strong>
+            <strong>{latestSync ?? '暂无同步'}</strong>
           </span>
         </div>
       </div>
@@ -296,7 +302,7 @@ export function Repositories({
         footer={
           <>
             <span className="modal-footer-hint">
-              <CheckCircle2 size={15} /> 平台将自动校验仓库访问权限
+              <CheckCircle2 size={15} /> 仓库信息将持久化到本地数据库
             </span>
             <div className="modal-footer-actions">
               <button className="btn btn-secondary" onClick={() => setModalOpen(false)}>

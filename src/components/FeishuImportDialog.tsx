@@ -1,6 +1,6 @@
 import { Check, CheckCircle2, FileText, MessageSquare, ShieldCheck } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { feishuInbox, platformLinks } from '../mockData'
+import { platformLinks } from '../appConfig'
 import { useData } from '../store'
 import type { WorkItemType } from '../types'
 import { Modal, StatusBadge } from './ui'
@@ -14,12 +14,12 @@ export function FeishuImportDialog({
   mode: WorkItemType
   onClose: () => void
 }) {
-  const { repositories, workItems, importWorkItems } = useData()
+  const { repositories, workItems, feishuInbox, importWorkItems } = useData()
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const available = useMemo(
     () => feishuInbox.filter((item) => item.type === mode),
-    [mode],
+    [feishuInbox, mode],
   )
   const importedExternalIds = useMemo(
     () => new Set(workItems.map((item) => item.externalId).filter(Boolean)),
@@ -49,26 +49,30 @@ export function FeishuImportDialog({
   const platformName = mode === 'requirement' ? '需求平台' : '缺陷平台'
   const ModeIcon = mode === 'requirement' ? FileText : MessageSquare
 
-  const importSelected = () => {
+  const importSelected = async () => {
     const items = pending.filter((item) => selected.has(item.externalId))
     if (items.length === 0) return
-    importWorkItems(
-      items.map((item) => {
-        const repository = repositories.find((repo) => repo.id === item.repoId) ?? repositories[0]
-        return {
-          type: item.type,
-          title: item.title,
-          description: item.description,
-          priority: item.priority,
-          repoId: repository.id,
-          branch: repository.branch,
-          owner: item.owner,
-          source: 'feishu' as const,
-          externalId: item.externalId,
-        }
-      }),
-    )
-    onClose()
+    try {
+      await importWorkItems(
+        items.map((item) => {
+          const repository = repositories.find((repo) => repo.id === item.repoId) ?? repositories[0]
+          return {
+            type: item.type,
+            title: item.title,
+            description: item.description,
+            priority: item.priority,
+            repoId: repository.id,
+            branch: repository.branch,
+            owner: item.owner,
+            source: 'feishu' as const,
+            externalId: item.externalId,
+          }
+        }),
+      )
+      onClose()
+    } catch {
+      // The data provider already reports the API error as a toast.
+    }
   }
 
   return (
@@ -101,7 +105,7 @@ export function FeishuImportDialog({
           <span>{sourceUrl}</span>
         </div>
         <span className="feishu-local-connected">
-          <CheckCircle2 size={13} /> 本地连接正常
+          <CheckCircle2 size={13} /> 本地导入队列
         </span>
       </div>
 

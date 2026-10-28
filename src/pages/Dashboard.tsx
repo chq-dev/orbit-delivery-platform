@@ -13,7 +13,6 @@ import {
   ShieldCheck,
   Sparkles,
   TimerReset,
-  TrendingUp,
   TriangleAlert,
   UserRound,
   Workflow,
@@ -28,31 +27,20 @@ import { WorkItemDialog } from '../components/WorkItemDialog'
 import { useData } from '../store'
 import type { PageKey } from '../types'
 
-const sparkPaths = [
-  'M2 28 C10 27, 14 19, 22 21 S34 27, 41 18 S54 12, 63 14 S76 8, 88 9',
-  'M2 27 C10 23, 16 27, 23 20 S36 12, 44 16 S57 20, 65 11 S77 14, 88 7',
-  'M2 25 C12 22, 15 14, 24 16 S35 22, 43 13 S55 9, 63 12 S75 6, 88 5',
-  'M2 12 C11 14, 17 8, 26 14 S39 24, 47 17 S57 10, 66 18 S79 24, 88 20',
-]
-
 function MetricCard({
   icon: Icon,
   label,
   value,
   suffix,
   note,
-  trend,
   tone,
-  sparkIndex,
 }: {
   icon: LucideIcon
   label: string
   value: string
   suffix?: string
   note: string
-  trend?: string
   tone: string
-  sparkIndex: number
 }) {
   return (
     <article className={`metric-card metric-tone-${tone}`}>
@@ -60,11 +48,6 @@ function MetricCard({
         <span className="metric-icon">
           <Icon size={19} />
         </span>
-        {trend && (
-          <span className="metric-trend">
-            <TrendingUp size={12} /> {trend}
-          </span>
-        )}
       </div>
       <div className="metric-label">{label}</div>
       <div className="metric-value">
@@ -73,10 +56,6 @@ function MetricCard({
       </div>
       <div className="metric-bottom">
         <span>{note}</span>
-        <svg viewBox="0 0 90 32" className="sparkline" aria-hidden="true">
-          <path d={sparkPaths[sparkIndex]} className="spark-fill" />
-          <path d={sparkPaths[sparkIndex]} className="spark-line" />
-        </svg>
       </div>
     </article>
   )
@@ -91,7 +70,7 @@ function recentStageLabel(stages: { status: string; name: string }[]) {
 }
 
 export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: string) => void }) {
-  const { repositories, workItems, pipelines } = useData()
+  const { repositories, workItems, pipelines, reports } = useData()
   const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [workItemOpen, setWorkItemOpen] = useState(false)
   const activePipelines = pipelines.filter((run) => run.status === 'running')
@@ -100,10 +79,15 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
   )
   const pendingDefects = pendingItems.filter((item) => item.type === 'defect').length
   const activeRun = activePipelines[0] ?? pipelines[0]
-  const pendingStage = activeRun.stages.find((stage) => stage.status === 'running')
-  const progressStyle = { '--progress': `${activeRun.progress}%` } as CSSProperties
+  const pendingStage = activeRun?.stages.find((stage) => stage.status === 'running')
+  const progressStyle = { '--progress': `${activeRun?.progress ?? 0}%` } as CSSProperties
+  const completedRuns = pipelines.filter((run) => run.status === 'success')
+  const failedRuns = pipelines.filter((run) => run.status === 'failed')
+  const finishedRuns = completedRuns.length + failedRuns.length
+  const successRate = finishedRuns ? (completedRuns.length / finishedRuns) * 100 : 0
+  const successRateLabel = successRate.toFixed(1)
   const ringStyle = {
-    background: 'conic-gradient(#5b5ce2 0deg 347deg, #e8eaf3 347deg 360deg)',
+    background: `conic-gradient(#5b5ce2 0deg ${successRate * 3.6}deg, #e8eaf3 ${successRate * 3.6}deg 360deg)`,
   }
   const todayLabel = new Intl.DateTimeFormat('zh-CN', {
     month: 'long',
@@ -138,30 +122,29 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
         <MetricCard
           icon={Workflow}
           label="活跃流水线"
-          value={String(Math.max(activePipelines.length, 1))}
-          note={`${pendingStage?.name ?? '报告归档'}执行中`}
+          value={String(activePipelines.length)}
+          note={
+            activePipelines.length > 0
+              ? `${pendingStage?.name ?? '报告归档'}执行中`
+              : '当前没有执行中的流水线'
+          }
           tone="indigo"
-          sparkIndex={0}
         />
         <MetricCard
           icon={PackageCheck}
-          label="本周完成交付"
-          value="28"
+          label="累计完成交付"
+          value={String(completedRuns.length)}
           suffix="次"
-          note="较上周多 6 次"
-          trend="+18.6%"
+          note={`${failedRuns.length} 次失败`}
           tone="green"
-          sparkIndex={1}
         />
         <MetricCard
           icon={Zap}
           label="交付成功率"
-          value="96.4"
+          value={successRateLabel}
           suffix="%"
-          note="连续 3 周保持提升"
-          trend="+2.4%"
+          note={finishedRuns ? `基于 ${finishedRuns} 次已完成执行` : '暂无已完成执行'}
           tone="blue"
-          sparkIndex={2}
         />
         <MetricCard
           icon={TriangleAlert}
@@ -169,93 +152,113 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
           value={String(pendingItems.length)}
           note={`${pendingDefects} 个缺陷 · ${pendingItems.length - pendingDefects} 个需求`}
           tone="orange"
-          sparkIndex={3}
         />
       </div>
 
       <div className="dashboard-hero-grid">
-        <article className="active-delivery-card">
-          <div className="hero-grid-pattern" />
-          <div className="hero-orb hero-orb-one" />
-          <div className="hero-orb hero-orb-two" />
-          <div className="active-delivery-head">
-            <span className="live-pill">
-              <span className="live-dot" /> LIVE
-            </span>
-            <span className="run-id">{activeRun.id}</span>
-          </div>
-          <div className="active-delivery-title-row">
-            <div>
-              <span className="eyebrow light">
-                <CircleDot size={12} /> 当前交付
+        {activeRun ? (
+          <article className="active-delivery-card">
+            <div className="hero-grid-pattern" />
+            <div className="hero-orb hero-orb-one" />
+            <div className="hero-orb hero-orb-two" />
+            <div className="active-delivery-head">
+              <span className={`live-pill ${activeRun.status === 'running' ? '' : 'live-pill-idle'}`}>
+                <span className="live-dot" /> {activeRun.status === 'running' ? 'LIVE' : 'HISTORY'}
               </span>
-              <h2>{activeRun.title}</h2>
+              <span className="run-id">{activeRun.id}</span>
             </div>
-            <span className="hero-status-pill">
-              {activeRun.status === 'running' ? '执行中' : '已完成'}
-            </span>
-          </div>
-          <div className="active-meta-row">
-            <span>
-              <GitBranch size={14} /> {activeRun.repoName} / {activeRun.branch}
-            </span>
-            <span>
-              <GitCommit size={14} /> {activeRun.commit}
-            </span>
-            <span>
-              <UserRound size={14} /> {activeRun.triggeredBy}
-            </span>
-            <span>
-              <TimerReset size={14} /> 预计剩余 8 分钟
-            </span>
-          </div>
+            <div className="active-delivery-title-row">
+              <div>
+                <span className="eyebrow light">
+                  <CircleDot size={12} /> 当前交付
+                </span>
+                <h2>{activeRun.title}</h2>
+              </div>
+              <span className="hero-status-pill">
+                {activeRun.status === 'running'
+                  ? '执行中'
+                  : activeRun.status === 'failed'
+                    ? '执行失败'
+                    : '已完成'}
+              </span>
+            </div>
+            <div className="active-meta-row">
+              <span>
+                <GitBranch size={14} /> {activeRun.repoName} / {activeRun.branch}
+              </span>
+              <span>
+                <GitCommit size={14} /> {activeRun.commit}
+              </span>
+              <span>
+                <UserRound size={14} /> {activeRun.triggeredBy}
+              </span>
+              <span>
+                <TimerReset size={14} /> {pendingStage ? `阶段 ${activeRun.currentStage + 1} / 9` : '执行结束'}
+              </span>
+            </div>
 
-          <div className="hero-progress-head">
-            <span>
-              {pendingStage ? `正在${pendingStage.name}` : '交付已完成'}
-              <small>{pendingStage?.description}</small>
-            </span>
-            <strong>{activeRun.progress}%</strong>
-          </div>
-          <div className="hero-progress-track">
-            <span style={progressStyle} />
-          </div>
-          <div className="hero-pipeline-wrap">
-            <PipelineSteps stages={activeRun.stages} compact />
-          </div>
-          <div className="active-delivery-footer">
-            <div>
-              <span className="version-label">目标版本</span>
-              <strong>{activeRun.version}</strong>
+            <div className="hero-progress-head">
+              <span>
+                {pendingStage
+                  ? `正在${pendingStage.name}`
+                  : activeRun.status === 'failed'
+                    ? '流水线执行失败'
+                    : '交付已完成'}
+                <small>{pendingStage?.description}</small>
+              </span>
+              <strong>{activeRun.progress}%</strong>
             </div>
-            <button className="hero-link" onClick={() => onNavigate('pipelines', activeRun.id)}>
-              查看执行详情 <ArrowRight size={15} />
+            <div className="hero-progress-track">
+              <span style={progressStyle} />
+            </div>
+            <div className="hero-pipeline-wrap">
+              <PipelineSteps stages={activeRun.stages} compact />
+            </div>
+            <div className="active-delivery-footer">
+              <div>
+                <span className="version-label">目标版本</span>
+                <strong>{activeRun.version}</strong>
+              </div>
+              <button className="hero-link" onClick={() => onNavigate('pipelines', activeRun.id)}>
+                查看执行详情 <ArrowRight size={15} />
+              </button>
+            </div>
+          </article>
+        ) : (
+          <article className="active-delivery-card active-delivery-empty">
+            <span className="eyebrow light">
+              <CircleDot size={12} /> 当前交付
+            </span>
+            <h2>暂无交付流水线</h2>
+            <p>创建账号、接入代码仓库并录入工作项后，即可发起首次交付。</p>
+            <button className="hero-link" onClick={() => setDeliveryOpen(true)}>
+              启动交付 <ArrowRight size={15} />
             </button>
-          </div>
-        </article>
+          </article>
+        )}
 
         <article className="efficiency-card card">
           <SectionHeading
-            title="自动化引擎"
-            description="本周运行质量"
+            title="交付质量"
+            description="基于当前数据库记录"
             action={<span className="soft-tag">实时</span>}
           />
           <div className="efficiency-ring-wrap">
             <div className="efficiency-ring" style={ringStyle}>
               <div>
-                <strong>96.4<small>%</small></strong>
+                <strong>{successRateLabel}<small>%</small></strong>
                 <span>交付成功率</span>
               </div>
             </div>
             <div className="efficiency-summary">
               <span>
-                <i className="dot-green" /> 成功 <strong>132</strong>
+                <i className="dot-green" /> 成功 <strong>{completedRuns.length}</strong>
               </span>
               <span>
-                <i className="dot-red" /> 失败 <strong>5</strong>
+                <i className="dot-red" /> 失败 <strong>{failedRuns.length}</strong>
               </span>
               <span>
-                <i className="dot-gray" /> 取消 <strong>2</strong>
+                <i className="dot-gray" /> 执行中 <strong>{activePipelines.length}</strong>
               </span>
             </div>
           </div>
@@ -264,29 +267,29 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
               <span className="efficiency-icon build">
                 <Boxes size={15} />
               </span>
-              <span>平均编译耗时</span>
-              <strong>6m 42s</strong>
+              <span>已归档测试报告</span>
+              <strong>{reports.length}</strong>
             </div>
             <div>
               <span className="efficiency-icon test">
                 <CheckCircle2 size={15} />
               </span>
-              <span>平均测试耗时</span>
-              <strong>18m 52s</strong>
+              <span>累计流水线</span>
+              <strong>{pipelines.length}</strong>
             </div>
             <div>
               <span className="efficiency-icon device">
                 <Rocket size={15} />
               </span>
-              <span>设备升级成功率</span>
-              <strong>99.1%</strong>
+              <span>已接入仓库</span>
+              <strong>{repositories.length}</strong>
             </div>
           </div>
           <div className="runner-online-row">
             <span>
-              <span className="online-dot" /> 4 个运行器在线
+              <span className="online-dot" /> 后端数据服务已连接
             </span>
-            <span>负载 42%</span>
+            <span>SQLite 持久化</span>
           </div>
         </article>
       </div>
@@ -295,7 +298,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
         <article className="card project-status-card">
           <SectionHeading
             title="项目交付状态"
-            description="已接入 4 个代码仓库"
+            description={`已接入 ${repositories.length} 个代码仓库`}
             action={
               <button className="text-btn" onClick={() => onNavigate('repositories')}>
                 管理仓库 <ArrowUpRight size={14} />
@@ -343,6 +346,12 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
                 </button>
               )
             })}
+            {repositories.length === 0 && (
+              <div className="empty-state">
+                <h3>尚未接入代码仓库</h3>
+                <p>前往代码仓库页面绑定 Git 账号并接入首个仓库。</p>
+              </div>
+            )}
           </div>
         </article>
 
@@ -371,6 +380,12 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
                 <StatusBadge status={item.priority} />
               </button>
             ))}
+            {pendingItems.length === 0 && (
+              <div className="empty-state">
+                <h3>当前没有待处理工作项</h3>
+                <p>新建需求或缺陷后会显示在这里。</p>
+              </div>
+            )}
           </div>
         </article>
       </div>
@@ -442,6 +457,16 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
                   </td>
                 </tr>
               ))}
+              {pipelines.length === 0 && (
+                <tr>
+                  <td colSpan={8}>
+                    <div className="empty-state table-empty">
+                      <h3>暂无交付记录</h3>
+                      <p>发起交付流水线后，执行记录会显示在这里。</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

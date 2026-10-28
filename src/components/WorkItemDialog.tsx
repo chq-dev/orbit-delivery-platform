@@ -1,6 +1,5 @@
 import { AlertCircle, CheckSquare2, GitBranch, UserRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { teamMembers } from '../mockData'
 import { useData } from '../store'
 import type { Priority, WorkItem, WorkItemType } from '../types'
 import { Field, Modal } from './ui'
@@ -22,7 +21,7 @@ export function WorkItemDialog({
   const [description, setDescription] = useState('')
   const [priority, setPriority] = useState<Priority>('中')
   const [repoId, setRepoId] = useState(repositories[0]?.id ?? '')
-  const [owner, setOwner] = useState('陈华')
+  const [owner, setOwner] = useState('')
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
 
   useEffect(() => {
@@ -32,22 +31,26 @@ export function WorkItemDialog({
     setDescription('')
     setPriority('中')
     setRepoId(repositories[0]?.id ?? '')
-    setOwner('陈华')
+    setOwner('')
   }, [initialType, open, repositories])
 
-  const submit = () => {
-    if (!title.trim() || !description.trim()) return
-    const item = addWorkItem({
-      type,
-      title: title.trim(),
-      description: description.trim(),
-      priority,
-      repoId,
-      branch: selectedRepo?.branch ?? 'develop',
-      owner,
-    })
-    onCreated?.(item)
-    onClose()
+  const submit = async () => {
+    if (!title.trim() || !description.trim() || !owner.trim() || !repoId) return
+    try {
+      const item = await addWorkItem({
+        type,
+        title: title.trim(),
+        description: description.trim(),
+        priority,
+        repoId,
+        branch: selectedRepo?.branch ?? 'develop',
+        owner: owner.trim(),
+      })
+      onCreated?.(item)
+      onClose()
+    } catch {
+      // The data provider already reports the API error as a toast.
+    }
   }
 
   return (
@@ -55,7 +58,7 @@ export function WorkItemDialog({
       open={open}
       onClose={onClose}
       title={type === 'requirement' ? '创建需求' : '登记缺陷'}
-      subtitle="工作项将同步至飞书，并可直接发起自动化交付"
+      subtitle="工作项将保存到本地数据库，并可直接发起自动化交付"
       footer={
         <>
           <span className="modal-footer-hint">
@@ -70,7 +73,11 @@ export function WorkItemDialog({
             <button className="btn btn-secondary" onClick={onClose}>
               取消
             </button>
-            <button className="btn btn-primary" onClick={submit} disabled={!title || !description}>
+            <button
+              className="btn btn-primary"
+              onClick={submit}
+              disabled={!title || !description || !owner.trim() || !repoId}
+            >
               {type === 'requirement' ? '创建需求' : '登记缺陷'}
             </button>
           </div>
@@ -123,13 +130,11 @@ export function WorkItemDialog({
           </select>
         </Field>
         <Field label="负责人" required>
-          <select value={owner} onChange={(event) => setOwner(event.target.value)}>
-            {teamMembers.map((member) => (
-              <option key={member} value={member}>
-                {member}
-              </option>
-            ))}
-          </select>
+          <input
+            value={owner}
+            onChange={(event) => setOwner(event.target.value)}
+            placeholder="请输入负责人"
+          />
         </Field>
       </div>
       <div className="form-note">

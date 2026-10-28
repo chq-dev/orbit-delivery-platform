@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Modal, StatusBadge } from '../components/ui'
+import { averageDuration } from '../duration'
 import { useData } from '../store'
 import type { PageKey, TestReport } from '../types'
 
@@ -60,6 +61,7 @@ export function Reports({
   const passedCases = reports.reduce((sum, report) => sum + report.passed, 0)
   const failedCases = reports.reduce((sum, report) => sum + report.failed, 0)
   const overallRate = totalCases ? ((passedCases / totalCases) * 100).toFixed(1) : '0'
+  const averageReportDuration = averageDuration(reports.map((report) => report.duration))
 
   const exportReport = (report: TestReport) => {
     const content = [
@@ -123,7 +125,9 @@ export function Reports({
           <div>
             <span className="summary-kicker"><CircleGauge size={10} /> 总体通过率</span>
             <strong>{overallRate}<small>%</small></strong>
-            <span className="summary-change">↑ 1.8% 较上一周期</span>
+            <span className="summary-change">
+              {reports.length ? `基于 ${reports.length} 份已归档报告` : '暂无测试报告'}
+            </span>
           </div>
           <div className="report-ring-small" style={{ background: `conic-gradient(#fff 0deg ${Number(overallRate) * 3.6}deg, rgba(255,255,255,.18) ${Number(overallRate) * 3.6}deg 360deg)` }}>
             <span>{overallRate}%</span>
@@ -131,7 +135,7 @@ export function Reports({
         </article>
         <article className="report-summary-card">
           <span className="summary-icon indigo"><FileCheck2 size={18} /></span>
-          <div><small>报告总数</small><strong>{reports.length}</strong><span>近 30 天</span></div>
+          <div><small>报告总数</small><strong>{reports.length}</strong><span>累计归档</span></div>
         </article>
         <article className="report-summary-card">
           <span className="summary-icon green"><CheckCircle2 size={18} /></span>
@@ -143,7 +147,7 @@ export function Reports({
         </article>
         <article className="report-summary-card">
           <span className="summary-icon blue"><TimerReset size={18} /></span>
-          <div><small>平均耗时</small><strong>22m 18s</strong><span>较上期 -2m 06s</span></div>
+          <div><small>平均耗时</small><strong>{averageReportDuration}</strong><span>来自已归档报告</span></div>
         </article>
       </div>
 
@@ -267,7 +271,7 @@ export function Reports({
         footer={
           <>
             <span className="modal-footer-hint">
-              <ShieldCheck size={15} /> 报告已归档且不可篡改
+              <ShieldCheck size={15} /> 报告随流水线归档，可追溯至对应工作项
             </span>
             <div className="modal-footer-actions">
               <button className="btn btn-secondary" onClick={() => selected && onNavigate('pipelines', selected.pipelineId)}>

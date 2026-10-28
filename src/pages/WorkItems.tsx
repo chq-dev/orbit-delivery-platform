@@ -135,13 +135,13 @@ export function WorkItems({
         </div>
         <div className="work-summary-item">
           <span className="summary-icon green"><CheckCircle2 size={18} /></span>
-          <div><small>本周已交付</small><strong>{counts.delivered + 14}</strong></div>
-          <span className="work-summary-note">+18.6%</span>
+          <div><small>累计已交付</small><strong>{counts.delivered}</strong></div>
+          <span className="work-summary-note">真实记录</span>
         </div>
         <div className="work-summary-item">
           <span className="summary-icon indigo"><ClipboardCheck size={18} /></span>
-          <div><small>自动关闭缺陷</small><strong>{counts.closedDefects + 6}</strong></div>
-          <span className="work-summary-note">近 7 天</span>
+          <div><small>已关闭缺陷</small><strong>{counts.closedDefects}</strong></div>
+          <span className="work-summary-note">真实记录</span>
         </div>
       </div>
 
