@@ -281,8 +281,12 @@ export function WorkItems({
         </div>
         {filtered.length === 0 && (
           <div className="empty-state table-empty">
-            <h3>没有匹配的工作项</h3>
-            <p>调整筛选条件，或创建一个新的需求 / 缺陷。</p>
+            <h3>{workItems.length === 0 ? '尚未同步到工作项' : '没有匹配的工作项'}</h3>
+            <p>
+              {workItems.length === 0
+                ? '请检查部署环境中的飞书访问凭证并确认启动同步成功，列表会自动刷新。'
+                : '调整筛选条件，或创建一个新的需求 / 缺陷。'}
+            </p>
           </div>
         )}
         <div className="table-footer">

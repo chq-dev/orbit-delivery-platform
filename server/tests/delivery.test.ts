@@ -26,7 +26,12 @@ import {
   listRepositories,
   updateRepositorySettings,
 } from '../services/repositoryService.js'
-import { createWorkItem, getWorkItem, importWorkItems } from '../services/workItemService.js'
+import {
+  createWorkItem,
+  getWorkItem,
+  importWorkItems,
+  listWorkItems,
+} from '../services/workItemService.js'
 
 const vaultKey = 'test-vault-key-with-enough-length'
 const tempDir = mkdtempSync(join(tmpdir(), 'orbit-test-'))
@@ -571,6 +576,19 @@ test('飞书连接配置会校验权限并加密保存凭据', async () => {
         owner: 'alice',
       },
     ])
+    const syncedWorkItems = listWorkItems(db).filter(
+      (item) =>
+        item.externalId === 'rjcloud:issue:201' || item.externalId === 'rjcloud:story:101',
+    )
+    assert.equal(syncedWorkItems.length, 2)
+    assert.equal(syncedWorkItems.every((item) => item.source === 'feishu'), true)
+
+    await syncFeishu(db, vault, 'manual')
+    const afterRepeat = listWorkItems(db).filter(
+      (item) =>
+        item.externalId === 'rjcloud:issue:201' || item.externalId === 'rjcloud:story:101',
+    )
+    assert.equal(afterRepeat.length, 2)
     assert.equal(getFeishuStatus(db).lastSyncStatus, 'success')
   } finally {
     globalThis.fetch = originalFetch
@@ -655,6 +673,10 @@ test('抓包访问 Token 可直接绑定、加密保存并同步工作项', asyn
     assert.equal(synced.fetched, 1)
     assert.equal(synced.upserted, 1)
     assert.equal(tokenExchangeCalled, false)
+    assert.equal(
+      listWorkItems(db).some((item) => item.externalId === 'rjcloud:story:301'),
+      true,
+    )
   } finally {
     globalThis.fetch = originalFetch
   }

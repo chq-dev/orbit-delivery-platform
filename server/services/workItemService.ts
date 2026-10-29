@@ -36,6 +36,21 @@ export interface WorkItemInput {
   externalId?: unknown
 }
 
+export interface SyncedFeishuWorkItem {
+  externalId: string
+  type: WorkItemType
+  title: string
+  description: string
+  priority: Priority
+  owner: string
+  updatedAt: string
+}
+
+export interface WorkItemUpsertResult {
+  created: number
+  updated: number
+}
+
 function rowToWorkItem(row: WorkItemRow): WorkItem {
   return {
     id: row.id,
@@ -175,4 +190,71 @@ export function importWorkItems(
   })()
 
   return { items: created, skipped }
+}
+
+export function upsertFeishuWorkItems(
+  db: AppDatabase,
+  repoId: string,
+  items: SyncedFeishuWorkItem[],
+): WorkItemUpsertResult {
+  const repository = db
+    .prepare('SELECT branch FROM repositories WHERE id = ?')
+    .get(repoId) as { branch: string } | undefined
+  if (!repository) throw notFound('关联仓库')
+
+  const findExisting = db.prepare(
+    "SELECT id FROM work_items WHERE source = 'feishu' AND external_id = ?",
+  )
+  const updateExisting = db.prepare(
+    `UPDATE work_items
+     SET title = ?, description = ?, priority = ?, repo_id = ?, branch = ?, owner = ?, updated_at = ?
+     WHERE id = ?`,
+  )
+  const insertWorkItem = db.prepare(
+    `INSERT INTO work_items
+      (id, type, title, description, priority, status, repo_id, branch, owner, source, external_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, '待处理', ?, ?, ?, 'feishu', ?, ?, ?)`,
+  )
+
+  let created = 0
+  let updated = 0
+  for (const item of items) {
+    const existing = findExisting.get(item.externalId) as { id: string } | undefined
+    if (existing) {
+      updateExisting.run(
+        item.title,
+        item.description,
+        item.priority,
+        repoId,
+        repository.branch,
+        item.owner,
+        item.updatedAt,
+        existing.id,
+      )
+      updated += 1
+      continue
+    }
+
+    const prefix = item.type === 'requirement' ? 'REQ' : 'BUG'
+    const sequenceName =
+      item.type === 'requirement' ? 'work_item_requirement' : 'work_item_defect'
+    const initial = item.type === 'requirement' ? 1082 : 236
+    const id = `${prefix}-${nextSequence(db, sequenceName, initial)}`
+    insertWorkItem.run(
+      id,
+      item.type,
+      item.title,
+      item.description,
+      item.priority,
+      repoId,
+      repository.branch,
+      item.owner,
+      item.externalId,
+      item.updatedAt,
+      item.updatedAt,
+    )
+    created += 1
+  }
+
+  return { created, updated }
 }

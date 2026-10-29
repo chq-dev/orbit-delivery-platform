@@ -7,6 +7,7 @@ import type { WorkItemType } from '../domain/types.js'
 import { optionalText, requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
 import { FeishuProjectClient, FeishuProjectError } from './feishuClient.js'
+import { upsertFeishuWorkItems } from './workItemService.js'
 
 const INTEGRATION_ID = 'feishu-main'
 const EVENT_PATH = '/api/integrations/feishu/events'
@@ -426,10 +427,7 @@ async function performSync(
       row.default_owner,
     )
     const now = nowIso()
-    const message =
-      result.skipped > 0
-        ? `已同步 ${result.items.length} 条工作项，跳过 ${result.skipped} 条无效数据`
-        : `已同步 ${result.items.length} 条飞书工作项`
+    let message = ''
 
     db.transaction(() => {
       const upsert = db.prepare(
@@ -457,6 +455,10 @@ async function performSync(
           item.updatedAt,
         )
       }
+      const workItems = upsertFeishuWorkItems(db, row.default_repo_id, result.items)
+      message = `已同步 ${result.items.length} 条飞书工作项，列表新增 ${workItems.created} 条、更新 ${workItems.updated} 条${
+        result.skipped > 0 ? `，跳过 ${result.skipped} 条无效数据` : ''
+      }`
       db.prepare(
         `UPDATE feishu_integrations
          SET status = 'active', last_sync_at = ?, last_sync_status = 'success',

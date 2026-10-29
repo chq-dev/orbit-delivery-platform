@@ -21,7 +21,7 @@ npm run dev
 
 - 前端：`http://localhost:4173`
 - 后端 API：`http://localhost:8787`
-- SQLite 数据库：`./data/orbit.db`（首次启动自动建表，业务数据为空）
+- SQLite 数据库：`./data/orbit.db`（首次启动自动建表；配置飞书访问凭证后启动即同步真实工作项）
 
 可通过 `.env` 或环境变量覆盖配置，参考 `.env.example`：
 
@@ -32,11 +32,17 @@ VAULT_KEY=replace-with-at-least-32-random-characters
 PIPELINE_STEP_MS=1800
 FEISHU_PROJECT_BASE_URL=https://project.feishu.cn
 FEISHU_SYNC_INTERVAL_MS=300000
+FEISHU_AUTO_SYNC=true
+FEISHU_ACCESS_TOKEN=
+FEISHU_USER_KEY=
+FEISHU_PROJECT_KEY=rjcloud
+FEISHU_REQUIREMENT_TYPE_KEY=story
+FEISHU_DEFECT_TYPE_KEY=issue
 ```
 
 `VAULT_KEY` 用于 AES-256-GCM 加密平台账号密码，生产环境必须显式配置且妥善保管；更换密钥后旧凭据将无法解密。
 
-首次启动后数据库为空，按以下顺序录入真实业务数据：
+首次部署时先配置飞书访问凭证，服务会在监听端口前完成一次同步，把真实需求和缺陷直接写入「需求与缺陷」列表；后续按 `FEISHU_SYNC_INTERVAL_MS` 定时刷新。数据库路径仍建议挂载持久卷，避免重新部署后丢失本地状态：
 
 1. 在「平台账号」绑定 Git 账号。
 2. 在「代码仓库」接入 Git 仓库并关联账号，填写本机实际检出的绝对路径（例如 `/Users/chenhuaqu/sme/sme-main`）。
@@ -60,7 +66,7 @@ npm run typecheck:server
 
 - **代码仓库**：录入 Git 地址、默认分支、本地代码路径、语言与认证账号，支持分支和本地路径修改、仓库健康状态和最近交付查看。
 - **平台账号**：统一管理 Git、飞书、编译系统、设备端账号；支持手动绑定与 CSV/TXT 批量导入。
-- **飞书项目接入**：可直接使用浏览器中抓取到的 `X-Plugin-Token` 绑定，无需创建开放平台插件账号；同步需求/缺陷，支持事件回调和缺陷关闭状态回写。
+- **飞书项目接入**：支持部署环境注入访问凭证自动同步，也可在页面绑定；同步结果直接更新需求与缺陷列表，支持定时刷新、事件回调和缺陷关闭状态回写。
 - **需求与缺陷**：创建工作项、关联仓库和分支、查看详情；缺陷测试通过后自动关闭。
 - **一键交付**：自动生成开发设计报告与集成报告，在配置的本地路径创建真实 Git 提交，测试验收通过后推送目标分支，并完成编译、设备升级和报告归档。
 - **实时流水线**：九阶段状态机、执行进度、阶段日志、运行信息、设计/集成/测试报告查看入口和测试结果摘要。
@@ -97,23 +103,37 @@ server/
 
 ## 飞书项目绑定接入
 
-当前默认使用“抓包 Token”模式，不需要创建开放平台插件，也不需要手动绑定飞书账号：
+飞书项目页面需要登录，服务端不能匿名抓取 HTML。实时数据通过飞书开放接口获取，推荐在部署环境直接注入访问 Token，无需在页面手动绑定：
+
+```bash
+FEISHU_AUTO_SYNC=true
+FEISHU_ACCESS_TOKEN=抓包得到的X-Plugin-Token
+FEISHU_USER_KEY=可选的X-User-Key
+FEISHU_PROJECT_KEY=rjcloud
+FEISHU_REQUIREMENT_TYPE_KEY=story
+FEISHU_DEFECT_TYPE_KEY=issue
+FEISHU_DEFAULT_REPO_ID=repo-1
+```
+
+服务启动时会自动完成绑定校验并同步；同步到的工作项按 `source + external_id` 幂等更新，不会重复插入。若未注入凭证且页面也未绑定，服务端会输出明确的配置提示，列表保持为空。
+
+如需在页面绑定，当前默认使用“抓包 Token”模式，不需要创建开放平台插件：
 
 1. 登录飞书项目，打开浏览器开发者工具 → Network。
 2. 筛选 `/open_api/` 请求，选择任意成功请求，复制请求头中的 `X-Plugin-Token`；如果该请求还带有 `X-User-Key`，一并复制。
 3. 在「账号中心 → 飞书项目绑定」粘贴访问 Token，填写项目标识、需求类型 Key、缺陷类型 Key 和默认仓库。项目标识可填空间 URL 中的 `simple_name`，也可双击空间名称复制 `project_key`；标准需求和缺陷类型通常为 `story`、`issue`，自定义类型可通过 `GET /open_api/:project_key/work_item/all-types` 查询。
 4. 保存时会直接使用该 Token 调用 `GET /open_api/projects/detail` 和两个工作项类型的 `meta` 接口校验权限，不再调用 Plugin Token 交换接口。
-5. 绑定成功后点击“同步工作项”，需求/缺陷会写入本地收件箱，再从「需求与缺陷」页面导入。
+5. 绑定成功后点击“同步工作项”，需求/缺陷会写入本地收件箱并直接更新「需求与缺陷」列表。
 6. 如需自动关闭飞书缺陷，请配置关闭流转 ID；可调用 `POST /open_api/:project_key/work_item/:work_item_type_key/:work_item_id/workflow/query`，从返回的 `connections.transition_id` 中获取目标关闭状态的流转 ID。
 7. 如需事件推送，在插件构成 → 监听事件中配置回调地址 `/api/integrations/feishu/events` 和回调 Token；生产环境必须是公网 HTTPS。
 
-抓包 Token 会过期，通常有效期约 2 小时，过期后重新抓取并更新绑定即可。浏览器 Cookie、`goapi` 的 `x-meego-csrf-token` 不能代替 `X-Plugin-Token`；如果 Network 中不存在 `/open_api/` 请求，则当前页面没有可复用的开放接口 Token。Token、Plugin Secret（兼容旧绑定）和回调 Token 均通过 `CredentialVault` 使用 AES-256-GCM 加密保存。
+抓包 Token 会过期，通常有效期约 2 小时；长期部署建议改用 `FEISHU_PLUGIN_ID`、`FEISHU_PLUGIN_SECRET`、`FEISHU_USER_KEY` 或页面中的 Plugin 凭据，服务会自动换取并缓存访问 Token。浏览器 Cookie、`goapi` 的 `x-meego-csrf-token` 不能代替 `X-Plugin-Token`；如果 Network 中不存在 `/open_api/` 请求，则当前页面没有可复用的开放接口 Token。Token、Plugin Secret（兼容旧绑定）和回调 Token 均通过 `CredentialVault` 使用 AES-256-GCM 加密保存。
 
 相关官方文档：创建插件 `/b/helpcenter/1p8d7djs/49k1ojm9`、获取访问凭证 `/b/helpcenter/1p8d7djs/4id4bvnf`、搜索租户用户 `/b/helpcenter/1p8d7djs/4cxu45fl`、获取工作项类型 `/b/helpcenter/1p8d7djs/3pjp854w`、获取工作流详情 `/b/helpcenter/1p8d7djs/5hcmcl04`、状态流转 `/b/helpcenter/1p8d7djs/4xve8n8c`、监听事件 `/b/helpcenter/1p8d7djs/lvojfwht`。
 
 ## 本地操作与 Codex Skill
 
-- 飞书需求/缺陷通过平台内弹窗同步并导入，不会打开外部项目页面。
+- 飞书需求/缺陷通过部署环境凭证自动同步或平台内弹窗同步，不会打开外部项目页面。
 - Git 仓库地址只提供本地复制，不跳转代码托管页面。
 - 工作项详情可生成 `$rjcloud-local-delivery` 指令并复制到 Codex，由 Codex 在工作区内完成编码、构建、升级与测试。
 - Skill 指令要求先产出开发设计报告，再编码并执行集成验证、生成集成报告，之后才创建本地提交；平台只在测试验收通过后推送配置分支，生产设备升级等其他外部写入仍需确认。

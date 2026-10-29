@@ -158,6 +158,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer)
   }, [hasRunningPipeline, loading, reload])
 
+  const feishuConnected = feishuIntegration.connected
+  useEffect(() => {
+    if (loading || !feishuConnected) return
+    const timer = window.setInterval(() => void reload(true), 15_000)
+    return () => window.clearInterval(timer)
+  }, [feishuConnected, loading, reload])
+
   const reportApiError = useCallback(
     (title: string, error: unknown) => {
       notify(title, error instanceof Error ? error.message : '请求失败，请稍后重试', 'warning')

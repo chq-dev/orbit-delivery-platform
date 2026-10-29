@@ -8,6 +8,7 @@ import {
   processFeishuOutbox,
   syncFeishu,
 } from './services/feishuIntegrationService.js'
+import { bootstrapFeishuIntegration } from './services/feishuBootstrapService.js'
 import { advanceRunningPipelines } from './services/pipelineService.js'
 import { CredentialVault } from './security/vault.js'
 
@@ -16,6 +17,21 @@ const db = createDatabase({
 })
 const vault = new CredentialVault(config.vaultKey)
 const app = createApp(db, vault)
+
+if (config.feishuAutoSync) {
+  try {
+    const result = await bootstrapFeishuIntegration(db, vault)
+    if (result.sync) {
+      console.log(`飞书启动同步完成：${result.sync.message}`)
+    } else if (!result.connected) {
+      console.warn(
+        '飞书自动同步未启用：请配置 FEISHU_ACCESS_TOKEN 或 FEISHU_PLUGIN_ID/FEISHU_PLUGIN_SECRET/FEISHU_USER_KEY',
+      )
+    }
+  } catch (error) {
+    console.error('飞书启动同步失败', error)
+  }
+}
 
 const server = app.listen(config.port, () => {
   const webHint = existsSync(resolve(process.cwd(), 'dist', 'index.html'))
