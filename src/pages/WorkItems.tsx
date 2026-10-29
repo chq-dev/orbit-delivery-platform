@@ -40,6 +40,12 @@ import {
 import { buildLocalSkillInstruction } from '../skillInstruction'
 import { useData } from '../store'
 import type { PageKey, WorkItem, WorkItemStatus, WorkItemType } from '../types'
+import {
+  collectWorkItemFilterValues,
+  filterWorkItems,
+  hasActiveWorkItemFilters,
+  type WorkItemFilters,
+} from '../workItemFilters'
 
 type TabKey = 'all' | WorkItemType
 type StatusFilter = 'all' | WorkItemStatus
@@ -66,6 +72,9 @@ export function WorkItems({
   } = useData()
   const [tab, setTab] = useState<TabKey>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [feishuStatusFilter, setFeishuStatusFilter] = useState('')
+  const [projectLineFilter, setProjectLineFilter] = useState('')
+  const [ownerFilter, setOwnerFilter] = useState('')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [createType, setCreateType] = useState<WorkItemType>('requirement')
@@ -96,19 +105,27 @@ export function WorkItems({
     [workItems],
   )
 
-  const filtered = useMemo(
-    () =>
-      workItems.filter((item) => {
-        const tabMatches = tab === 'all' || item.type === tab
-        const statusMatches = statusFilter === 'all' || item.status === statusFilter
-        const textMatches = [item.id, item.title, item.owner, item.branch]
-          .join(' ')
-          .toLowerCase()
-          .includes(search.toLowerCase())
-        return tabMatches && statusMatches && textMatches
-      }),
-    [search, statusFilter, tab, workItems],
+  const filterOptions = useMemo(
+    () => ({
+      feishuStatuses: collectWorkItemFilterValues(workItems, 'feishuStatus'),
+      projectLines: collectWorkItemFilterValues(workItems, 'projectLine'),
+      owners: collectWorkItemFilterValues(workItems, 'owner'),
+    }),
+    [workItems],
   )
+  const filters = useMemo<WorkItemFilters>(
+    () => ({
+      type: tab,
+      platformStatus: statusFilter,
+      feishuStatus: feishuStatusFilter,
+      projectLine: projectLineFilter,
+      owner: ownerFilter,
+      search,
+    }),
+    [feishuStatusFilter, ownerFilter, projectLineFilter, search, statusFilter, tab],
+  )
+  const filtered = useMemo(() => filterWorkItems(workItems, filters), [filters, workItems])
+  const hasActiveFilters = hasActiveWorkItemFilters(filters)
 
   const pageCount = getPageCount(filtered.length, pageSize)
   const safePage = clampPage(page, filtered.length, pageSize)
@@ -122,7 +139,16 @@ export function WorkItems({
 
   useEffect(() => {
     setPage(1)
-  }, [pageSize, search, statusFilter, tab])
+  }, [filters, pageSize])
+
+  const clearFilters = () => {
+    setTab('all')
+    setStatusFilter('all')
+    setFeishuStatusFilter('')
+    setProjectLineFilter('')
+    setOwnerFilter('')
+    setSearch('')
+  }
 
   useEffect(() => {
     if (page !== safePage) setPage(safePage)
@@ -345,22 +371,61 @@ export function WorkItems({
             <select
               className="compact-select"
               value={statusFilter}
+              aria-label="平台状态筛选"
               onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
             >
-              <option value="all">全部状态</option>
+              <option value="all">全部平台状态</option>
               <option value="待处理">待处理</option>
               <option value="进行中">进行中</option>
               <option value="已交付">已交付</option>
               <option value="已关闭">已关闭</option>
+            </select>
+            <select
+              className="compact-select work-filter-select"
+              value={projectLineFilter}
+              aria-label="项目线筛选"
+              onChange={(event) => setProjectLineFilter(event.target.value)}
+            >
+              <option value="">全部项目线</option>
+              {filterOptions.projectLines.map((projectLine) => (
+                <option key={projectLine} value={projectLine}>{projectLine}</option>
+              ))}
+            </select>
+            <select
+              className="compact-select work-filter-select"
+              value={feishuStatusFilter}
+              aria-label="飞书状态筛选"
+              onChange={(event) => setFeishuStatusFilter(event.target.value)}
+            >
+              <option value="">全部飞书状态</option>
+              {filterOptions.feishuStatuses.map((status) => (
+                <option key={status} value={status}>{status}</option>
+              ))}
+            </select>
+            <select
+              className="compact-select work-filter-select"
+              value={ownerFilter}
+              aria-label="负责人筛选"
+              onChange={(event) => setOwnerFilter(event.target.value)}
+            >
+              <option value="">全部负责人</option>
+              {filterOptions.owners.map((owner) => (
+                <option key={owner} value={owner}>{owner}</option>
+              ))}
             </select>
             <label className="toolbar-search narrow">
               <Search size={15} />
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="搜索编号、标题或负责人"
+                placeholder="搜索编号、标题、负责人或项目线"
               />
             </label>
+            {hasActiveFilters && (
+              <button type="button" className="btn btn-quiet btn-xs" onClick={clearFilters}>
+                清除筛选
+              </button>
+            )}
           </div>
         </div>
 
@@ -370,6 +435,7 @@ export function WorkItems({
               <tr>
                 <th>工作项</th>
                 <th>类型</th>
+                <th>项目线</th>
                 <th>优先级</th>
                 <th>状态</th>
                 <th>关联仓库</th>
@@ -401,6 +467,11 @@ export function WorkItems({
                       </div>
                     </td>
                     <td><StatusBadge status={item.type} /></td>
+                    <td>
+                      <span className="project-line-cell" title={item.projectLine}>
+                        {item.projectLine || '—'}
+                      </span>
+                    </td>
                     <td><StatusBadge status={item.priority} /></td>
                     <td>
                       <div className="status-stack">
@@ -745,6 +816,10 @@ npm run sync:feishu:snapshot:watch`}
               <div>
                 <small>负责人</small>
                 <strong><UserRound size={13} /> {detailItem.owner}</strong>
+              </div>
+              <div>
+                <small>项目线</small>
+                <strong>{detailItem.projectLine || '未同步'}</strong>
               </div>
               <div>
                 <small>创建时间</small>

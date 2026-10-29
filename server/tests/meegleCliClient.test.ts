@@ -33,6 +33,7 @@ test('Meegle CLI 客户端按 story/issue 拉取工作项并补充描述', async
       if (mql.includes('`story`')) {
         assert.match(mql, /FROM `rjcloud`\.`story`/)
         assert.match(mql, /`archiving_date` IS NULL/)
+        assert.match(mql, /`field_c7834f`/)
         return result({
           session_id: 'story-session',
           list: [
@@ -60,6 +61,7 @@ test('Meegle CLI 客户端按 story/issue 拉取工作项并补充描述', async
         })
       }
       assert.match(mql, /FROM `rjcloud`\.`issue`/)
+      assert.match(mql, /`field_e1d325`/)
       return result({
         list: [
           {
@@ -230,6 +232,16 @@ test('Meegle CLI 解析 moql_field_list 真实响应并映射负责人与优先�
                     },
                     value_type: 'user_value_list',
                   },
+                  {
+                    key: 'field_c7834f',
+                    value: {
+                      key_label_value_list: [
+                        { key: 'macc', label: 'MACC' },
+                        { key: 'eweb', label: 'EWEB' },
+                      ],
+                    },
+                    value_type: 'key_label_value_list',
+                  },
                   { key: 'updated_at', value: { string_value: '2026-10-29' }, value_type: 'string_value' },
                   { key: 'description', value: { string_value: '来自查询的真实描述' }, value_type: 'string_value' },
                   { key: 'work_item_id', value: { long_value: 7141584505 }, value_type: 'long_value' },
@@ -262,6 +274,7 @@ test('Meegle CLI 解析 moql_field_list 真实响应并映射负责人与优先�
     owner: 'Alice',
     status: '进行中',
     feishuStatus: '开发中',
+    projectLine: 'MACC,EWEB',
     updatedAt: '2026-10-29T00:00:00.000Z',
   })
 })

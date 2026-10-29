@@ -30,8 +30,12 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       ensureColumn(db, 'pipelines', 'local_path', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'work_items', 'archived_at', 'TEXT')
       ensureColumn(db, 'work_items', 'feishu_status', 'TEXT')
+      ensureColumn(db, 'work_items', 'project_line', 'TEXT')
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
+      )
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_work_items_project_line ON work_items(project_line)',
       )
       db.pragma(`user_version = ${SCHEMA_VERSION}`)
     })()
@@ -39,6 +43,9 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
 
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
+  )
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_work_items_project_line ON work_items(project_line)',
   )
 
   return db

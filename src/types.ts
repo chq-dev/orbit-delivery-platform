@@ -50,6 +50,7 @@ export interface WorkItem {
   source?: 'local' | 'feishu'
   externalId?: string
   feishuStatus?: string
+  projectLine?: string
   frontendOnly?: boolean
 }
 

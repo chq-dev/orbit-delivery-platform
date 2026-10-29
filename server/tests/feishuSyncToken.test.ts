@@ -83,7 +83,7 @@ test('平台同步密钥只保存哈希，支持验证和轮换且旧密钥立�
         .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get('feishu_sync_credentials') as { count: number }
       assert.equal(table.count, 1)
-      assert.equal(db.pragma('user_version', { simple: true }), 9)
+      assert.equal(db.pragma('user_version', { simple: true }), 10)
     } finally {
       db.close()
     }

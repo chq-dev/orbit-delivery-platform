@@ -8,6 +8,8 @@ const MAX_PAGES = 100
 const COMMAND_TIMEOUT_MS = 60_000
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_]+$/
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+const DEFAULT_REQUIREMENT_PROJECT_FIELD = 'field_c7834f'
+const DEFAULT_DEFECT_PROJECT_FIELD = 'field_e1d325'
 
 export interface MeegleCommandResult {
   stdout: string
@@ -27,6 +29,8 @@ export interface MeegleSyncConfig {
   projectKey: string
   requirementTypeKey: string
   defectTypeKey: string
+  requirementProjectField?: string
+  defectProjectField?: string
   defaultOwner: string
   since?: string
   fetchDescriptions?: boolean
@@ -250,7 +254,10 @@ function validateConfig(config: MeegleSyncConfig): void {
     ['projectKey', config.projectKey],
     ['requirementTypeKey', config.requirementTypeKey],
     ['defectTypeKey', config.defectTypeKey],
+    ['requirementProjectField', config.requirementProjectField],
+    ['defectProjectField', config.defectProjectField],
   ] as const) {
+    if (!value) continue
     if (!IDENTIFIER_PATTERN.test(value)) {
       throw new MeegleCliError(`${label} 只能包含字母、数字和下划线`, 'MEEGLE_INVALID_CONFIG')
     }
@@ -274,6 +281,7 @@ function buildMql(
   projectKey: string,
   typeKey: string,
   since: string | undefined,
+  projectField: string,
 ): string {
   const fields = [
     '`work_item_id`',
@@ -283,11 +291,12 @@ function buildMql(
     '`current_status_operator`',
     '`description`',
     '`updated_at`',
-  ].join(', ')
+  ]
+  if (projectField) fields.push(`\`${projectField}\``)
   const conditions = ['`archiving_date` IS NULL']
   if (since) conditions.push(`\`updated_at\` >= '${since}'`)
   const where = ` WHERE ${conditions.join(' AND ')}`
-  return `SELECT ${fields} FROM \`${projectKey}\`.\`${typeKey}\`${where} ORDER BY \`updated_at\` DESC`
+  return `SELECT ${fields.join(', ')} FROM \`${projectKey}\`.\`${typeKey}\`${where} ORDER BY \`updated_at\` DESC`
 }
 
 async function runMeegle(
@@ -346,12 +355,20 @@ export async function assertMeegleAuthenticated(
 async function queryFirstPage(
   config: MeegleSyncConfig,
   typeKey: string,
+  projectField: string,
   since: string | undefined,
   runner: MeegleCommandRunner,
 ): Promise<QueryPage> {
   const payload = await runMeegleJson(
     config,
-    ['workitem', 'query', '--project-key', config.projectKey, '--mql', buildMql(config.projectKey, typeKey, since)],
+    [
+      'workitem',
+      'query',
+      '--project-key',
+      config.projectKey,
+      '--mql',
+      buildMql(config.projectKey, typeKey, since, projectField),
+    ],
     runner,
   )
   return parseQueryPage(payload)
@@ -360,18 +377,19 @@ async function queryFirstPage(
 async function queryType(
   config: MeegleSyncConfig,
   typeKey: string,
+  projectField: string,
   runner: MeegleCommandRunner,
   warnings: string[],
 ): Promise<QueryTypeResult> {
   let first: QueryPage
   try {
-    first = await queryFirstPage(config, typeKey, config.since, runner)
+    first = await queryFirstPage(config, typeKey, projectField, config.since, runner)
   } catch (error) {
     if (!config.since) throw error
     const message = error instanceof Error ? error.message : String(error)
     if (!/updated_at|unsupported field|invalid.*(field|argument)|syntax/i.test(message)) throw error
     warnings.push(`${typeKey} 按 updated_at 增量过滤失败，已回退全量查询：${message}`)
-    first = await queryFirstPage(config, typeKey, undefined, runner)
+    first = await queryFirstPage(config, typeKey, projectField, undefined, runner)
   }
 
   const rows = new Map<string, Record<string, unknown>>()
@@ -489,6 +507,29 @@ function textFromFields(value: unknown, keys: string[]): string {
   return ''
 }
 
+function multiTextFromFields(value: unknown, keys: string[]): string {
+  if (!isRecord(value)) return ''
+  for (const key of keys) {
+    const text = moqlValueText(value[key])
+    if (text) return text
+  }
+  const fields = value.fields ?? value.field_values ?? value.work_item_fields ?? value.custom_fields
+  if (Array.isArray(fields)) {
+    for (const field of fields) {
+      if (!isRecord(field)) continue
+      const key = scalarText(field.field_key ?? field.key ?? field.name)
+      if (!keys.includes(key)) continue
+      const text = moqlValueText(field.field_value ?? field.value ?? field.text ?? field.label)
+      if (text) return text
+    }
+  }
+  return ''
+}
+
+function normalizeMultiText(value: string): string {
+  return [...new Set(value.split(/[,，]/).map((entry) => entry.trim()).filter(Boolean))].join(',')
+}
+
 function mergeDetails(
   rows: Record<string, unknown>[],
   details: Map<string, Record<string, unknown>>,
@@ -553,6 +594,7 @@ function mapWorkItem(
   type: WorkItemType,
   projectKey: string,
   typeKey: string,
+  projectField: string,
   defaultOwner: string,
 ): SyncedFeishuWorkItem | undefined {
   const id = workItemId(raw)
@@ -570,6 +612,9 @@ function mapWorkItem(
     'created_by',
   ])
   const feishuStatus = textFromFields(raw, ['work_item_status', 'status', 'state'])
+  const projectLine = normalizeMultiText(
+    projectField ? multiTextFromFields(raw, [projectField]) : '',
+  )
 
   return {
     externalId: `${projectKey}:${typeKey}:${id}`,
@@ -580,6 +625,7 @@ function mapWorkItem(
     owner: boundedText(owner || defaultOwner, 100),
     status: normalizeWorkItemStatus(feishuStatus),
     feishuStatus: feishuStatus ? boundedText(feishuStatus, 100) : undefined,
+    ...(projectLine ? { projectLine: boundedText(projectLine, 500) } : {}),
     updatedAt: normalizeTimestamp(
       raw.updated_at ?? raw.update_time ?? raw.updatedAt ?? raw.modified_at,
     ),
@@ -596,18 +642,33 @@ export async function fetchMeegleWorkItems(
   let fetched = 0
   let complete = true
 
-  for (const [type, typeKey] of [
-    ['requirement', config.requirementTypeKey],
-    ['defect', config.defectTypeKey],
+  for (const [type, typeKey, projectField] of [
+    [
+      'requirement',
+      config.requirementTypeKey,
+      config.requirementProjectField ?? DEFAULT_REQUIREMENT_PROJECT_FIELD,
+    ],
+    [
+      'defect',
+      config.defectTypeKey,
+      config.defectProjectField ?? DEFAULT_DEFECT_PROJECT_FIELD,
+    ],
   ] as const) {
-    const queried = await queryType(config, typeKey, runner, warnings)
+    const queried = await queryType(config, typeKey, projectField, runner, warnings)
     if (!queried.complete) complete = false
     const rows = queried.rows
     const details = await fetchDescriptions(config, typeKey, rows, runner, warnings)
     const merged = mergeDetails(rows, details)
     fetched += merged.length
     for (const row of merged) {
-      const item = mapWorkItem(row, type, config.projectKey, typeKey, config.defaultOwner)
+      const item = mapWorkItem(
+        row,
+        type,
+        config.projectKey,
+        typeKey,
+        projectField,
+        config.defaultOwner,
+      )
       if (item) items.push(item)
     }
   }

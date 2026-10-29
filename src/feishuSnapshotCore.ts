@@ -16,6 +16,7 @@ export interface FeishuSnapshotItem {
   updatedAt: string
   status?: WorkItemStatus
   feishuStatus?: string
+  projectLine?: string
   repoId?: string
   branch?: string
 }
@@ -32,6 +33,8 @@ export interface ParsedFeishuSnapshot {
   snapshot: FeishuSnapshot
   skipped: number
 }
+
+const SNAPSHOT_AUTHORITATIVE_MAX_AGE_MS = 7 * 24 * 60 * 60_000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -120,6 +123,7 @@ function mapItem(
     source: 'feishu',
     externalId: item.externalId,
     feishuStatus: item.feishuStatus,
+    projectLine: item.projectLine,
     frontendOnly: true,
   }
 }
@@ -159,6 +163,7 @@ export function parseFeishuSnapshot(payload: unknown): ParsedFeishuSnapshot {
       updatedAt: text(raw.updatedAt) || syncedAt,
       status: normalizeStatus(raw.status),
       feishuStatus: text(raw.feishuStatus) || undefined,
+      projectLine: text(raw.projectLine) || undefined,
       repoId: text(raw.repoId) || undefined,
       branch: text(raw.branch) || undefined,
     })
@@ -186,7 +191,42 @@ export function mapFeishuSnapshotItems(
 export function mergeFeishuSnapshot(
   serverItems: WorkItem[],
   snapshotItems: WorkItem[],
+  snapshotSyncedAt?: string,
 ): WorkItem[] {
+  const snapshotTime = snapshotSyncedAt ? Date.parse(snapshotSyncedAt) : Number.NaN
+  const snapshotIsAuthoritative =
+    Number.isFinite(snapshotTime) &&
+    Date.now() - snapshotTime <= SNAPSHOT_AUTHORITATIVE_MAX_AGE_MS
+
+  if (snapshotIsAuthoritative) {
+    const serverFeishuItems = new Map(
+      serverItems
+        .filter((item) => item.source === 'feishu' && item.externalId)
+        .map((item) => [identityOf(item.externalId as string), item]),
+    )
+    const mergedSnapshotItems = snapshotItems.map((item) => {
+      const serverItem = serverFeishuItems.get(identityOf(item.externalId ?? item.id))
+      if (!serverItem) return item
+      return {
+        ...serverItem,
+        title: item.title,
+        description: item.description || serverItem.description,
+        priority: item.priority,
+        owner: item.owner,
+        updatedAt: item.updatedAt,
+        source: 'feishu' as const,
+        externalId: item.externalId,
+        feishuStatus: item.feishuStatus ?? serverItem.feishuStatus,
+        projectLine: item.projectLine ?? serverItem.projectLine,
+        frontendOnly: false,
+      }
+    })
+    return [
+      ...serverItems.filter((item) => item.source !== 'feishu'),
+      ...mergedSnapshotItems,
+    ]
+  }
+
   const serverOnly = serverItems.map((item) => {
     if (item.source !== 'feishu' || !item.externalId) return item
     return { ...item, frontendOnly: false }

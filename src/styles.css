@@ -4488,6 +4488,7 @@ p {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   margin-bottom: 9px;
   padding-bottom: 10px;
@@ -4544,6 +4545,25 @@ p {
   padding: 0 26px 0 9px;
   color: #757d91;
   font-size: 8.5px;
+}
+
+.work-filter-select {
+  max-width: 132px;
+}
+
+.work-items-topbar .toolbar-right {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.project-line-cell {
+  display: inline-block;
+  max-width: 132px;
+  overflow: hidden;
+  color: #68718a;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .work-item-title-cell {

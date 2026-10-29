@@ -46,6 +46,7 @@ export interface WorkItem {
   source?: 'local' | 'feishu'
   externalId?: string
   feishuStatus?: string
+  projectLine?: string
 }
 
 export interface PipelineStage {

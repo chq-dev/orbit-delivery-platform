@@ -21,6 +21,7 @@ interface WorkItemRow {
   source: 'local' | 'feishu'
   external_id: string | null
   feishu_status: string | null
+  project_line: string | null
   created_at: string
   updated_at: string
 }
@@ -47,6 +48,7 @@ export interface SyncedFeishuWorkItem {
   updatedAt: string
   status?: WorkItemStatus
   feishuStatus?: string
+  projectLine?: string
 }
 
 export interface WorkItemUpsertResult {
@@ -80,12 +82,13 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     source: row.source,
     externalId: row.external_id ?? undefined,
     feishuStatus: row.feishu_status ?? undefined,
+    projectLine: row.project_line ?? undefined,
   }
 }
 
 function selectSql(): string {
   return `SELECT id, type, title, description, priority, status, repo_id, branch, owner,
-                 source, external_id, feishu_status, created_at, updated_at
+                 source, external_id, feishu_status, project_line, created_at, updated_at
           FROM work_items`
 }
 
@@ -100,7 +103,7 @@ export function listWorkItemSummaries(db: AppDatabase): WorkItem[] {
   const rows = db
     .prepare(
       `SELECT id, type, title, '' AS description, priority, status, repo_id, branch, owner,
-              source, external_id, feishu_status, created_at, updated_at
+              source, external_id, feishu_status, project_line, created_at, updated_at
        FROM work_items
        WHERE archived_at IS NULL
        ORDER BY created_at DESC, id DESC`,
@@ -245,14 +248,14 @@ export function upsertFeishuWorkItems(
            WHEN status = '待处理' THEN ?
            ELSE status
          END,
-         feishu_status = ?, archived_at = NULL, updated_at = ?
+         feishu_status = ?, project_line = ?, archived_at = NULL, updated_at = ?
      WHERE id = ?`,
   )
   const insertWorkItem = db.prepare(
     `INSERT INTO work_items
       (id, type, title, description, priority, status, repo_id, branch, owner, source, external_id,
-       feishu_status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'feishu', ?, ?, ?, ?)`,
+       feishu_status, project_line, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'feishu', ?, ?, ?, ?, ?)`,
   )
 
   let created = 0
@@ -260,6 +263,7 @@ export function upsertFeishuWorkItems(
   for (const item of items) {
     const status = item.status ?? '待处理'
     const feishuStatus = item.feishuStatus ?? null
+    const projectLine = item.projectLine ?? null
     const identity = externalIdentity(item.externalId)
     const existingId = existingByIdentity.get(identity)
     if (existingId) {
@@ -273,6 +277,7 @@ export function upsertFeishuWorkItems(
         status,
         status,
         feishuStatus,
+        projectLine,
         item.updatedAt,
         existingId,
       )
@@ -297,6 +302,7 @@ export function upsertFeishuWorkItems(
       item.owner,
       item.externalId,
       feishuStatus,
+      projectLine,
       item.updatedAt,
       item.updatedAt,
     )

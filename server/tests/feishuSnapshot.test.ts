@@ -42,6 +42,7 @@ test('前端快照按飞书工作项 ID 合并并忽略无效记录', () => {
         priority: '高',
         owner: 'Alice',
         updatedAt: '2026-10-29T01:50:00.000Z',
+        projectLine: 'MACC,EWEB',
       },
       {
         externalId: 'rjcloud:issue:7142612744',
@@ -63,6 +64,7 @@ test('前端快照按飞书工作项 ID 合并并忽略无效记录', () => {
   assert.equal(snapshotItems.every((item) => item.frontendOnly === true), true)
   assert.equal(snapshotItems.every((item) => item.repoId === repository.id), true)
   assert.equal(snapshotItems.find((item) => item.type === 'defect')?.id, 'BUG-FS-7142612744')
+  assert.equal(snapshotItems[0]?.projectLine, 'MACC,EWEB')
 
   const existing: WorkItem = {
     id: 'REQ-1082',
@@ -88,6 +90,55 @@ test('前端快照按飞书工作项 ID 合并并忽略无效记录', () => {
   assert.equal(requirement?.status, '进行中')
   assert.equal(requirement?.frontendOnly, false)
   assert.equal(merged.some((item) => item.id === 'BUG-FS-7142612744'), false)
+})
+
+test('较新的前端快照覆盖同一条后端飞书记录并补充最新字段', () => {
+  const parsed = parseFeishuSnapshot({
+    version: 1,
+    source: 'feishu',
+    projectKey: 'rjcloud',
+    syncedAt: new Date().toISOString(),
+    items: [
+      {
+        externalId: 'rjcloud:story:6955195522',
+        type: 'requirement',
+        title: '飞书最新标题',
+        description: '飞书最新描述',
+        priority: '紧急',
+        owner: '刘清',
+        updatedAt: '2026-10-29T01:50:00.000Z',
+        status: '进行中',
+        feishuStatus: '转测试',
+        projectLine: 'MACC,EWEB',
+      },
+    ],
+  })
+  const snapshotItems = mapFeishuSnapshotItems(parsed.snapshot, [repository])
+  const existing: WorkItem = {
+    id: 'REQ-1082',
+    type: 'requirement',
+    title: '后端旧标题',
+    description: '后端旧描述',
+    priority: '中',
+    status: '已交付',
+    repoId: repository.id,
+    branch: repository.branch,
+    owner: '旧负责人',
+    updatedAt: '3 天前',
+    createdAt: '2026-10-28T09:08:00.000Z',
+    source: 'feishu',
+    externalId: '66e039485659e0b44ce1d589:story:6955195522',
+  }
+
+  const merged = mergeFeishuSnapshot([existing], snapshotItems, parsed.snapshot.syncedAt)
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0]?.id, 'REQ-1082')
+  assert.equal(merged[0]?.title, '飞书最新标题')
+  assert.equal(merged[0]?.owner, '刘清')
+  assert.equal(merged[0]?.feishuStatus, '转测试')
+  assert.equal(merged[0]?.projectLine, 'MACC,EWEB')
+  assert.equal(merged[0]?.status, '已交付')
+  assert.equal(merged[0]?.frontendOnly, false)
 })
 
 test('后端没有飞书工作项时才使用前端快照补充展示', () => {

@@ -81,6 +81,8 @@ function syncConfig(state: SyncState): MeegleSyncConfig {
     projectKey,
     requirementTypeKey: textEnv('FEISHU_REQUIREMENT_TYPE_KEY', 'story'),
     defectTypeKey: textEnv('FEISHU_DEFECT_TYPE_KEY', 'issue'),
+    requirementProjectField: textEnv('FEISHU_REQUIREMENT_PROJECT_FIELD', 'field_c7834f'),
+    defectProjectField: textEnv('FEISHU_DEFECT_PROJECT_FIELD', 'field_e1d325'),
     defaultOwner: textEnv('FEISHU_DEFAULT_OWNER', '飞书同步'),
     since,
     fetchDescriptions: booleanEnv('FEISHU_SYNC_FETCH_DESCRIPTIONS', true),

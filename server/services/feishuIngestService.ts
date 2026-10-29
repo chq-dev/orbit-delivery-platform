@@ -75,6 +75,7 @@ function normalizeItem(raw: unknown, projectKey: string): SyncedFeishuWorkItem {
         ? undefined
         : (oneOf(raw.status, '工作项状态', workItemStatuses) as WorkItemStatus),
     feishuStatus: optionalText(raw.feishuStatus, '飞书状态', 100),
+    projectLine: optionalText(raw.projectLine, '项目线', 500),
   }
 }
 

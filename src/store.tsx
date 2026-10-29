@@ -192,7 +192,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const toastSequence = useRef(0)
   const initialLoadStarted = useRef(false)
   const hasLoaded = useRef(false)
-  const hasServerFeishuItems = useRef(false)
   const pipelineStatuses = useRef<Map<string, PipelineRun['status']>>(new Map())
   const feishuAgentHealth = useRef<FeishuClientAgentHealth | null>(null)
   const feishuAgentSyncInFlight = useRef(false)
@@ -208,8 +207,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [repositories, snapshot],
   )
   const workItems = useMemo(
-    () => mergeFeishuSnapshot(serverWorkItems, snapshotWorkItems),
-    [serverWorkItems, snapshotWorkItems],
+    () => mergeFeishuSnapshot(serverWorkItems, snapshotWorkItems, snapshot?.syncedAt),
+    [serverWorkItems, snapshot?.syncedAt, snapshotWorkItems],
   )
 
   const dismissToast = useCallback((id: number) => {
@@ -243,7 +242,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       try {
         const items = await api.listWorkItems()
         setServerWorkItems(items)
-        hasServerFeishuItems.current = items.some((item) => item.source === 'feishu')
         lastWorkItemsRefreshAt.current = Date.now()
         setWorkItemsError(undefined)
       } catch (error) {
@@ -350,12 +348,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const refreshFeishuSnapshot = useCallback(
     async (announce = false) => {
-      if (hasServerFeishuItems.current) {
-        setFeishuSnapshot((current) =>
-          current.loading ? { ...current, loading: false } : current,
-        )
-        return 0
-      }
       setFeishuSnapshot((current) => ({ ...current, loading: true, error: undefined }))
       try {
         const result = await fetchFeishuSnapshot(snapshotConfig.url)
@@ -694,9 +686,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     initialLoadStarted.current = true
     void (async () => {
       await reload(false)
-      if (!hasServerFeishuItems.current) {
-        await refreshFeishuSnapshot().catch(() => undefined)
-      }
+      await refreshFeishuSnapshot().catch(() => undefined)
     })()
     void refreshFeishuAgent(true)
     void refreshFeishuSyncToken()

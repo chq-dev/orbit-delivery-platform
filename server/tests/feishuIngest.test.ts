@@ -46,6 +46,7 @@ test('外部同步批量写入工作项并按 externalId 幂等更新', () => {
         description: '来自 Meegle CLI 的需求',
         priority: '高',
         owner: 'Alice',
+        projectLine: 'MACC,EWEB',
         updatedAt: '2026-10-29T01:00:00.000Z',
       },
       {
@@ -66,6 +67,10 @@ test('外部同步批量写入工作项并按 externalId 幂等更新', () => {
   )
   assert.equal(listWorkItems(db).length, 2)
   assert.equal(listWorkItems(db).every((item) => item.source === 'feishu'), true)
+  assert.equal(
+    listWorkItems(db).find((item) => item.externalId === 'rjcloud:story:101')?.projectLine,
+    'MACC,EWEB',
+  )
 
   const second = ingestFeishuWorkItems(db, {
     projectKey: 'rjcloud',
@@ -78,6 +83,7 @@ test('外部同步批量写入工作项并按 externalId 幂等更新', () => {
         description: '更新后的描述',
         priority: '中',
         owner: 'Alice',
+        projectLine: 'MACC,EWEB',
         updatedAt: '2026-10-29T03:00:00.000Z',
       },
     ],
@@ -103,6 +109,10 @@ test('外部同步批量写入工作项并按 externalId 幂等更新', () => {
   assert.equal(
     snapshot.items.find((item) => item.externalId === 'rjcloud:story:101')?.title,
     '实时需求（已更新）',
+  )
+  assert.equal(
+    snapshot.items.find((item) => item.externalId === 'rjcloud:story:101')?.projectLine,
+    'MACC,EWEB',
   )
   db.close()
 })
