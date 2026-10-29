@@ -20,7 +20,7 @@ import {
   UserRound,
   Workflow,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DeliveryDialog } from '../components/DeliveryDialog'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
@@ -28,14 +28,21 @@ import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
 import { codingSkills } from '../codingSkills'
 import { buildFeishuSyncInstruction } from '../feishuSyncInstruction'
+import {
+  DEFAULT_PAGE_SIZE,
+  PAGE_SIZE_OPTIONS,
+  buildPageTokens,
+  clampPage,
+  getPageCount,
+  paginateItems,
+  type PageSize,
+} from '../pagination'
 import { buildLocalSkillInstruction } from '../skillInstruction'
 import { useData } from '../store'
 import type { PageKey, WorkItem, WorkItemStatus, WorkItemType } from '../types'
 
 type TabKey = 'all' | WorkItemType
 type StatusFilter = 'all' | WorkItemStatus
-
-const PAGE_SIZE = 50
 
 export function WorkItems({
   onNavigate,
@@ -68,6 +75,8 @@ export function WorkItems({
   const [guideOpen, setGuideOpen] = useState(false)
   const [syncingType, setSyncingType] = useState<WorkItemType | null>(null)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE)
+  const tableCardRef = useRef<HTMLElement | null>(null)
 
   const counts = useMemo(
     () => ({
@@ -98,19 +107,30 @@ export function WorkItems({
     [search, statusFilter, tab, workItems],
   )
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const pageCount = getPageCount(filtered.length, pageSize)
+  const safePage = clampPage(page, filtered.length, pageSize)
   const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page],
+    () => paginateItems(filtered, safePage, pageSize),
+    [filtered, pageSize, safePage],
   )
+  const pageTokens = useMemo(() => buildPageTokens(safePage, pageCount), [pageCount, safePage])
+  const rangeStart = filtered.length === 0 ? 0 : (safePage - 1) * pageSize + 1
+  const rangeEnd = Math.min(safePage * pageSize, filtered.length)
 
   useEffect(() => {
     setPage(1)
-  }, [search, statusFilter, tab])
+  }, [pageSize, search, statusFilter, tab])
 
   useEffect(() => {
-    if (page > pageCount) setPage(pageCount)
-  }, [page, pageCount])
+    if (page !== safePage) setPage(safePage)
+  }, [page, safePage])
+
+  const changePage = (nextPage: number) => {
+    const target = clampPage(nextPage, filtered.length, pageSize)
+    if (target === safePage) return
+    setPage(target)
+    tableCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   const openDetail = async (item: WorkItem) => {
     setDetailItem(item)
@@ -300,7 +320,7 @@ export function WorkItems({
 
       <FeishuLiveSyncCard />
 
-      <article className="card work-items-card">
+      <article className="card work-items-card" ref={tableCardRef}>
         <div className="work-items-topbar">
           <div className="work-tabs">
             <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>
@@ -443,25 +463,59 @@ export function WorkItems({
           </div>
         )}
         <div className="table-footer">
-          <span>
-            显示 {paged.length} / {filtered.length} 个匹配项，共 {workItems.length} 个工作项
-          </span>
-          <div className="pagination">
+          <div className="table-footer-meta">
+            <span>
+              显示 {filtered.length === 0 ? '0' : `${rangeStart}-${rangeEnd}`} / {filtered.length} 个匹配项，共 {workItems.length} 个工作项
+            </span>
+            <label className="page-size-control">
+              每页
+              <select
+                className="compact-select"
+                value={pageSize}
+                onChange={(event) => {
+                  setPage(1)
+                  setPageSize(Number(event.target.value) as PageSize)
+                }}
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+              条
+            </label>
+          </div>
+          <nav className="pagination" aria-label="工作项分页">
             <button
-              disabled={page <= 1}
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              type="button"
+              disabled={safePage <= 1}
+              onClick={() => changePage(safePage - 1)}
             >
               上一页
             </button>
-            <button className="active">{page}</button>
-            <span className="muted-cell">/ {pageCount}</span>
+            {pageTokens.map((token, index) =>
+              token === 'ellipsis' ? (
+                <span key={`ellipsis-${index}`} className="pagination-ellipsis">…</span>
+              ) : (
+                <button
+                  key={token}
+                  type="button"
+                  className={token === safePage ? 'active' : ''}
+                  aria-current={token === safePage ? 'page' : undefined}
+                  aria-label={`第 ${token} 页`}
+                  onClick={() => changePage(token)}
+                >
+                  {token}
+                </button>
+              ),
+            )}
             <button
-              disabled={page >= pageCount}
-              onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+              type="button"
+              disabled={safePage >= pageCount}
+              onClick={() => changePage(safePage + 1)}
             >
               下一页
             </button>
-          </div>
+          </nav>
         </div>
       </article>
 
