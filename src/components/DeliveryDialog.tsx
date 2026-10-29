@@ -1,19 +1,207 @@
 import {
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
   Copy,
   FileText,
   FolderGit2,
   GitBranch,
   GitMerge,
+  Search,
   ShieldCheck,
   Sparkles,
   Terminal,
+  X,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useData } from '../store'
-import type { PipelineRun } from '../types'
+import type { PipelineRun, WorkItem } from '../types'
+import { searchWorkItems } from '../workItemSearch'
 import { Field, Modal, StatusBadge } from './ui'
+
+const MAX_VISIBLE_WORK_ITEMS = 50
+
+function WorkItemPicker({
+  items,
+  value,
+  onChange,
+}: {
+  items: WorkItem[]
+  value?: WorkItem
+  onChange: (item: WorkItem | undefined) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [searching, setSearching] = useState(false)
+  const [query, setQuery] = useState('')
+  const [activeIndex, setActiveIndex] = useState(0)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const selectedLabel = value ? `${value.id} · ${value.title}` : ''
+  const result = useMemo(
+    () => searchWorkItems(items, searching ? query : '', MAX_VISIBLE_WORK_ITEMS),
+    [items, query, searching],
+  )
+  const safeActiveIndex =
+    result.items.length === 0 ? -1 : Math.min(activeIndex, result.items.length - 1)
+
+  const close = () => {
+    setOpen(false)
+    setSearching(false)
+    setQuery('')
+  }
+
+  useEffect(() => {
+    if (!open) return
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) close()
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [open])
+
+  useEffect(() => {
+    setActiveIndex(0)
+  }, [open, query])
+
+  const choose = (item: WorkItem) => {
+    onChange(item)
+    close()
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (!open) {
+        setOpen(true)
+        setSearching(true)
+        setQuery('')
+      }
+      setActiveIndex((current) =>
+        result.items.length === 0 ? 0 : (Math.min(current, result.items.length - 1) + 1) % result.items.length,
+      )
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (!open) {
+        setOpen(true)
+        setSearching(true)
+        setQuery('')
+      }
+      setActiveIndex((current) =>
+        result.items.length === 0
+          ? 0
+          : (Math.min(current, result.items.length - 1) - 1 + result.items.length) %
+            result.items.length,
+      )
+      return
+    }
+    if (event.key === 'Enter' && open && safeActiveIndex >= 0) {
+      event.preventDefault()
+      choose(result.items[safeActiveIndex])
+      return
+    }
+    if (event.key === 'Escape' && open) {
+      event.preventDefault()
+      event.stopPropagation()
+      close()
+    }
+  }
+
+  return (
+    <div className="work-item-picker" ref={rootRef}>
+      <div className={`work-item-picker-control ${open ? 'open' : ''}`}>
+        <Search size={15} />
+        <input
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls="delivery-work-item-options"
+          aria-activedescendant={
+            open && safeActiveIndex >= 0
+              ? `delivery-work-item-option-${safeActiveIndex}`
+              : undefined
+          }
+          value={searching ? query : selectedLabel}
+          placeholder="输入编号、标题、负责人或项目线模糊搜索"
+          onFocus={() => {
+            setOpen(true)
+            setSearching(true)
+            setQuery('')
+          }}
+          onChange={(event) => {
+            setOpen(true)
+            setSearching(true)
+            setQuery(event.target.value)
+          }}
+          onKeyDown={handleKeyDown}
+        />
+        {value && !searching && (
+          <button
+            type="button"
+            className="work-item-picker-clear"
+            aria-label="清除已选工作项"
+            onClick={() => {
+              onChange(undefined)
+              setOpen(true)
+              setSearching(true)
+              setQuery('')
+            }}
+          >
+            <X size={13} />
+          </button>
+        )}
+        <ChevronDown size={14} className={open ? 'picker-chevron open' : 'picker-chevron'} />
+      </div>
+
+      {open && (
+        <div className="work-item-picker-menu">
+          <div className="work-item-picker-meta">
+            {result.total === 0
+              ? '没有匹配的工作项'
+              : result.total > result.items.length
+                ? `命中 ${result.total} 条，显示前 ${result.items.length} 条`
+                : `共 ${result.total} 条可交付工作项`}
+          </div>
+          <div className="work-item-picker-options" id="delivery-work-item-options" role="listbox">
+            {result.items.length === 0 && (
+              <div className="work-item-picker-empty">
+                没有匹配项，试试编号、标题、负责人或项目线关键词
+              </div>
+            )}
+            {result.items.map((item, index) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={item.id === value?.id}
+                id={`delivery-work-item-option-${index}`}
+                key={item.id}
+                className={`work-item-option ${index === safeActiveIndex ? 'active' : ''} ${
+                  item.id === value?.id ? 'selected' : ''
+                }`}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => choose(item)}
+              >
+                <span className={`work-item-option-type ${item.type}`}>
+                  {item.type === 'requirement' ? '需求' : '缺陷'}
+                </span>
+                <span className="work-item-option-copy">
+                  <strong>{item.title}</strong>
+                  <small>
+                    {[item.id, item.owner, item.projectLine].filter(Boolean).join(' · ')}
+                  </small>
+                </span>
+                <span className="work-item-option-status">
+                  {item.feishuStatus ?? item.status}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function DeliveryDialog({
   open,
@@ -36,7 +224,10 @@ export function DeliveryDialog({
   const [launching, setLaunching] = useState(false)
   const [localCommand, setLocalCommand] = useState('')
 
-  const availableItems = workItems.filter((item) => item.status !== '已关闭')
+  const availableItems = useMemo(
+    () => workItems.filter((item) => item.status !== '已关闭'),
+    [workItems],
+  )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
 
@@ -57,9 +248,9 @@ export function DeliveryDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialWorkItemId])
 
-  const handleItemChange = (id: string) => {
-    setWorkItemId(id)
-    const item = workItems.find((entry) => entry.id === id)
+  const handleItemChange = (item: WorkItem | undefined) => {
+    setWorkItemId(item?.id ?? '')
+    setLocalCommand('')
     if (item) handleRepoChange(item.repoId)
   }
 
@@ -168,15 +359,17 @@ export function DeliveryDialog({
     >
       <div className="delivery-dialog-grid">
         <div className="delivery-form">
-          <Field label="选择需求或缺陷" required>
-            <select value={workItemId} onChange={(event) => handleItemChange(event.target.value)}>
-              {availableItems.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.id} · {item.title}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <div className="field">
+            <span className="field-label">
+              选择需求或缺陷 <em>*</em>
+              <small>{availableItems.length} 条可交付</small>
+            </span>
+            <WorkItemPicker
+              items={availableItems}
+              value={selectedItem}
+              onChange={handleItemChange}
+            />
+          </div>
           <div className="field-row">
             <Field label="目标代码仓库" required>
               <select value={repoId} onChange={(event) => handleRepoChange(event.target.value)}>
