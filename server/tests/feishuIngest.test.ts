@@ -10,7 +10,7 @@ import { bootstrapFeishuIntegration } from '../services/feishuBootstrapService.j
 import { ingestFeishuWorkItems } from '../services/feishuIngestService.js'
 import { getFeishuStatus } from '../services/feishuIntegrationService.js'
 import { createRepository } from '../services/repositoryService.js'
-import { listWorkItems } from '../services/workItemService.js'
+import { importWorkItems, listWorkItems } from '../services/workItemService.js'
 
 function setup() {
   const db = createDatabase({ filename: ':memory:' })
@@ -95,6 +95,45 @@ test('外部同步批量写入工作项并按 externalId 幂等更新', () => {
   assert.equal(status.authMode, 'cli')
   assert.equal(status.projectKey, 'rjcloud')
   assert.match(status.lastSyncMessage ?? '', /外部 Meegle CLI/)
+  db.close()
+})
+
+test('不同 project key 前缀的同一飞书工作项不会重复写入', () => {
+  const { db, repository } = setup()
+  importWorkItems(db, [
+    {
+      type: 'requirement',
+      title: '旧格式需求',
+      description: '旧格式 externalId',
+      priority: '中',
+      repoId: repository.id,
+      owner: 'Alice',
+      source: 'feishu',
+      externalId: '66e039485659e0b44ce1d589:story:6955195522',
+    },
+  ])
+
+  const result = ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [
+      {
+        externalId: 'rjcloud:story:6955195522',
+        type: 'requirement',
+        title: '实时同步后的需求',
+        description: '相同工作项 ID，不同 project key 前缀',
+        priority: '高',
+        owner: 'Alice',
+        updatedAt: '2026-10-29T02:00:00.000Z',
+      },
+    ],
+  })
+
+  assert.equal(result.created, 0)
+  assert.equal(result.updated, 1)
+  const items = listWorkItems(db)
+  assert.equal(items.length, 1)
+  assert.equal(items[0].title, '实时同步后的需求')
   db.close()
 })
 

@@ -51,6 +51,11 @@ export interface WorkItemUpsertResult {
   updated: number
 }
 
+function externalIdentity(externalId: string): string {
+  const parts = externalId.split(':').filter(Boolean)
+  return parts.length >= 2 ? parts.slice(-2).join(':') : externalId
+}
+
 function rowToWorkItem(row: WorkItemRow): WorkItem {
   return {
     id: row.id,
@@ -202,8 +207,11 @@ export function upsertFeishuWorkItems(
     .get(repoId) as { branch: string } | undefined
   if (!repository) throw notFound('关联仓库')
 
-  const findExisting = db.prepare(
-    "SELECT id FROM work_items WHERE source = 'feishu' AND external_id = ?",
+  const existingRows = db
+    .prepare("SELECT id, external_id FROM work_items WHERE source = 'feishu' AND external_id IS NOT NULL")
+    .all() as Array<{ id: string; external_id: string }>
+  const existingByIdentity = new Map(
+    existingRows.map((row) => [externalIdentity(row.external_id), row.id]),
   )
   const updateExisting = db.prepare(
     `UPDATE work_items
@@ -219,8 +227,9 @@ export function upsertFeishuWorkItems(
   let created = 0
   let updated = 0
   for (const item of items) {
-    const existing = findExisting.get(item.externalId) as { id: string } | undefined
-    if (existing) {
+    const identity = externalIdentity(item.externalId)
+    const existingId = existingByIdentity.get(identity)
+    if (existingId) {
       updateExisting.run(
         item.title,
         item.description,
@@ -229,7 +238,7 @@ export function upsertFeishuWorkItems(
         repository.branch,
         item.owner,
         item.updatedAt,
-        existing.id,
+        existingId,
       )
       updated += 1
       continue
@@ -253,6 +262,7 @@ export function upsertFeishuWorkItems(
       item.updatedAt,
       item.updatedAt,
     )
+    existingByIdentity.set(identity, id)
     created += 1
   }
 

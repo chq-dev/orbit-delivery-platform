@@ -105,6 +105,9 @@ export function WorkItems({
   const externalFeishuSync =
     feishuIntegration.connected && feishuIntegration.authMode === 'cli'
   const frontendFeishuSync = feishuSnapshot.configured
+  const backendFeishuCount = workItems.filter(
+    (item) => item.source === 'feishu' && !item.frontendOnly,
+  ).length
 
   const openFeishuSync = async (type: WorkItemType) => {
     setImportMode(type)
@@ -198,7 +201,9 @@ export function WorkItems({
           <span>
             <strong>rjcloud 飞书项目</strong>
             <small>
-              {frontendFeishuSync
+              {feishuSnapshot.error && backendFeishuCount > 0
+                ? `前端快照未生成，已从平台加载 ${backendFeishuCount} 条飞书工作项`
+                : frontendFeishuSync
                 ? feishuSnapshot.loading
                   ? '正在读取前端同步快照…'
                   : feishuSnapshot.error
