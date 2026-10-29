@@ -1,7 +1,9 @@
 import { Router, type Request } from 'express'
+import { config } from './config.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
 import type { CredentialVault } from './security/vault.js'
+import { assertFeishuIngestAuthorized } from './security/ingestAuth.js'
 import { createAccount, importAccounts, listAccounts } from './services/accountService.js'
 import {
   connectFeishu,
@@ -12,6 +14,7 @@ import {
   testFeishuConnection,
 } from './services/feishuIntegrationService.js'
 import { listFeishuInbox } from './services/inboxService.js'
+import { ingestFeishuWorkItems } from './services/feishuIngestService.js'
 import {
   advancePipeline,
   cancelPipeline,
@@ -36,7 +39,28 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.get('/health', (_request, response) => {
     db.prepare('SELECT 1').get()
-    response.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() })
+    const feishu = getFeishuStatus(db)
+    const workItems = db.prepare('SELECT COUNT(*) AS count FROM work_items').get() as {
+      count: number
+    }
+    response.json({
+      status: 'ok',
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+      feishu: {
+        mode: feishu.authMode,
+        autoSyncEnabled: config.feishuAutoSync,
+        credentialsConfigured: Boolean(
+          config.feishuAccessToken ||
+            (config.feishuPluginId && config.feishuPluginSecret && config.feishuUserKey),
+        ),
+        ingestTokenConfigured: Boolean(config.feishuIngestToken),
+        connected: feishu.connected,
+        lastSyncAt: feishu.lastSyncAt,
+        lastSyncStatus: feishu.lastSyncStatus,
+        workItemCount: workItems.count,
+      },
+    })
   })
 
   router.get('/bootstrap', (_request, response) => {
@@ -100,6 +124,14 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.post('/integrations/feishu/sync', async (_request, response) => {
     response.json(await syncFeishu(db, vault, 'manual'))
+  })
+
+  router.post('/integrations/feishu/ingest', (request, response) => {
+    assertFeishuIngestAuthorized(
+      { headers: request.headers, ip: request.ip },
+      config.feishuIngestToken,
+    )
+    response.status(201).json(ingestFeishuWorkItems(db, request.body))
   })
 
   router.post('/integrations/feishu/disconnect', (_request, response) => {

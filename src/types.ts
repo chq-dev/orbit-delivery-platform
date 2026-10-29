@@ -144,7 +144,7 @@ export interface FeishuInboxItem {
 export interface FeishuIntegrationStatus {
   connected: boolean
   status?: 'active' | 'error'
-  authMode?: 'token' | 'plugin'
+  authMode?: 'token' | 'plugin' | 'cli'
   projectKey?: string
   pluginId?: string
   pluginSecretHint?: string

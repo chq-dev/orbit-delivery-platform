@@ -284,7 +284,7 @@ export function WorkItems({
             <h3>{workItems.length === 0 ? '尚未同步到工作项' : '没有匹配的工作项'}</h3>
             <p>
               {workItems.length === 0
-                ? '请检查部署环境中的飞书访问凭证并确认启动同步成功，列表会自动刷新。'
+                ? '请在可访问飞书的机器上运行 npm run sync:feishu，或配置后端飞书访问凭证；同步完成后列表会自动刷新。'
                 : '调整筛选条件，或创建一个新的需求 / 缺陷。'}
             </p>
           </div>

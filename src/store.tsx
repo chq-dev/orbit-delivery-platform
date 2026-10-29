@@ -160,8 +160,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const feishuConnected = feishuIntegration.connected
   useEffect(() => {
-    if (loading || !feishuConnected) return
-    const timer = window.setInterval(() => void reload(true), 15_000)
+    if (loading) return
+    const timer = window.setInterval(
+      () => void reload(true),
+      feishuConnected ? 15_000 : 30_000,
+    )
     return () => window.clearInterval(timer)
   }, [feishuConnected, loading, reload])
 

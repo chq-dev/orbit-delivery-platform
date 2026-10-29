@@ -6,6 +6,7 @@ import { formatDisplayTime, nowIso } from '../domain/time.js'
 import type { WorkItemType } from '../domain/types.js'
 import { optionalText, requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
+import { getExternalFeishuStatus } from './feishuIngestService.js'
 import { FeishuProjectClient, FeishuProjectError } from './feishuClient.js'
 import { upsertFeishuWorkItems } from './workItemService.js'
 
@@ -53,7 +54,7 @@ interface AccessTokenRow {
 export interface FeishuIntegrationStatus {
   connected: boolean
   status?: 'active' | 'error'
-  authMode?: 'token' | 'plugin'
+  authMode?: 'token' | 'plugin' | 'cli'
   projectKey?: string
   pluginId?: string
   pluginSecretHint?: string
@@ -219,7 +220,13 @@ function normalizedInput(input: FeishuConnectInput) {
 export function getFeishuStatus(db: AppDatabase): FeishuIntegrationStatus {
   const row = getIntegrationRow(db)
   if (!row) {
-    return { connected: false, webhookConfigured: false, eventPath: EVENT_PATH }
+    return (
+      getExternalFeishuStatus(db) ?? {
+        connected: false,
+        webhookConfigured: false,
+        eventPath: EVENT_PATH,
+      }
+    )
   }
   const tokenRow = getAccessTokenRow(db)
   return {

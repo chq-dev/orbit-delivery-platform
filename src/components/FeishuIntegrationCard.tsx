@@ -115,6 +115,7 @@ export function FeishuIntegrationCard() {
   }
 
   const connected = feishuIntegration.connected
+  const externalSync = connected && feishuIntegration.authMode === 'cli'
   const repository = repositories.find((item) => item.id === feishuIntegration.defaultRepoId)
   const status =
     connected && feishuIntegration.status === 'active'
@@ -123,9 +124,11 @@ export function FeishuIntegrationCard() {
         ? 'warning'
         : 'pending'
   const statusLabel = connected
-    ? feishuIntegration.status === 'active'
-      ? '已绑定'
-      : '连接异常'
+    ? externalSync
+      ? '外部同步'
+      : feishuIntegration.status === 'active'
+        ? '已绑定'
+        : '连接异常'
     : '未绑定'
 
   return (
@@ -137,8 +140,12 @@ export function FeishuIntegrationCard() {
               <Link2 size={18} />
             </span>
             <div>
-              <h2>飞书项目绑定</h2>
-              <p>使用当前飞书项目访问 Token 同步需求和缺陷，无需创建开放平台插件账号。</p>
+              <h2>飞书项目接入</h2>
+              <p>
+                {externalSync
+                  ? '由可访问飞书的 Meegle CLI 同步器写入需求和缺陷，后端无需直连飞书。'
+                  : '使用当前飞书项目访问 Token 同步需求和缺陷，无需创建开放平台插件账号。'}
+              </p>
             </div>
           </div>
           <StatusBadge status={status} label={statusLabel} />
@@ -151,7 +158,12 @@ export function FeishuIntegrationCard() {
                 <small>项目标识</small>
                 <strong>{feishuIntegration.projectKey}</strong>
               </span>
-              {feishuIntegration.authMode === 'token' ? (
+              {externalSync ? (
+                <span>
+                  <small>同步方式</small>
+                  <strong>Meegle CLI 外部同步</strong>
+                </span>
+              ) : feishuIntegration.authMode === 'token' ? (
                 <span>
                   <small>访问凭证</small>
                   <strong>{feishuIntegration.accessTokenHint || '抓包 Token'}</strong>
@@ -194,8 +206,15 @@ export function FeishuIntegrationCard() {
                 )}
                 {feishuIntegration.lastSyncMessage || '等待首次同步'}
               </span>
-              <code>{feishuIntegration.eventPath}</code>
+              <code>{externalSync ? 'npm run sync:feishu' : feishuIntegration.eventPath}</code>
             </div>
+            {externalSync && (
+              <div className="feishu-integration-status-row">
+                <span>
+                  <CheckCircle2 size={14} /> 在能访问飞书的机器上运行同步器，平台会自动刷新列表
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="feishu-integration-empty">
@@ -208,24 +227,33 @@ export function FeishuIntegrationCard() {
         )}
 
         <div className="feishu-integration-actions">
-          <button className="btn btn-primary" onClick={openDialog} disabled={busy !== null}>
-            <Settings2 size={15} /> {connected ? '更新绑定' : '配置绑定'}
+          <button
+            className="btn btn-primary"
+            onClick={openDialog}
+            disabled={busy !== null || externalSync}
+            title={externalSync ? '外部同步模式由 Meegle CLI 管理' : undefined}
+          >
+            <Settings2 size={15} />{' '}
+            {externalSync ? '外部同步已启用' : connected ? '更新绑定' : '配置绑定'}
           </button>
           <button
             className="btn btn-secondary"
             onClick={runTest}
-            disabled={!connected || busy !== null}
+            disabled={!connected || externalSync || busy !== null}
+            title={externalSync ? '外部同步模式由 Meegle CLI 负责连接测试' : undefined}
           >
             <RefreshCw size={15} className={busy === 'test' ? 'spin' : ''} /> 测试连接
           </button>
           <button
             className="btn btn-secondary"
             onClick={runSync}
-            disabled={!connected || busy !== null}
+            disabled={!connected || externalSync || busy !== null}
+            title={externalSync ? '请在同步机执行 npm run sync:feishu' : undefined}
           >
-            <CloudDownload size={15} className={busy === 'sync' ? 'spin' : ''} /> 同步工作项
+            <CloudDownload size={15} className={busy === 'sync' ? 'spin' : ''} />{' '}
+            {externalSync ? '外部同步运行中' : '同步工作项'}
           </button>
-          {connected && (
+          {connected && !externalSync && (
             <button
               className="text-btn feishu-disconnect"
               onClick={disconnect}

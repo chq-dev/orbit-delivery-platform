@@ -28,6 +28,9 @@ export async function bootstrapFeishuIntegration(
 
   const status = getFeishuStatus(db)
   if (!hasEnvironmentCredentials()) {
+    if (status.authMode === 'cli') {
+      return { connected: true, configuredFromEnvironment: false }
+    }
     if (!status.connected) {
       return { connected: false, configuredFromEnvironment: false }
     }

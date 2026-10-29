@@ -8,6 +8,8 @@
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
     "start:server": "tsx server/index.ts",
+    "sync:feishu": "tsx server/cli/feishuSync.ts",
+    "sync:feishu:watch": "tsx server/cli/feishuSync.ts --watch",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "test:server": "node --import tsx --test server/tests/*.test.ts",
     "build": "tsc -b && npm run typecheck:server && vite build",

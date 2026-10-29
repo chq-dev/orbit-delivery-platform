@@ -57,7 +57,8 @@ const pipelineTimer = setInterval(() => {
 }, config.pipelineStepMs)
 
 const feishuSyncTimer = setInterval(() => {
-  if (!getFeishuStatus(db).connected) return
+  const status = getFeishuStatus(db)
+  if (status.authMode !== 'token' && status.authMode !== 'plugin') return
   void syncFeishu(db, vault, 'schedule').catch((error) => {
     console.error('飞书定时同步失败', error)
   })

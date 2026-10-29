@@ -25,6 +25,7 @@ export const config = {
   feishuAutoSync: process.env.FEISHU_AUTO_SYNC !== 'false',
   feishuProjectKey: process.env.FEISHU_PROJECT_KEY ?? 'rjcloud',
   feishuAccessToken: process.env.FEISHU_ACCESS_TOKEN ?? '',
+  feishuIngestToken: process.env.FEISHU_INGEST_TOKEN ?? '',
   feishuPluginId: process.env.FEISHU_PLUGIN_ID ?? '',
   feishuPluginSecret: process.env.FEISHU_PLUGIN_SECRET ?? '',
   feishuUserKey: process.env.FEISHU_USER_KEY ?? '',

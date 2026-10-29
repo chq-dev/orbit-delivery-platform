@@ -34,6 +34,7 @@ FEISHU_PROJECT_BASE_URL=https://project.feishu.cn
 FEISHU_SYNC_INTERVAL_MS=300000
 FEISHU_AUTO_SYNC=true
 FEISHU_ACCESS_TOKEN=
+FEISHU_INGEST_TOKEN=
 FEISHU_USER_KEY=
 FEISHU_PROJECT_KEY=rjcloud
 FEISHU_REQUIREMENT_TYPE_KEY=story
@@ -42,7 +43,29 @@ FEISHU_DEFECT_TYPE_KEY=issue
 
 `VAULT_KEY` 用于 AES-256-GCM 加密平台账号密码，生产环境必须显式配置且妥善保管；更换密钥后旧凭据将无法解密。
 
-首次部署时先配置飞书访问凭证，服务会在监听端口前完成一次同步，把真实需求和缺陷直接写入「需求与缺陷」列表；后续按 `FEISHU_SYNC_INTERVAL_MS` 定时刷新。数据库路径仍建议挂载持久卷，避免重新部署后丢失本地状态：
+### 跨服务器飞书同步（推荐）
+
+如果平台服务器不能直接访问 `project.feishu.cn`，不要在前端直连飞书，也不要把抓包 Token 放到浏览器。请在**能访问飞书的机器**上运行外部同步器：
+
+```bash
+# 1. 安装并登录官方 Meegle CLI（首次授权一次，后续无需手工绑定）
+npm install -g @lark-project/meegle@1.0.27
+meegle config set host project.feishu.cn
+meegle auth login --device-code
+
+# 2. 配置平台地址和同步凭证
+export FEISHU_PROJECT_KEY=rjcloud
+export PLATFORM_BASE_URL=http://8.145.45.84:8787
+export PLATFORM_SYNC_TOKEN='与服务器 FEISHU_INGEST_TOKEN 相同的值'
+
+# 3. 拉取真实需求/缺陷并写入平台；watch 模式可常驻轮询
+npm run sync:feishu
+npm run sync:feishu:watch
+```
+
+同步器使用官方 `meegle workitem query` 按 `story` 和 `issue` 拉取数据，默认增量查询并按外部工作项 ID 幂等更新。首次运行会做全量同步，之后按 `FEISHU_SYNC_INTERVAL_MS` 轮询；可用 `FEISHU_SYNC_FULL=true` 强制全量。服务器侧的 `FEISHU_INGEST_TOKEN` 用于保护写入接口；未配置时仅允许本机回环调用。
+
+首次部署时可选择后端直连飞书，或在另一台能访问飞书的机器上运行外部同步器。两者都会把真实需求和缺陷写入「需求与缺陷」列表；外部同步模式由同步器按 `FEISHU_SYNC_INTERVAL_MS` 轮询。数据库路径仍建议挂载持久卷，避免重新部署后丢失本地状态：
 
 1. 在「平台账号」绑定 Git 账号。
 2. 在「代码仓库」接入 Git 仓库并关联账号，填写本机实际检出的绝对路径（例如 `/Users/chenhuaqu/sme/sme-main`）。
@@ -66,7 +89,7 @@ npm run typecheck:server
 
 - **代码仓库**：录入 Git 地址、默认分支、本地代码路径、语言与认证账号，支持分支和本地路径修改、仓库健康状态和最近交付查看。
 - **平台账号**：统一管理 Git、飞书、编译系统、设备端账号；支持手动绑定与 CSV/TXT 批量导入。
-- **飞书项目接入**：支持部署环境注入访问凭证自动同步，也可在页面绑定；同步结果直接更新需求与缺陷列表，支持定时刷新、事件回调和缺陷关闭状态回写。
+- **飞书项目接入**：支持后端直连、官方 Meegle CLI 跨服务器外部同步和页面绑定；同步结果直接更新需求与缺陷列表，支持定时刷新、事件回调和缺陷关闭状态回写。
 - **需求与缺陷**：创建工作项、关联仓库和分支、查看详情；缺陷测试通过后自动关闭。
 - **一键交付**：自动生成开发设计报告与集成报告，在配置的本地路径创建真实 Git 提交，测试验收通过后推送目标分支，并完成编译、设备升级和报告归档。
 - **实时流水线**：九阶段状态机、执行进度、阶段日志、运行信息、设计/集成/测试报告查看入口和测试结果摘要。
@@ -96,6 +119,7 @@ server/
 - `POST /api/work-items`、`POST /api/work-items/import`。
 - `GET /api/integrations/feishu/status`、`POST /api/integrations/feishu/connect`。
 - `POST /api/integrations/feishu/test`、`POST /api/integrations/feishu/sync`。
+- `POST /api/integrations/feishu/ingest`：供 Meegle CLI 外部同步器写入工作项，使用 `FEISHU_INGEST_TOKEN` 鉴权。
 - `POST /api/integrations/feishu/events`、`POST /api/integrations/feishu/disconnect`。
 - `POST /api/pipelines`、`GET /api/pipelines/:id`、`POST /api/pipelines/:id/cancel`。
 - `GET /api/reports`、`GET /api/reports/:id`、`GET /api/reports/:id/markdown`。
@@ -103,7 +127,12 @@ server/
 
 ## 飞书项目绑定接入
 
-飞书项目页面需要登录，服务端不能匿名抓取 HTML。实时数据通过飞书开放接口获取，推荐在部署环境直接注入访问 Token，无需在页面手动绑定：
+飞书项目页面需要登录，服务端不能匿名抓取 HTML。平台支持两条实时同步路径：
+
+- **跨服务器外部同步（推荐）**：在能访问飞书的机器上运行官方 `meegle` CLI，通过 `POST /api/integrations/feishu/ingest` 写入平台。后端无需访问飞书，也不需要配置飞书 Token。
+- **后端直连**：平台服务器本身能访问 `project.feishu.cn` 时，在部署环境注入访问 Token，启动时自动同步。
+
+后端直连配置示例：
 
 ```bash
 FEISHU_AUTO_SYNC=true
@@ -115,7 +144,7 @@ FEISHU_DEFECT_TYPE_KEY=issue
 FEISHU_DEFAULT_REPO_ID=repo-1
 ```
 
-服务启动时会自动完成绑定校验并同步；同步到的工作项按 `source + external_id` 幂等更新，不会重复插入。若未注入凭证且页面也未绑定，服务端会输出明确的配置提示，列表保持为空。
+服务启动时会自动完成绑定校验并同步；同步到的工作项按 `source + external_id` 幂等更新，不会重复插入。若未注入凭证且页面也未绑定，服务端会输出明确的配置提示，列表在运行外部同步器后自动填充。
 
 如需在页面绑定，当前默认使用“抓包 Token”模式，不需要创建开放平台插件：
 
@@ -133,7 +162,7 @@ FEISHU_DEFAULT_REPO_ID=repo-1
 
 ## 本地操作与 Codex Skill
 
-- 飞书需求/缺陷通过部署环境凭证自动同步或平台内弹窗同步，不会打开外部项目页面。
+- 飞书需求/缺陷通过官方 Meegle CLI 外部同步、部署环境凭证或平台内弹窗同步，不会打开外部项目页面。
 - Git 仓库地址只提供本地复制，不跳转代码托管页面。
 - 工作项详情可生成 `$rjcloud-local-delivery` 指令并复制到 Codex，由 Codex 在工作区内完成编码、构建、升级与测试。
 - Skill 指令要求先产出开发设计报告，再编码并执行集成验证、生成集成报告，之后才创建本地提交；平台只在测试验收通过后推送配置分支，生产设备升级等其他外部写入仍需确认。
@@ -169,7 +198,7 @@ node ~/.coding-skills/source/bin/skill.cjs update \
 
 当前业务数据由 SQLite 持久化，前端通过 `/api` 读取和写入；流水线由服务端调度器按阶段推进，前端轮询展示进度。账号密码使用 AES-256-GCM 加密存储，接口只返回掩码提示，不返回明文或密文。
 
-当前 Git 链路会读取仓库配置的本地路径，在提交阶段创建真实提交，并在自动化测试验收通过后推送到配置分支；未配置本地路径时保留模拟执行模式。编译系统和设备升级服务仍为本地交付平台适配层。飞书项目支持抓包 Token 直连和旧插件凭据兼容，包含真实 Token 校验、工作项同步、事件回调和缺陷关闭回写。后续可在 `server/services/` 中继续替换其余外部系统适配器，数据库与 API 契约可保持不变。
+当前 Git 链路会读取仓库配置的本地路径，在提交阶段创建真实提交，并在自动化测试验收通过后推送到配置分支；未配置本地路径时保留模拟执行模式。编译系统和设备升级服务仍为本地交付平台适配层。飞书项目支持官方 Meegle CLI 外部同步、抓包 Token 直连和旧插件凭据兼容，包含真实 Token 校验、工作项同步、事件回调和缺陷关闭回写。后续可在 `server/services/` 中继续替换其余外部系统适配器，数据库与 API 契约可保持不变。
 
 本机已有的 `sme-main` 检出位于 `~/sme/sme-main`。本地路径按仓库配置保存，平台中的 skill 指令会使用该路径执行本地设计、编码、集成验证、构建与测试。
 
