@@ -25,6 +25,7 @@ import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
 import { codingSkills } from '../codingSkills'
+import { buildFeishuSyncInstruction } from '../feishuSyncInstruction'
 import { buildLocalSkillInstruction } from '../skillInstruction'
 import { useData } from '../store'
 import type { PageKey, WorkItem, WorkItemStatus, WorkItemType } from '../types'
@@ -111,17 +112,6 @@ export function WorkItems({
 
   const openFeishuSync = async (type: WorkItemType) => {
     setImportMode(type)
-    if (frontendFeishuSync) {
-      setSyncingType(type)
-      try {
-        await syncFeishu()
-      } catch {
-        if (!feishuIntegration.connected) setGuideOpen(true)
-      } finally {
-        setSyncingType(null)
-      }
-      return
-    }
     if (directFeishuSync) {
       setSyncingType(type)
       try {
@@ -134,7 +124,22 @@ export function WorkItems({
       }
       return
     }
-    if (externalFeishuSync && feishuInbox.some((item) => item.type === type)) {
+    if (externalFeishuSync) {
+      setGuideOpen(true)
+      return
+    }
+    if (frontendFeishuSync) {
+      setSyncingType(type)
+      try {
+        await syncFeishu()
+      } catch {
+        if (!feishuIntegration.connected) setGuideOpen(true)
+      } finally {
+        setSyncingType(null)
+      }
+      return
+    }
+    if (feishuInbox.some((item) => item.type === type)) {
       setImportOpen(true)
       return
     }
@@ -147,6 +152,19 @@ export function WorkItems({
     try {
       await navigator.clipboard.writeText(buildLocalSkillInstruction(detailItem, repository))
       notify('本地 Skill 指令已复制', `${detailItem.id} 已生成可执行指令`, 'success')
+    } catch {
+      notify('复制失败', '浏览器未授予剪贴板权限，请手动选择指令内容', 'warning')
+    }
+  }
+
+  const copyFeishuSyncInstruction = async () => {
+    const instruction = buildFeishuSyncInstruction({
+      apiBase: window.location.origin,
+      projectKey: feishuIntegration.projectKey,
+    })
+    try {
+      await navigator.clipboard.writeText(instruction)
+      notify('Codex 飞书同步指令已复制', '粘贴到本机 Codex 即可拉取实时数据并回写平台', 'success')
     } catch {
       notify('复制失败', '浏览器未授予剪贴板权限，请手动选择指令内容', 'warning')
     }
@@ -395,6 +413,9 @@ export function WorkItems({
         size="lg"
         footer={
           <div className="modal-footer-actions">
+            <button className="btn btn-secondary" onClick={() => void copyFeishuSyncInstruction()}>
+              <Copy size={15} /> 复制 Codex 同步指令
+            </button>
             <button className="btn btn-primary" onClick={() => setGuideOpen(false)}>
               我知道了
             </button>
@@ -402,6 +423,22 @@ export function WorkItems({
         }
       >
         <div className="feishu-connect-form">
+          <Field label="方案 A：通过本机 Codex 执行（适合当前服务器）">
+            <div className="credential-note">
+              <Sparkles size={16} />
+              <div>
+                <p>
+                  Codex 在能访问飞书的客户端执行 Skill，拉取实时需求/缺陷后写回当前平台。
+                  点击下方“复制 Codex 同步指令”，粘贴到本机 Codex 即可。
+                </p>
+                <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                  {`Use $feishu-project-sync to sync live rjcloud data into ${window.location.origin}
+FEISHU_SYNC_FULL=true npm run sync:feishu
+npm run sync:feishu:watch`}
+                </code>
+              </div>
+            </div>
+          </Field>
           <div className="credential-note">
             <ShieldCheck size={16} />
             <div>
@@ -412,7 +449,7 @@ export function WorkItems({
               </p>
             </div>
           </div>
-          <Field label="方案 A：外部同步机（推荐，适合当前服务器）">
+          <Field label="方案 B：外部同步机">
             <div className="credential-note">
               <KeyRound size={16} />
               <div>
@@ -432,7 +469,7 @@ npm run sync:feishu:watch`}
               </div>
             </div>
           </Field>
-          <Field label="方案 B：服务器直连（需要能访问飞书）">
+          <Field label="方案 C：服务器直连（需要能访问飞书）">
             <div className="credential-note">
               <ShieldCheck size={16} />
               <div>
@@ -449,7 +486,7 @@ FEISHU_DEFECT_TYPE_KEY=issue`}
               </div>
             </div>
           </Field>
-          <Field label="方案 C：纯前端快照（不经过业务后端）">
+          <Field label="方案 D：纯前端快照（仅展示，不会触发飞书同步）">
             <div className="credential-note">
               <CloudDownload size={16} />
               <div>

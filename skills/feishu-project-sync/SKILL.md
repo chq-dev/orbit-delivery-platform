@@ -15,6 +15,10 @@ installed, use that skill for URL decoding, Auth Guard, MQL grammar, and
 work-item command discovery; this project skill only owns the platform ingest
 and local sync workflow.
 
+This skill is intended to be executed by Codex on the sync host. The Orbit
+server may be unable to reach Feishu; that is expected. Codex pulls from Feishu
+on the client and pushes the reconciled result to the platform ingest API.
+
 ## Preconditions
 
 - The sync host can reach both `project.feishu.cn` and the platform API.
@@ -75,6 +79,10 @@ requests from the platform server itself.
 
 ## Run
 
+When invoked from the Orbit page, use the copied Codex instruction as the task
+contract. Verify the authenticated host and platform write token before syncing.
+Never ask the Codex client to read browser cookies or Feishu page HTML.
+
 One-shot sync, suitable for cron or a manual check:
 
 ```bash
@@ -86,6 +94,10 @@ Continuous polling:
 ```bash
 npm run sync:feishu:watch
 ```
+
+For unattended operation, keep the watch process alive under launchd, systemd,
+pm2, or cron. A one-shot command does not provide real-time updates; verify the
+scheduler or watch process is still running after the command returns.
 
 Forced full refresh:
 
