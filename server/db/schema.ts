@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   owner TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('local', 'feishu')),
   external_id TEXT,
+  archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (source, external_id)

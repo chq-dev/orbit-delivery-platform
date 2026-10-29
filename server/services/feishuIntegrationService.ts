@@ -8,7 +8,10 @@ import { optionalText, requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
 import { getExternalFeishuStatus } from './feishuIngestService.js'
 import { FeishuProjectClient, FeishuProjectError } from './feishuClient.js'
-import { upsertFeishuWorkItems } from './workItemService.js'
+import {
+  reconcileFeishuWorkItems,
+  upsertFeishuWorkItems,
+} from './workItemService.js'
 
 const INTEGRATION_ID = 'feishu-main'
 const EVENT_PATH = '/api/integrations/feishu/events'
@@ -90,6 +93,7 @@ export interface FeishuConnectInput {
 export interface FeishuSyncResult {
   fetched: number
   upserted: number
+  archived: number
   skipped: number
   message: string
   syncedAt: string
@@ -435,6 +439,7 @@ async function performSync(
     )
     const now = nowIso()
     let message = ''
+    let archived = 0
 
     db.transaction(() => {
       const upsert = db.prepare(
@@ -463,7 +468,18 @@ async function performSync(
         )
       }
       const workItems = upsertFeishuWorkItems(db, row.default_repo_id, result.items)
+      const reconciled =
+        result.skipped === 0 && result.items.length > 0
+          ? reconcileFeishuWorkItems(
+              db,
+              result.items.map((item) => item.externalId),
+              now,
+            )
+          : { archived: 0, inboxRemoved: 0 }
+      archived = reconciled.archived
       message = `已同步 ${result.items.length} 条飞书工作项，列表新增 ${workItems.created} 条、更新 ${workItems.updated} 条${
+        reconciled.archived > 0 ? `、归档 ${reconciled.archived} 条飞书已删除项` : ''
+      }${
         result.skipped > 0 ? `，跳过 ${result.skipped} 条无效数据` : ''
       }`
       db.prepare(
@@ -478,6 +494,7 @@ async function performSync(
     return {
       fetched: result.fetched,
       upserted: result.items.length,
+      archived,
       skipped: result.skipped,
       message,
       syncedAt: formatDisplayTime(now),

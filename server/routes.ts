@@ -41,9 +41,9 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   router.get('/health', (_request, response) => {
     db.prepare('SELECT 1').get()
     const feishu = getFeishuStatus(db)
-    const workItems = db.prepare('SELECT COUNT(*) AS count FROM work_items').get() as {
-      count: number
-    }
+    const workItems = db
+      .prepare('SELECT COUNT(*) AS count FROM work_items WHERE archived_at IS NULL')
+      .get() as { count: number }
     response.json({
       status: 'ok',
       database: 'connected',

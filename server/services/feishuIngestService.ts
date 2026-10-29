@@ -6,6 +6,7 @@ import { formatDisplayTime, nowIso } from '../domain/time.js'
 import type { Priority, WorkItemType } from '../domain/types.js'
 import { oneOf, optionalText, requiredText } from '../domain/validation.js'
 import {
+  reconcileFeishuWorkItems,
   upsertFeishuWorkItems,
   type SyncedFeishuWorkItem,
 } from './workItemService.js'
@@ -18,6 +19,8 @@ export interface FeishuIngestInput {
   projectKey: unknown
   repoId: unknown
   items: unknown
+  reconcile?: unknown
+  activeExternalIds?: unknown
 }
 
 export interface FeishuIngestResult {
@@ -25,6 +28,7 @@ export interface FeishuIngestResult {
   upserted: number
   created: number
   updated: number
+  archived: number
   skipped: number
   message: string
   syncedAt: string
@@ -77,6 +81,23 @@ export function ingestFeishuWorkItems(
   const rawItems = Array.isArray(input.items) ? input.items : []
   if (rawItems.length > 500) throw unprocessable('单次最多接收 500 条工作项')
 
+  const reconcile = input.reconcile === true
+  let activeExternalIds: string[] = []
+  if (reconcile) {
+    if (!Array.isArray(input.activeExternalIds)) {
+      throw unprocessable('删除对账必须提供 activeExternalIds')
+    }
+    if (input.activeExternalIds.length > 10_000) {
+      throw unprocessable('单次删除对账最多接收 10000 条活动工作项')
+    }
+    activeExternalIds = input.activeExternalIds.map((externalId) =>
+      requiredText(externalId, '活动工作项编号', { max: 200 }),
+    )
+    if (activeExternalIds.length === 0) {
+      throw unprocessable('完整同步未返回活动工作项，已跳过删除对账')
+    }
+  }
+
   const repository = db
     .prepare('SELECT id FROM repositories WHERE id = ?')
     .get(repoId) as { id: string } | undefined
@@ -112,7 +133,12 @@ export function ingestFeishuWorkItems(
     }
 
     const upserted = upsertFeishuWorkItems(db, repoId, items)
-    const message = `已接收外部飞书同步 ${items.length} 条工作项，新增 ${upserted.created} 条、更新 ${upserted.updated} 条`
+    const reconciled = reconcile
+      ? reconcileFeishuWorkItems(db, activeExternalIds)
+      : { archived: 0, inboxRemoved: 0 }
+    const message = `已接收外部飞书同步 ${items.length} 条工作项，新增 ${upserted.created} 条、更新 ${upserted.updated} 条${
+      reconciled.archived > 0 ? `，归档 ${reconciled.archived} 条飞书已删除项` : ''
+    }`
 
     const integration = db
       .prepare('SELECT id FROM feishu_integrations WHERE id = ?')
@@ -143,6 +169,7 @@ export function ingestFeishuWorkItems(
       upserted: items.length,
       created: upserted.created,
       updated: upserted.updated,
+      archived: reconciled.archived,
       skipped: 0,
       message,
       syncedAt: formatDisplayTime(now),
@@ -154,14 +181,17 @@ export function ingestFeishuWorkItems(
 
 export function getExternalFeishuStatus(db: AppDatabase) {
   const count = db
-    .prepare("SELECT COUNT(*) AS count FROM work_items WHERE source = 'feishu'")
+    .prepare(
+      `SELECT COUNT(*) AS count FROM work_items
+       WHERE source = 'feishu' AND archived_at IS NULL`,
+    )
     .get() as { count: number }
   if (count.count === 0) return undefined
 
   const latest = db
     .prepare(
       `SELECT repo_id, updated_at FROM work_items
-       WHERE source = 'feishu'
+       WHERE source = 'feishu' AND archived_at IS NULL
        ORDER BY updated_at DESC, id DESC LIMIT 1`,
     )
     .get() as { repo_id: string; updated_at: string } | undefined

@@ -51,6 +51,11 @@ export interface WorkItemUpsertResult {
   updated: number
 }
 
+export interface FeishuReconcileResult {
+  archived: number
+  inboxRemoved: number
+}
+
 function externalIdentity(externalId: string): string {
   const parts = externalId.split(':').filter(Boolean)
   return parts.length >= 2 ? parts.slice(-2).join(':') : externalId
@@ -82,13 +87,15 @@ function selectSql(): string {
 
 export function listWorkItems(db: AppDatabase): WorkItem[] {
   const rows = db
-    .prepare(`${selectSql()} ORDER BY created_at DESC, id DESC`)
+    .prepare(`${selectSql()} WHERE archived_at IS NULL ORDER BY created_at DESC, id DESC`)
     .all() as WorkItemRow[]
   return rows.map(rowToWorkItem)
 }
 
 export function getWorkItem(db: AppDatabase, id: string): WorkItem {
-  const row = db.prepare(`${selectSql()} WHERE id = ?`).get(id) as WorkItemRow | undefined
+  const row = db
+    .prepare(`${selectSql()} WHERE id = ? AND archived_at IS NULL`)
+    .get(id) as WorkItemRow | undefined
   if (!row) throw notFound('工作项')
   return rowToWorkItem(row)
 }
@@ -215,7 +222,8 @@ export function upsertFeishuWorkItems(
   )
   const updateExisting = db.prepare(
     `UPDATE work_items
-     SET title = ?, description = ?, priority = ?, repo_id = ?, branch = ?, owner = ?, updated_at = ?
+     SET title = ?, description = ?, priority = ?, repo_id = ?, branch = ?, owner = ?,
+         archived_at = NULL, updated_at = ?
      WHERE id = ?`,
   )
   const insertWorkItem = db.prepare(
@@ -267,4 +275,45 @@ export function upsertFeishuWorkItems(
   }
 
   return { created, updated }
+}
+
+export function reconcileFeishuWorkItems(
+  db: AppDatabase,
+  activeExternalIds: string[],
+  now = nowIso(),
+): FeishuReconcileResult {
+  if (activeExternalIds.length === 0) {
+    throw unprocessable('完整同步未返回活动工作项，已跳过删除对账')
+  }
+
+  const activeIdentities = new Set(activeExternalIds.map(externalIdentity))
+  const workItemRows = db
+    .prepare(
+      `SELECT id, external_id FROM work_items
+       WHERE source = 'feishu' AND external_id IS NOT NULL AND external_id <> ''
+         AND archived_at IS NULL`,
+    )
+    .all() as Array<{ id: string; external_id: string }>
+  const inboxRows = db
+    .prepare('SELECT external_id FROM feishu_inbox')
+    .all() as Array<{ external_id: string }>
+  const archiveWorkItem = db.prepare(
+    'UPDATE work_items SET archived_at = ? WHERE id = ? AND archived_at IS NULL',
+  )
+  const deleteInboxItem = db.prepare('DELETE FROM feishu_inbox WHERE external_id = ?')
+
+  let archived = 0
+  let inboxRemoved = 0
+  db.transaction(() => {
+    for (const row of workItemRows) {
+      if (activeIdentities.has(externalIdentity(row.external_id))) continue
+      archived += archiveWorkItem.run(now, row.id).changes
+    }
+    for (const row of inboxRows) {
+      if (activeIdentities.has(externalIdentity(row.external_id))) continue
+      inboxRemoved += deleteInboxItem.run(row.external_id).changes
+    }
+  })()
+
+  return { archived, inboxRemoved }
 }

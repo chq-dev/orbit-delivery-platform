@@ -63,7 +63,7 @@ npm run sync:feishu
 npm run sync:feishu:watch
 ```
 
-同步器使用官方 `meegle workitem query` 按 `story` 和 `issue` 拉取数据，默认增量查询并按外部工作项 ID 幂等更新。首次运行会做全量同步，之后按 `FEISHU_SYNC_INTERVAL_MS` 轮询；可用 `FEISHU_SYNC_FULL=true` 强制全量。服务器侧的 `FEISHU_INGEST_TOKEN` 用于保护写入接口；未配置时仅允许本机回环调用。
+同步器使用官方 `meegle workitem query` 按 `story` 和 `issue` 拉取数据，默认全量查询并按外部工作项 ID 幂等更新。每次完整同步都会对账飞书当前活动工作项：新增项写入、变化项更新、飞书已删除项在本平台软归档（保留历史交付记录），无需先发起交付。需要临时缩短同步范围时可显式设置 `FEISHU_SYNC_FULL=false`，此时不会执行删除对账。服务器侧的 `FEISHU_INGEST_TOKEN` 用于保护写入接口；未配置时仅允许本机回环调用。
 
 服务器 `.env` 最少需要：
 
@@ -106,7 +106,7 @@ Secret 放进前端。列表采用“授权同步机生成快照、浏览器只�
 跨服务器部署时，把 `FEISHU_SNAPSHOT_PATH` 指向 Web 静态目录，或把生成的 JSON 同步到
 该目录。也可以通过 `VITE_FEISHU_SNAPSHOT_URL` 指向任意允许 CORS 的只读快照地址。
 前端仅消费 `externalId`、标题、描述、优先级、负责人和更新时间，不会接触飞书凭证。
-前端快照中的工作项标记为“仅展示”，发起交付前仍需由后端同步或导入为平台工作项。平台已有后端数据时以服务端数据为准，前端快照只补充后端尚未写入的工作项，避免旧快照覆盖新数据。
+前端快照中的工作项标记为“仅展示”，发起交付前仍需由后端同步或导入为平台工作项。平台已有飞书工作项时以服务端数据为准，前端快照仅在后端还没有飞书数据时用于补展示，避免旧快照复活已删除项或覆盖新数据。
 
 如果当前数据库已经包含真实飞书工作项，可先用 `npm run snapshot:from-db` 生成一次
 `data/feishu-work-items.json`，再启动页面即可由前端直接读取；后续用 Meegle watch

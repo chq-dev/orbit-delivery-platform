@@ -28,9 +28,17 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       db.exec(schemaSql)
       ensureColumn(db, 'repositories', 'local_path', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'pipelines', 'local_path', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(db, 'work_items', 'archived_at', 'TEXT')
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
+      )
       db.pragma(`user_version = ${SCHEMA_VERSION}`)
     })()
   }
+
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
+  )
 
   return db
 }

@@ -38,6 +38,7 @@ export interface MeegleFetchResult {
   fetched: number
   skipped: number
   warnings: string[]
+  complete: boolean
 }
 
 export class MeegleCliError extends Error {
@@ -57,6 +58,11 @@ interface QueryPage {
   count?: number
   sessionId?: string
   groupId: string
+}
+
+interface QueryTypeResult {
+  rows: Record<string, unknown>[]
+  complete: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -307,7 +313,7 @@ async function queryType(
   typeKey: string,
   runner: MeegleCommandRunner,
   warnings: string[],
-): Promise<Record<string, unknown>[]> {
+): Promise<QueryTypeResult> {
   let first: QueryPage
   try {
     first = await queryFirstPage(config, typeKey, config.since, runner)
@@ -325,10 +331,12 @@ async function queryType(
     if (id) rows.set(id, row)
   }
 
-  if (!first.count || first.count <= first.rows.length) return [...rows.values()]
+  if (!first.count || first.count <= first.rows.length) {
+    return { rows: [...rows.values()], complete: true }
+  }
   if (!first.sessionId) {
     warnings.push(`${typeKey} 返回 ${first.count} 条但缺少 session_id，仅同步了首页数据`)
-    return [...rows.values()]
+    return { rows: [...rows.values()], complete: false }
   }
 
   const pageCount = Math.ceil(first.count / DEFAULT_PAGE_SIZE)
@@ -356,7 +364,7 @@ async function queryType(
   if (pageCount > MAX_PAGES) {
     warnings.push(`${typeKey} 共有 ${pageCount} 页，已按安全上限截断到 ${MAX_PAGES} 页`)
   }
-  return [...rows.values()]
+  return { rows: [...rows.values()], complete: pageCount <= MAX_PAGES }
 }
 
 function normalizePriority(value: string): Priority {
@@ -503,12 +511,15 @@ export async function fetchMeegleWorkItems(
   const warnings: string[] = []
   const items: SyncedFeishuWorkItem[] = []
   let fetched = 0
+  let complete = true
 
   for (const [type, typeKey] of [
     ['requirement', config.requirementTypeKey],
     ['defect', config.defectTypeKey],
   ] as const) {
-    const rows = await queryType(config, typeKey, runner, warnings)
+    const queried = await queryType(config, typeKey, runner, warnings)
+    if (!queried.complete) complete = false
+    const rows = queried.rows
     const details = await fetchDescriptions(config, typeKey, rows, runner, warnings)
     const merged = mergeDetails(rows, details)
     fetched += merged.length
@@ -518,7 +529,7 @@ export async function fetchMeegleWorkItems(
     }
   }
 
-  return { items, fetched, skipped: fetched - items.length, warnings }
+  return { items, fetched, skipped: fetched - items.length, warnings, complete }
 }
 
 export const defaultMeegleCommandRunner: MeegleCommandRunner = (command, args, env) =>

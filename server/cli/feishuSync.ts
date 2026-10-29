@@ -18,12 +18,14 @@ interface SyncState {
   fetched?: number
   created?: number
   updated?: number
+  archived?: number
 }
 
 interface PlatformIngestResult {
   fetched: number
   created: number
   updated: number
+  archived?: number
   skipped: number
   message: string
   syncedAt: string
@@ -34,6 +36,7 @@ interface SyncSummary {
   fetched: number
   created: number
   updated: number
+  archived: number
   skipped: number
   warnings: string[]
   syncedAt: string
@@ -59,7 +62,7 @@ function booleanEnv(name: string, fallback: boolean): boolean {
 
 function syncConfig(state: SyncState): MeegleSyncConfig {
   const projectKey = textEnv('FEISHU_PROJECT_KEY', 'rjcloud')
-  const fullSync = booleanEnv('FEISHU_SYNC_FULL', false)
+  const fullSync = booleanEnv('FEISHU_SYNC_FULL', true)
   const explicitSince = textEnv('FEISHU_SYNC_SINCE')
   const overlapHours = positiveIntegerEnv('FEISHU_SYNC_OVERLAP_HOURS', 48)
   const lastSuccessfulAt = state.lastSuccessfulSyncAt
@@ -167,11 +170,15 @@ async function resolveRepoId(): Promise<string> {
   return repoId
 }
 
-async function postBatch(
-  projectKey: string,
-  repoId: string,
-  items: SyncedFeishuWorkItem[],
-): Promise<PlatformIngestResult> {
+interface PlatformIngestPayload {
+  projectKey: string
+  repoId: string
+  items: SyncedFeishuWorkItem[]
+  reconcile?: true
+  activeExternalIds?: string[]
+}
+
+async function postIngest(payload: PlatformIngestPayload): Promise<PlatformIngestResult> {
   const url = `${platformBaseUrl()}/api/integrations/feishu/ingest`
   let lastError: unknown
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -179,7 +186,7 @@ async function postBatch(
       const response = await fetch(url, {
         method: 'POST',
         headers: { ...platformHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ projectKey, repoId, items }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(60_000),
       })
       if (response.ok) return (await response.json()) as PlatformIngestResult
@@ -214,13 +221,37 @@ async function runOnce(): Promise<SyncSummary> {
     !snapshotOnly() && fetched.items.length > 0 ? await resolveRepoId() : undefined
   let created = 0
   let updated = 0
+  let archived = 0
   let skipped = 0
+  const fullSync = config.since === undefined
+  const canReconcile =
+    !snapshotOnly() &&
+    fullSync &&
+    fetched.complete &&
+    fetched.skipped === 0 &&
+    fetched.items.length > 0
 
   if (repoId) {
     for (const batch of chunks(fetched.items, 200)) {
-      const result = await postBatch(config.projectKey, repoId, batch)
+      const result = await postIngest({
+        projectKey: config.projectKey,
+        repoId,
+        items: batch,
+      })
       created += result.created
       updated += result.updated
+      skipped += result.skipped
+    }
+
+    if (canReconcile) {
+      const result = await postIngest({
+        projectKey: config.projectKey,
+        repoId,
+        items: [],
+        reconcile: true,
+        activeExternalIds: fetched.items.map((item) => item.externalId),
+      })
+      archived = result.archived ?? 0
       skipped += result.skipped
     }
   }
@@ -231,12 +262,14 @@ async function runOnce(): Promise<SyncSummary> {
     fetched: fetched.fetched,
     created,
     updated,
+    archived,
   })
   return {
     projectKey: config.projectKey,
     fetched: fetched.fetched,
     created,
     updated,
+    archived,
     skipped: fetched.skipped + skipped,
     warnings: fetched.warnings,
     syncedAt,

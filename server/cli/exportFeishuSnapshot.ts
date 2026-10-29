@@ -33,6 +33,7 @@ try {
       `SELECT type, title, description, priority, owner, external_id, updated_at
        FROM work_items
        WHERE source = 'feishu' AND external_id IS NOT NULL AND external_id <> ''
+         AND archived_at IS NULL
        ORDER BY updated_at DESC, id DESC`,
     )
     .all() as FeishuWorkItemRow[]

@@ -81,13 +81,37 @@ test('前端快照按飞书工作项 ID 合并并忽略无效记录', () => {
   }
 
   const merged = mergeFeishuSnapshot([existing], snapshotItems)
-  assert.equal(merged.length, 2)
+  assert.equal(merged.length, 1)
   const requirement = merged.find((item) => item.externalId?.endsWith(':story:6955195522'))
   assert.equal(requirement?.id, 'REQ-1082')
   assert.equal(requirement?.title, '旧标题')
   assert.equal(requirement?.status, '进行中')
   assert.equal(requirement?.frontendOnly, false)
-  assert.equal(merged.some((item) => item.id === 'BUG-FS-7142612744'), true)
+  assert.equal(merged.some((item) => item.id === 'BUG-FS-7142612744'), false)
+})
+
+test('后端没有飞书工作项时才使用前端快照补充展示', () => {
+  const parsed = parseFeishuSnapshot({
+    version: 1,
+    source: 'feishu',
+    projectKey: 'rjcloud',
+    syncedAt: '2026-10-29T02:00:00.000Z',
+    items: [
+      {
+        externalId: 'rjcloud:story:6955195522',
+        type: 'requirement',
+        title: '快照需求',
+        description: '后端尚未同步时用于展示',
+        priority: '高',
+        owner: 'Alice',
+        updatedAt: '2026-10-29T01:50:00.000Z',
+      },
+    ],
+  })
+  const snapshotItems = mapFeishuSnapshotItems(parsed.snapshot, [repository])
+  const merged = mergeFeishuSnapshot([], snapshotItems)
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].frontendOnly, true)
 })
 
 test('同步器生成的前端快照可被原子写入并读回', () => {

@@ -167,6 +167,7 @@ export interface FeishuIntegrationStatus {
 export interface FeishuSyncResult {
   fetched: number
   upserted: number
+  archived?: number
   skipped: number
   message: string
   syncedAt: string

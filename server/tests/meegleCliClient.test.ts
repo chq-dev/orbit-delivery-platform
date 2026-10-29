@@ -106,6 +106,7 @@ test('Meegle CLI 客户端按 story/issue 拉取工作项并补充描述', async
 
   assert.equal(output.fetched, 3)
   assert.equal(output.skipped, 0)
+  assert.equal(output.complete, true)
   assert.deepEqual(
     output.items.map((item) => ({
       externalId: item.externalId,
@@ -190,7 +191,34 @@ test('Meegle CLI 客户端按 session_id 拉取后续分页', async () => {
 
   assert.equal(output.items.length, 51)
   assert.equal(output.items.at(-1)?.externalId, 'rjcloud:story:51')
+  assert.equal(output.complete, true)
   assert.equal(calls.some((args) => args.includes('--session-id')), true)
+})
+
+test('缺少分页会话时标记为不完整，禁止执行删除对账', async () => {
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    if (args[0] === 'workitem' && args[1] === 'query') {
+      if (args[args.indexOf('--mql') + 1].includes('`story`')) {
+        return result({
+          list: [
+            {
+              count: 100,
+              data: [{ work_item_id: '1', name: '需求 1' }],
+            },
+          ],
+        })
+      }
+      return result({ list: [{ count: 0, data: [] }] })
+    }
+    throw new Error(`unexpected args: ${args.join(' ')}`)
+  }
+
+  const output = await fetchMeegleWorkItems(
+    { ...config, fetchDescriptions: false },
+    runner,
+  )
+  assert.equal(output.complete, false)
+  assert.match(output.warnings.join('\n'), /缺少 session_id/)
 })
 
 test('未登录时返回明确的认证错误', async () => {

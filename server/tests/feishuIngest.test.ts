@@ -146,6 +146,83 @@ test('不同 project key 前缀的同一飞书工作项不会重复写入', () =
   db.close()
 })
 
+test('完整同步对账会归档飞书已删除项，并在重新出现时恢复', () => {
+  const { db, repository } = setup()
+  ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [
+      {
+        externalId: 'rjcloud:story:401',
+        type: 'requirement',
+        title: '保留的需求',
+        description: '仍存在于飞书',
+        priority: '高',
+        owner: 'Alice',
+        updatedAt: '2026-10-29T01:00:00.000Z',
+      },
+      {
+        externalId: 'rjcloud:story:402',
+        type: 'requirement',
+        title: '已删除的需求',
+        description: '已经从飞书删除',
+        priority: '中',
+        owner: 'Bob',
+        updatedAt: '2026-10-29T02:00:00.000Z',
+      },
+    ],
+  })
+
+  const reconciled = ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [],
+    reconcile: true,
+    activeExternalIds: ['rjcloud:story:401'],
+  })
+  assert.equal(reconciled.archived, 1)
+  assert.equal(listWorkItems(db).length, 1)
+  assert.equal(
+    listWorkItems(db).some((item) => item.externalId === 'rjcloud:story:402'),
+    false,
+  )
+  const archived = db
+    .prepare(
+      "SELECT archived_at FROM work_items WHERE external_id = 'rjcloud:story:402'",
+    )
+    .get() as { archived_at: string | null }
+  assert.equal(typeof archived.archived_at, 'string')
+  assert.equal(readFeishuSnapshotFromDatabase(db, 'rjcloud')?.items.length, 1)
+
+  const restored = ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [
+      {
+        externalId: 'rjcloud:story:402',
+        type: 'requirement',
+        title: '重新出现的数据',
+        description: '飞书恢复或重新创建',
+        priority: '紧急',
+        owner: 'Bob',
+        updatedAt: '2026-10-29T03:00:00.000Z',
+      },
+    ],
+    reconcile: true,
+    activeExternalIds: ['rjcloud:story:401', 'rjcloud:story:402'],
+  })
+  assert.equal(restored.archived, 0)
+  assert.equal(listWorkItems(db).length, 2)
+  const active = db
+    .prepare(
+      "SELECT archived_at, title FROM work_items WHERE external_id = 'rjcloud:story:402'",
+    )
+    .get() as { archived_at: string | null; title: string }
+  assert.equal(active.archived_at, null)
+  assert.equal(active.title, '重新出现的数据')
+  db.close()
+})
+
 test('外部同步拒绝非法工作项类型', () => {
   const { db, repository } = setup()
   assert.throws(

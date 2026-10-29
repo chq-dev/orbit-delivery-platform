@@ -95,15 +95,17 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 4)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 5)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_access_tokens') as { count: number }
   assert.equal(table.count, 1)
   const repositoryColumns = upgraded.pragma('table_info(repositories)') as { name: string }[]
   const pipelineColumns = upgraded.pragma('table_info(pipelines)') as { name: string }[]
+  const workItemColumns = upgraded.pragma('table_info(work_items)') as { name: string }[]
   assert.equal(repositoryColumns.some((column) => column.name === 'local_path'), true)
   assert.equal(pipelineColumns.some((column) => column.name === 'local_path'), true)
+  assert.equal(workItemColumns.some((column) => column.name === 'archived_at'), true)
   upgraded.close()
 })
 
@@ -701,13 +703,30 @@ test('抓包访问 Token 可直接绑定、加密保存并同步工作项', asyn
     assert.ok(authorizationHeaders.length > 0)
     assert.ok(authorizationHeaders.every((value) => value === 'captured-plugin-token'))
 
+    importWorkItems(db, [
+      {
+        type: 'requirement',
+        title: '飞书侧已删除的旧需求',
+        description: '用于验证每次同步都会独立执行删除对账',
+        priority: '中',
+        repoId: repositoryId,
+        owner: '旧负责人',
+        source: 'feishu',
+        externalId: 'rjcloud:story:299',
+      },
+    ])
     const synced = await syncFeishu(db, vault, 'manual')
     assert.equal(synced.fetched, 1)
     assert.equal(synced.upserted, 1)
+    assert.ok(synced.archived >= 1)
     assert.equal(tokenExchangeCalled, false)
     assert.equal(
       listWorkItems(db).some((item) => item.externalId === 'rjcloud:story:301'),
       true,
+    )
+    assert.equal(
+      listWorkItems(db).some((item) => item.externalId === 'rjcloud:story:299'),
+      false,
     )
   } finally {
     globalThis.fetch = originalFetch

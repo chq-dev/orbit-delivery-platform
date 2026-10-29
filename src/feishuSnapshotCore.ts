@@ -184,15 +184,17 @@ export function mergeFeishuSnapshot(
   serverItems: WorkItem[],
   snapshotItems: WorkItem[],
 ): WorkItem[] {
+  const serverOnly = serverItems.map((item) => {
+    if (item.source !== 'feishu' || !item.externalId) return item
+    return { ...item, frontendOnly: false }
+  })
+  if (serverItems.some((item) => item.source === 'feishu')) return serverOnly
+
   const serverIdentities = new Set(
     serverItems
       .filter((item) => item.source === 'feishu' && item.externalId)
       .map((item) => identityOf(item.externalId as string)),
   )
-  const serverOnly = serverItems.map((item) => {
-    if (item.source !== 'feishu' || !item.externalId) return item
-    return { ...item, frontendOnly: false }
-  })
   const additional = snapshotItems.filter(
     (item) => !serverIdentities.has(identityOf(item.externalId ?? item.id)),
   )

@@ -63,7 +63,7 @@ Optional:
 export MEEGLE_BIN=meegle
 export MEEGLE_HOST=project.feishu.cn
 export FEISHU_DEFAULT_REPO_ID=repo-1
-export FEISHU_SYNC_FULL=false
+export FEISHU_SYNC_FULL=true
 export FEISHU_SYNC_OVERLAP_HOURS=48
 export FEISHU_SYNC_INTERVAL_MS=300000
 export FEISHU_SYNC_STATE_PATH=./data/meegle-sync-state.json
@@ -96,6 +96,13 @@ FEISHU_SYNC_FULL=true npm run sync:feishu
 The script queries both work-item types through MQL, paginates with
 `session_id` + `group-pagination-list`, enriches descriptions with
 `workitem +batch-get`, and upserts by `rjcloud:<type>:<work_item_id>`.
+
+Full sync is the default. After a complete fetch it reconciles the platform
+against the live active-ID set: items deleted or archived in Feishu are
+soft-archived in Orbit, while items that reappear are restored. This runs on
+the normal sync schedule and does not depend on starting a delivery. If a query
+is incremental, has skipped rows, or has pagination warnings, reconciliation is
+skipped to avoid deleting valid local history.
 
 ## Verify
 
