@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 7
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -209,6 +209,14 @@ CREATE TABLE IF NOT EXISTS feishu_access_tokens (
 CREATE TABLE IF NOT EXISTS feishu_event_dedup (
   event_key TEXT PRIMARY KEY,
   received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_sync_credentials (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL,
+  token_hint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS feishu_outbox (

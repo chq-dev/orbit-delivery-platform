@@ -43,7 +43,53 @@ FEISHU_DEFECT_TYPE_KEY=issue
 
 `VAULT_KEY` 用于 AES-256-GCM 加密平台账号密码，生产环境必须显式配置且妥善保管；更换密钥后旧凭据将无法解密。
 
-### 跨服务器飞书同步（推荐）
+### 页面驱动的本机飞书同步（推荐）
+
+平台服务器可以访问不到 `project.feishu.cn`，但用户当前电脑通常可以。此模式在不暴露浏览器
+Cookie 的前提下，由页面调用本机回环代理完成实时同步：
+
+```text
+浏览器页面 http://8.145.45.84:8787
+  └─ http://127.0.0.1:18787 本机同步代理
+       ├─ 持有 meegle auth login 的飞书登录态
+       ├─ 拉取实时 story / issue
+       └─ 使用平台同步密钥写入 /api/integrations/feishu/ingest
+```
+
+在客户端项目目录启动代理并保持运行：
+
+```bash
+npm install -g @lark-project/meegle@1.0.27
+meegle config set host project.feishu.cn
+npm run feishu:agent
+```
+
+随后打开平台「需求与缺陷」或「账号中心」页面，在「本机飞书实时同步」卡片中依次点击：
+
+1. `生成密钥并绑定`：平台生成 32 字节随机密钥，数据库只保存 SHA-256 哈希和尾号，明文只发送给本机代理。
+2. `开始飞书授权`：页面显示设备授权链接和用户码；在飞书完成确认后，页面自动轮询并触发首次同步。
+3. 之后页面初始化、重新可见或每 60 秒会自动检查，距上次成功同步超过约 60 秒时调用本机代理全量拉取并回写平台。
+
+两个凭据的来源不同，均不需要从飞书网页 Cookie 中提取：
+
+- **飞书登录态**：由 `meegle auth login --device-code` 保存在本机 Meegle CLI；页面只驱动授权流程。
+- **平台同步密钥**：平台内部用于保护 ingest 写入接口。默认由页面首次绑定时生成；若服务器设置了
+  `FEISHU_INGEST_TOKEN`，则以环境变量为准，页面不允许轮换，客户端代理需使用相同值启动。
+
+本机代理默认监听 `127.0.0.1:18787`，只允许受信任页面来源跨域访问：
+
+```bash
+FEISHU_AGENT_PORT=18787
+FEISHU_AGENT_ALLOWED_ORIGINS=http://8.145.45.84:8787,http://localhost:4173,http://127.0.0.1:4173
+VITE_FEISHU_AGENT_URL=http://127.0.0.1:18787
+```
+
+代理配置默认写入 `~/.config/orbit/feishu-sync.json`（权限 `0600`），不会写入浏览器
+`localStorage` 或源码。页面提供“轮换密钥”操作，旧密钥在轮换后立即失效。首次生成密钥采用
+先到先得（TOFU）模型，因为当前平台没有用户登录体系；生产环境建议由管理员在服务器设置
+`FEISHU_INGEST_TOKEN`，或仅在受信网络内开放首次绑定。
+
+### 命令行/常驻同步（备选）
 
 如果平台服务器不能直接访问 `project.feishu.cn`，不要在前端直连飞书，也不要把抓包 Token 放到浏览器。请在**能访问飞书的机器**上运行外部同步器：
 
@@ -90,7 +136,7 @@ curl -sS http://8.145.45.84:8787/api/health
 后续 watch 轮询才能做到无需人工操作；飞书不允许匿名读取，因此无法通过纯前端代码
 或写死源码彻底消除首次授权。
 
-### 纯前端列表刷新（同源快照）
+### 只读快照降级（非实时）
 
 浏览器不能直接读取 `project.feishu.cn/goapi`：未登录会跳转登录页，已登录时接口也没有
 允许平台域名读取的 CORS 响应头。因此不要把 Chrome Cookie、抓包 Token 或 Plugin
@@ -167,6 +213,9 @@ server/
 - `GET /api/integrations/feishu/status`、`POST /api/integrations/feishu/connect`。
 - `POST /api/integrations/feishu/test`、`POST /api/integrations/feishu/sync`。
 - `POST /api/integrations/feishu/ingest`：供 Meegle CLI 外部同步器写入工作项，使用 `FEISHU_INGEST_TOKEN` 鉴权。
+- `GET /api/integrations/feishu/sync-token`：返回平台同步密钥状态和尾号，不返回明文。
+- `POST /api/integrations/feishu/sync-token/bootstrap`：首次生成平台同步密钥，明文仅返回一次。
+- `POST /api/integrations/feishu/sync-token/rotate`：携带当前 Bearer 密钥轮换，旧密钥立即失效。
 - `POST /api/integrations/feishu/events`、`POST /api/integrations/feishu/disconnect`。
 - `POST /api/pipelines`、`GET /api/pipelines/:id`、`POST /api/pipelines/:id/cancel`。
 - `GET /api/reports`、`GET /api/reports/:id`、`GET /api/reports/:id/markdown`。

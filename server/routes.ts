@@ -3,7 +3,10 @@ import { config } from './config.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
 import type { CredentialVault } from './security/vault.js'
-import { assertFeishuIngestAuthorized } from './security/ingestAuth.js'
+import {
+  assertFeishuIngestAuthorized,
+  feishuIngestBearerToken,
+} from './security/ingestAuth.js'
 import { createAccount, importAccounts, listAccounts } from './services/accountService.js'
 import {
   connectFeishu,
@@ -15,6 +18,12 @@ import {
 } from './services/feishuIntegrationService.js'
 import { listFeishuInbox } from './services/inboxService.js'
 import { ingestFeishuWorkItems } from './services/feishuIngestService.js'
+import {
+  bootstrapFeishuSyncToken,
+  getFeishuSyncTokenStatus,
+  rotateFeishuSyncToken,
+  verifyFeishuSyncToken,
+} from './services/feishuSyncTokenService.js'
 import {
   advancePipeline,
   cancelPipeline,
@@ -55,7 +64,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
           config.feishuAccessToken ||
             (config.feishuPluginId && config.feishuPluginSecret && config.feishuUserKey),
         ),
-        ingestTokenConfigured: Boolean(config.feishuIngestToken),
+        ingestTokenConfigured: getFeishuSyncTokenStatus(db).configured,
         connected: feishu.connected,
         lastSyncAt: feishu.lastSyncAt,
         lastSyncStatus: feishu.lastSyncStatus,
@@ -128,11 +137,27 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/integrations/feishu/ingest', (request, response) => {
+    const tokenStatus = getFeishuSyncTokenStatus(db)
     assertFeishuIngestAuthorized(
       { headers: request.headers, ip: request.ip },
       config.feishuIngestToken,
+      tokenStatus.source === 'database'
+        ? (token) => verifyFeishuSyncToken(db, token)
+        : undefined,
     )
     response.status(201).json(ingestFeishuWorkItems(db, request.body))
+  })
+
+  router.get('/integrations/feishu/sync-token', (_request, response) => {
+    response.json(getFeishuSyncTokenStatus(db))
+  })
+
+  router.post('/integrations/feishu/sync-token/bootstrap', (_request, response) => {
+    response.status(201).json(bootstrapFeishuSyncToken(db))
+  })
+
+  router.post('/integrations/feishu/sync-token/rotate', (request, response) => {
+    response.json(rotateFeishuSyncToken(db, feishuIngestBearerToken(request.headers)))
   })
 
   router.post('/integrations/feishu/disconnect', (_request, response) => {

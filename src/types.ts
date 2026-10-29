@@ -173,6 +173,69 @@ export interface FeishuSyncResult {
   syncedAt: string
 }
 
+export interface FeishuSyncTokenStatus {
+  configured: boolean
+  source: 'env' | 'database' | 'none'
+  hint?: string
+  updatedAt?: string
+}
+
+export interface FeishuSyncTokenBootstrapResult {
+  token: string
+  status: FeishuSyncTokenStatus
+}
+
+export interface FeishuClientAgentConfigStatus {
+  configured: boolean
+  platformBaseUrl?: string
+  projectKey: string
+  repoId?: string
+}
+
+export interface FeishuClientAgentHealth {
+  ok: true
+  version: number
+  config: FeishuClientAgentConfigStatus
+  meegle: {
+    available: boolean
+    authenticated: boolean
+    reason?: string
+    host?: string
+  }
+  running: boolean
+  lastRun: {
+    at: string
+    status: 'success' | 'failed'
+    summary?: unknown
+    error?: string
+  } | null
+  pendingLogin: {
+    userCode: string
+    verificationUriComplete: string
+    expiresAt: number
+  } | null
+}
+
+export interface FeishuClientAgentState {
+  checking: boolean
+  online: boolean
+  health?: FeishuClientAgentHealth
+  error?: string
+}
+
+export interface FeishuLoginChallenge {
+  verificationUri: string
+  verificationUriComplete: string
+  userCode: string
+  expiresAt: number
+}
+
+export interface FeishuAgentLoginState {
+  challenge?: FeishuLoginChallenge
+  polling: boolean
+  error?: string
+}
+
 export interface FeishuSnapshotStatus {
   configured: boolean
   url: string

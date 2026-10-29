@@ -9,6 +9,7 @@
     "dev:server": "tsx watch server/index.ts",
     "start:server": "tsx server/index.ts",
     "deliver:local": "tsx server/cli/localDelivery.ts",
+    "feishu:agent": "tsx server/cli/feishuClientAgent.ts",
     "sync:feishu": "tsx server/cli/feishuSync.ts",
     "sync:feishu:watch": "tsx server/cli/feishuSync.ts --watch",
     "sync:feishu:snapshot": "tsx server/cli/feishuSync.ts --snapshot-only",

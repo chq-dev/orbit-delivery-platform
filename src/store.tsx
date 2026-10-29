@@ -29,17 +29,38 @@ import {
   type FeishuSnapshot,
 } from './feishuSnapshot'
 import {
+  configureFeishuAgent,
+  fetchFeishuAgentHealth,
+  pollFeishuAgentLogin,
+  rotateFeishuAgentToken,
+  runFeishuAgentSync as runFeishuAgentSyncRequest,
+  startFeishuAgentLogin,
+} from './feishuAgent'
+import {
   type Account,
+  type FeishuAgentLoginState,
+  type FeishuClientAgentHealth,
+  type FeishuClientAgentState,
   type FeishuInboxItem,
   type FeishuIntegrationStatus,
+  type FeishuLoginChallenge,
   type FeishuSnapshotStatus,
   type FeishuSyncResult,
+  type FeishuSyncTokenBootstrapResult,
+  type FeishuSyncTokenStatus,
   type PipelineRun,
   type Repository,
   type TestReport,
   type ToastMessage,
   type WorkItem,
 } from './types'
+
+interface FeishuAgentBindResult {
+  status: FeishuSyncTokenStatus
+  agentConfigured: boolean
+  token?: string
+  error?: unknown
+}
 
 interface DataContextValue {
   repositories: Repository[]
@@ -50,6 +71,9 @@ interface DataContextValue {
   feishuInbox: FeishuInboxItem[]
   feishuIntegration: FeishuIntegrationStatus
   feishuSnapshot: FeishuSnapshotStatus
+  feishuAgent: FeishuClientAgentState
+  feishuSyncToken: FeishuSyncTokenStatus
+  feishuAgentLogin: FeishuAgentLoginState
   loading: boolean
   toasts: ToastMessage[]
   addRepository: (input: RepositoryInput) => Promise<Repository>
@@ -64,6 +88,12 @@ interface DataContextValue {
   connectFeishu: (input: FeishuConnectInput) => Promise<FeishuIntegrationStatus>
   testFeishu: () => Promise<{ ok: true; projectName?: string }>
   syncFeishu: () => Promise<FeishuSyncResult>
+  syncFeishuAgent: (announce?: boolean) => Promise<FeishuSyncResult>
+  refreshFeishuAgent: (quiet?: boolean) => Promise<FeishuClientAgentHealth | null>
+  refreshFeishuSyncToken: () => Promise<FeishuSyncTokenStatus | null>
+  bindFeishuAgent: () => Promise<FeishuAgentBindResult>
+  beginFeishuAgentLogin: () => Promise<FeishuLoginChallenge>
+  rotateFeishuSyncToken: () => Promise<FeishuSyncTokenStatus>
   refreshFeishuSnapshot: (announce?: boolean) => Promise<number>
   disconnectFeishu: () => Promise<FeishuIntegrationStatus>
   startPipeline: (input: PipelineInput) => Promise<PipelineRun>
@@ -97,12 +127,27 @@ export function DataProvider({ children }: { children: ReactNode }) {
     itemCount: snapshot?.items.length ?? 0,
     lastUpdatedAt: snapshot?.syncedAt || undefined,
   })
+  const [feishuAgent, setFeishuAgent] = useState<FeishuClientAgentState>({
+    checking: true,
+    online: false,
+  })
+  const [feishuSyncToken, setFeishuSyncToken] = useState<FeishuSyncTokenStatus>({
+    configured: false,
+    source: 'none',
+  })
+  const [feishuAgentLogin, setFeishuAgentLogin] = useState<FeishuAgentLoginState>({
+    polling: false,
+  })
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const toastSequence = useRef(0)
   const initialLoadStarted = useRef(false)
   const hasLoaded = useRef(false)
   const pipelineStatuses = useRef<Map<string, PipelineRun['status']>>(new Map())
+  const feishuAgentHealth = useRef<FeishuClientAgentHealth | null>(null)
+  const feishuAgentSyncInFlight = useRef(false)
+  const lastFeishuAgentSyncAt = useRef(0)
+  const feishuLoginPollTimer = useRef<number | null>(null)
 
   const snapshotWorkItems = useMemo(
     () => (snapshot ? mapFeishuSnapshotItems(snapshot, repositories) : []),
@@ -124,6 +169,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       window.setTimeout(() => dismissToast(id), 4200)
     },
     [dismissToast],
+  )
+
+  const reportApiError = useCallback(
+    (title: string, error: unknown) => {
+      notify(title, error instanceof Error ? error.message : '请求失败，请稍后重试', 'warning')
+    },
+    [notify],
   )
 
   const applyBootstrap = useCallback(
@@ -220,12 +272,292 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [notify, snapshotConfig.url],
   )
 
+  const refreshFeishuAgent = useCallback(
+    async (quiet = false) => {
+      if (!quiet) {
+        setFeishuAgent((current) => ({ ...current, checking: true, error: undefined }))
+      }
+      try {
+        const health = await fetchFeishuAgentHealth()
+        feishuAgentHealth.current = health
+        setFeishuAgent({ checking: false, online: true, health })
+        if (health.pendingLogin) {
+          setFeishuAgentLogin((current) =>
+            current.challenge
+              ? current
+              : {
+                  challenge: {
+                    verificationUri: health.pendingLogin?.verificationUriComplete ?? '',
+                    verificationUriComplete:
+                      health.pendingLogin?.verificationUriComplete ?? '',
+                    userCode: health.pendingLogin?.userCode ?? '',
+                    expiresAt: health.pendingLogin?.expiresAt ?? 0,
+                  },
+                  polling: false,
+                },
+          )
+        }
+        return health
+      } catch (error) {
+        feishuAgentHealth.current = null
+        setFeishuAgent({
+          checking: false,
+          online: false,
+          error: error instanceof Error ? error.message : '本机同步代理不可用',
+        })
+        return null
+      }
+    },
+    [],
+  )
+
+  const refreshFeishuSyncToken = useCallback(async () => {
+    try {
+      const status = await api.getFeishuSyncTokenStatus()
+      setFeishuSyncToken(status)
+      return status
+    } catch {
+      return null
+    }
+  }, [])
+
+  const syncFeishuAgent = useCallback(
+    async (announce = true) => {
+      if (feishuAgentSyncInFlight.current) {
+        throw new Error('飞书同步正在执行，请稍后刷新状态')
+      }
+      let health = feishuAgentHealth.current
+      if (!health?.config.configured || !health.meegle.authenticated) {
+        health = await refreshFeishuAgent(true)
+      }
+      if (!health) {
+        throw new Error('本机飞书同步代理未启动，请先在客户端运行 npm run feishu:agent')
+      }
+      if (health.running) throw new Error('本机飞书同步代理正在执行同步，请稍后重试')
+      if (!health.config.configured) {
+        throw new Error('本机代理尚未绑定平台同步密钥，请先点击“生成密钥并绑定”')
+      }
+      if (!health.meegle.available) {
+        throw new Error('本机未安装 Meegle CLI，请安装 @lark-project/meegle 后重启代理')
+      }
+      if (!health.meegle.authenticated) {
+        throw new Error('Meegle 尚未登录，请先完成飞书设备授权')
+      }
+
+      feishuAgentSyncInFlight.current = true
+      try {
+        const result = await runFeishuAgentSyncRequest()
+        lastFeishuAgentSyncAt.current = Date.now()
+        await reload(true)
+        await refreshFeishuSnapshot().catch(() => undefined)
+        await refreshFeishuAgent(true)
+        if (announce) {
+          notify(
+            '飞书实时数据已更新',
+            result.archived && result.archived > 0
+              ? `${result.message}，归档 ${result.archived} 条飞书已删除项`
+              : result.message,
+          )
+        }
+        return result
+      } catch (error) {
+        await refreshFeishuAgent(true)
+        if (announce) reportApiError('飞书实时同步失败', error)
+        throw error
+      } finally {
+        feishuAgentSyncInFlight.current = false
+      }
+    },
+    [notify, refreshFeishuAgent, refreshFeishuSnapshot, reload],
+  )
+
+  const bindFeishuAgent = useCallback(async (): Promise<FeishuAgentBindResult> => {
+    const health = await refreshFeishuAgent()
+    if (!health) {
+      throw new Error('本机飞书同步代理未启动，请先在客户端运行 npm run feishu:agent')
+    }
+    let status = (await refreshFeishuSyncToken()) ?? feishuSyncToken
+    if (health.config.configured) {
+      if (!status.configured) {
+        const boot = await api.bootstrapFeishuSyncToken()
+        status = boot.status
+        setFeishuSyncToken(status)
+        try {
+          await configureFeishuAgent({
+            platformBaseUrl: window.location.origin,
+            syncToken: boot.token,
+            projectKey: feishuIntegration.projectKey ?? 'rjcloud',
+            repoId: feishuIntegration.defaultRepoId,
+          })
+        } catch (error) {
+          notify(
+            '平台密钥已生成，但本机代理绑定失败',
+            '请保持代理运行，复制一次性密钥并在本机配置后重试',
+            'warning',
+          )
+          return { status, agentConfigured: false, token: boot.token, error }
+        }
+        await refreshFeishuAgent(true)
+        notify('本机飞书同步已绑定', '平台已生成新的同步密钥，并只保存到本机代理')
+        return { status, agentConfigured: true }
+      }
+      notify('本机飞书同步已绑定', '代理与平台同步密钥均已配置', 'info')
+      return { status, agentConfigured: true }
+    }
+
+    if (status.configured && status.source === 'env') {
+      throw new Error(
+        '平台同步密钥由 FEISHU_INGEST_TOKEN 管理，请在本机代理环境设置相同的 PLATFORM_SYNC_TOKEN 后重启代理',
+      )
+    }
+    if (status.configured) {
+      throw new Error(
+        '平台已生成过同步密钥，但本机代理没有保存。请在本机运行 npm run feishu:agent 后尝试轮换；若两者都不存在，则由服务器管理员重置密钥',
+      )
+    }
+
+    const boot: FeishuSyncTokenBootstrapResult = await api.bootstrapFeishuSyncToken()
+    setFeishuSyncToken(boot.status)
+    try {
+      await configureFeishuAgent({
+        platformBaseUrl: window.location.origin,
+        syncToken: boot.token,
+        projectKey: feishuIntegration.projectKey ?? 'rjcloud',
+        repoId: feishuIntegration.defaultRepoId,
+      })
+    } catch (error) {
+      notify(
+        '平台密钥已生成，但本机代理绑定失败',
+        '请保持代理运行，复制一次性密钥并在本机配置后重试',
+        'warning',
+      )
+      return { status: boot.status, agentConfigured: false, token: boot.token, error }
+    }
+    await refreshFeishuAgent(true)
+    notify('本机飞书同步已绑定', '平台已生成同步密钥，并只保存到本机代理')
+    return { status: boot.status, agentConfigured: true }
+  }, [
+    feishuIntegration.defaultRepoId,
+    feishuIntegration.projectKey,
+    feishuSyncToken,
+    notify,
+    refreshFeishuAgent,
+    refreshFeishuSyncToken,
+  ])
+
+  const rotateFeishuSyncToken = useCallback(async () => {
+    const status = (await refreshFeishuSyncToken()) ?? feishuSyncToken
+    if (!status.configured) throw new Error('平台尚未生成飞书同步密钥')
+    if (status.source === 'env') {
+      throw new Error('同步密钥由 FEISHU_INGEST_TOKEN 管理，不能在页面轮换')
+    }
+    const health = await refreshFeishuAgent()
+    if (!health?.config.configured) {
+      throw new Error('本机代理尚未保存当前同步密钥，无法通过代理轮换')
+    }
+    const rotated = await rotateFeishuAgentToken()
+    setFeishuSyncToken(rotated)
+    await refreshFeishuAgent(true)
+    notify('飞书同步密钥已轮换', '旧密钥已失效，新密钥只保存在本机代理')
+    return rotated
+  }, [
+    feishuSyncToken,
+    notify,
+    refreshFeishuAgent,
+    refreshFeishuSyncToken,
+  ])
+
+  const beginFeishuAgentLogin = useCallback(async () => {
+    if (feishuLoginPollTimer.current !== null) {
+      window.clearTimeout(feishuLoginPollTimer.current)
+      feishuLoginPollTimer.current = null
+    }
+    try {
+      const challenge = await startFeishuAgentLogin()
+      setFeishuAgentLogin({ challenge, polling: true })
+      notify(
+        '请在飞书完成设备授权',
+        `打开授权链接并输入用户码 ${challenge.userCode}`,
+        'info',
+      )
+
+      const poll = async () => {
+        try {
+          const result = await pollFeishuAgentLogin()
+          if (result.authenticated) {
+            feishuLoginPollTimer.current = null
+            setFeishuAgentLogin({ polling: false })
+            notify('飞书授权完成', '正在拉取最新需求和缺陷', 'success')
+            await refreshFeishuAgent(true)
+            await syncFeishuAgent(true).catch(() => undefined)
+            return
+          }
+          setFeishuAgentLogin({ challenge, polling: true })
+          feishuLoginPollTimer.current = window.setTimeout(() => void poll(), 3_000)
+        } catch (error) {
+          feishuLoginPollTimer.current = null
+          const message = error instanceof Error ? error.message : '飞书授权轮询失败'
+          setFeishuAgentLogin({ challenge, polling: false, error: message })
+          notify('飞书授权未完成', message, 'warning')
+        }
+      }
+      feishuLoginPollTimer.current = window.setTimeout(() => void poll(), 3_000)
+      return challenge
+    } catch (error) {
+      reportApiError('无法发起飞书设备授权', error)
+      throw error
+    }
+  }, [notify, refreshFeishuAgent, reportApiError, syncFeishuAgent])
+
+  const tryFeishuAgentAutoSync = useCallback(async () => {
+    if (document.visibilityState !== 'visible' || feishuAgentSyncInFlight.current) return
+    let health = feishuAgentHealth.current
+    if (!health) health = await refreshFeishuAgent(true)
+    if (!health?.config.configured || !health.meegle.authenticated || health.running) return
+    const lastRunAt = health.lastRun ? Date.parse(health.lastRun.at) : Number.NaN
+    const lastSyncAt = Math.max(
+      lastFeishuAgentSyncAt.current,
+      Number.isFinite(lastRunAt) ? lastRunAt : 0,
+    )
+    if (Date.now() - lastSyncAt < 60_000) return
+    await syncFeishuAgent(false).catch(() => undefined)
+  }, [refreshFeishuAgent, syncFeishuAgent])
+
   useEffect(() => {
     if (initialLoadStarted.current) return
     initialLoadStarted.current = true
     void reload(false)
     void refreshFeishuSnapshot().catch(() => undefined)
-  }, [refreshFeishuSnapshot, reload])
+    void refreshFeishuAgent(true)
+    void refreshFeishuSyncToken()
+  }, [refreshFeishuAgent, refreshFeishuSnapshot, refreshFeishuSyncToken, reload])
+
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return
+      void refreshFeishuAgent(true).then(() => tryFeishuAgentAutoSync())
+    }
+    const initialTimer = window.setTimeout(tick, 2_000)
+    const interval = window.setInterval(tick, 60_000)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') tick()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      window.clearTimeout(initialTimer)
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [refreshFeishuAgent, tryFeishuAgentAutoSync])
+
+  useEffect(
+    () => () => {
+      if (feishuLoginPollTimer.current !== null) {
+        window.clearTimeout(feishuLoginPollTimer.current)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -252,13 +584,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
     )
     return () => window.clearInterval(timer)
   }, [feishuConnected, loading, reload])
-
-  const reportApiError = useCallback(
-    (title: string, error: unknown) => {
-      notify(title, error instanceof Error ? error.message : '请求失败，请稍后重试', 'warning')
-    },
-    [notify],
-  )
 
   const addRepository = useCallback(
     async (input: RepositoryInput) => {
@@ -414,63 +739,32 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const syncFeishu = useCallback(async () => {
     try {
+      const health = await refreshFeishuAgent(true)
+      if (health?.config.configured) return await syncFeishuAgent(true)
+
       if (
         feishuIntegration.connected &&
         (feishuIntegration.authMode === 'token' || feishuIntegration.authMode === 'plugin')
       ) {
-        try {
-          const result = await api.syncFeishu()
-          await reload(true)
-          await refreshFeishuSnapshot().catch(() => undefined)
-          notify(
-            '飞书工作项已同步',
-            result.skipped > 0 ? `${result.message}，${result.skipped} 条已跳过` : result.message,
-          )
-          return result
-        } catch (serverSyncError) {
-          try {
-            const count = await refreshFeishuSnapshot()
-            notify(
-              '后端同步失败，已加载最新可用快照',
-              `${count} 条工作项 · ${serverSyncError instanceof Error ? serverSyncError.message : '后端同步失败'}`,
-              'warning',
-            )
-            const syncedAt = new Date().toISOString()
-            return {
-              fetched: count,
-              upserted: count,
-              skipped: 0,
-              message: `已从快照更新 ${count} 条工作项`,
-              syncedAt,
-            }
-          } catch {
-            throw serverSyncError
-          }
-        }
+        const result = await api.syncFeishu()
+        await reload(true)
+        await refreshFeishuSnapshot().catch(() => undefined)
+        notify(
+          '飞书工作项已同步',
+          result.skipped > 0 ? `${result.message}，${result.skipped} 条已跳过` : result.message,
+        )
+        return result
       }
 
-      try {
-        const count = await refreshFeishuSnapshot()
-        const syncedAt = new Date().toISOString()
-        notify('飞书前端快照已更新', `${count} 条工作项已直接刷新到当前列表`)
-        return {
-          fetched: count,
-          upserted: count,
-          skipped: 0,
-          message: `已从前端快照更新 ${count} 条工作项`,
-          syncedAt,
-        }
-      } catch (snapshotError) {
-        if (!feishuIntegration.connected) throw snapshotError
+      if (health && !health.config.configured) {
+        throw new Error('本机代理尚未绑定平台同步密钥，请先点击“生成密钥并绑定”')
       }
-
-      const result = await api.syncFeishu()
-      notify(
-        '飞书工作项已同步',
-        result.skipped > 0 ? `${result.message}，${result.skipped} 条已跳过` : result.message,
+      if (health && health.meegle.available && !health.meegle.authenticated) {
+        throw new Error('Meegle 尚未登录，请先完成页面中的飞书设备授权')
+      }
+      throw new Error(
+        '未检测到本机飞书同步代理。请在客户端运行 npm run feishu:agent 并完成一次绑定；旧快照不会再被当作实时同步结果',
       )
-      await reload(true)
-      return result
     } catch (error) {
       reportApiError('飞书工作项同步失败', error)
       throw error
@@ -479,9 +773,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
     feishuIntegration.authMode,
     feishuIntegration.connected,
     notify,
+    refreshFeishuAgent,
     refreshFeishuSnapshot,
     reload,
     reportApiError,
+    syncFeishuAgent,
   ])
 
   const disconnectFeishu = useCallback(async () => {
@@ -527,6 +823,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       feishuInbox,
       feishuIntegration,
       feishuSnapshot,
+      feishuAgent,
+      feishuSyncToken,
+      feishuAgentLogin,
       loading,
       toasts,
       addRepository,
@@ -538,6 +837,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
       connectFeishu,
       testFeishu,
       syncFeishu,
+      syncFeishuAgent,
+      refreshFeishuAgent,
+      refreshFeishuSyncToken,
+      bindFeishuAgent,
+      beginFeishuAgentLogin,
+      rotateFeishuSyncToken,
       refreshFeishuSnapshot,
       disconnectFeishu,
       startPipeline,
@@ -550,12 +855,17 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addAccount,
       addRepository,
       addWorkItem,
+      beginFeishuAgentLogin,
+      bindFeishuAgent,
       connectFeishu,
       disconnectFeishu,
       dismissToast,
+      feishuAgent,
+      feishuAgentLogin,
       feishuInbox,
       feishuIntegration,
       feishuSnapshot,
+      feishuSyncToken,
       importAccounts,
       importWorkItems,
       loading,
@@ -563,9 +873,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       pipelines,
       reload,
       reports,
+      refreshFeishuAgent,
       refreshFeishuSnapshot,
+      refreshFeishuSyncToken,
       repositories,
+      rotateFeishuSyncToken,
       startPipeline,
+      syncFeishuAgent,
       updateRepositorySettings,
       syncFeishu,
       testFeishu,

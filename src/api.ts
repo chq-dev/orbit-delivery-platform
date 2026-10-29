@@ -3,6 +3,8 @@ import type {
   FeishuInboxItem,
   FeishuIntegrationStatus,
   FeishuSyncResult,
+  FeishuSyncTokenBootstrapResult,
+  FeishuSyncTokenStatus,
   PipelineRun,
   PlatformKey,
   Priority,
@@ -154,6 +156,12 @@ export const api = {
     }),
   syncFeishu: () =>
     request<FeishuSyncResult>('/integrations/feishu/sync', {
+      method: 'POST',
+    }),
+  getFeishuSyncTokenStatus: () =>
+    request<FeishuSyncTokenStatus>('/integrations/feishu/sync-token'),
+  bootstrapFeishuSyncToken: () =>
+    request<FeishuSyncTokenBootstrapResult>('/integrations/feishu/sync-token/bootstrap', {
       method: 'POST',
     }),
   disconnectFeishu: () =>

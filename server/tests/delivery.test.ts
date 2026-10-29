@@ -74,6 +74,7 @@ test('新数据库只建表，不包含预置业务数据', () => {
     'feishu_sync_logs',
     'feishu_access_tokens',
     'feishu_event_dedup',
+    'feishu_sync_credentials',
     'feishu_outbox',
   ]
   for (const table of tables) {
@@ -95,7 +96,7 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 5)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 7)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_access_tokens') as { count: number }
@@ -103,9 +104,28 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
   const repositoryColumns = upgraded.pragma('table_info(repositories)') as { name: string }[]
   const pipelineColumns = upgraded.pragma('table_info(pipelines)') as { name: string }[]
   const workItemColumns = upgraded.pragma('table_info(work_items)') as { name: string }[]
+  const syncTokenTable = upgraded
+    .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('feishu_sync_credentials') as { count: number }
   assert.equal(repositoryColumns.some((column) => column.name === 'local_path'), true)
   assert.equal(pipelineColumns.some((column) => column.name === 'local_path'), true)
   assert.equal(workItemColumns.some((column) => column.name === 'archived_at'), true)
+  assert.equal(syncTokenTable.count, 1)
+  upgraded.close()
+})
+
+test('版本 6 数据库升级后会创建飞书同步密钥表', () => {
+  const filename = join(tempDir, 'upgrade-v6-sync-token.db')
+  const oldDb = createDatabase({ filename })
+  oldDb.exec('DROP TABLE feishu_sync_credentials; PRAGMA user_version = 6;')
+  oldDb.close()
+
+  const upgraded = createDatabase({ filename })
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 7)
+  const table = upgraded
+    .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('feishu_sync_credentials') as { count: number }
+  assert.equal(table.count, 1)
   upgraded.close()
 })
 

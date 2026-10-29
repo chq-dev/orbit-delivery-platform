@@ -17,6 +17,7 @@ import {
 import { useMemo, useRef, useState } from 'react'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuIntegrationCard } from '../components/FeishuIntegrationCard'
+import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { platformMeta } from '../appConfig'
 import { useData } from '../store'
 import type { PlatformKey, WorkItemType } from '../types'
@@ -187,6 +188,8 @@ export function Accounts() {
       </div>
 
       <FeishuIntegrationCard />
+
+      <FeishuLiveSyncCard />
 
       <div className="platform-grid">
         {platformOrder.map((key) => {

@@ -16,12 +16,14 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Terminal,
   UserRound,
   Workflow,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { DeliveryDialog } from '../components/DeliveryDialog'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
+import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
 import { codingSkills } from '../codingSkills'
@@ -46,6 +48,7 @@ export function WorkItems({
     feishuIntegration,
     feishuInbox,
     feishuSnapshot,
+    feishuAgent,
     syncFeishu,
   } = useData()
   const [tab, setTab] = useState<TabKey>('all')
@@ -105,6 +108,10 @@ export function WorkItems({
     (feishuIntegration.authMode === 'token' || feishuIntegration.authMode === 'plugin')
   const externalFeishuSync =
     feishuIntegration.connected && feishuIntegration.authMode === 'cli'
+  const localAgentReady =
+    feishuAgent.online &&
+    Boolean(feishuAgent.health?.config.configured) &&
+    Boolean(feishuAgent.health?.meegle.authenticated)
   const frontendFeishuSync = feishuSnapshot.configured
   const backendFeishuCount = workItems.filter(
     (item) => item.source === 'feishu' && !item.frontendOnly,
@@ -125,7 +132,14 @@ export function WorkItems({
       return
     }
     if (externalFeishuSync) {
-      setGuideOpen(true)
+      setSyncingType(type)
+      try {
+        await syncFeishu()
+      } catch {
+        setGuideOpen(true)
+      } finally {
+        setSyncingType(null)
+      }
       return
     }
     if (frontendFeishuSync) {
@@ -230,7 +244,9 @@ export function WorkItems({
                 : !feishuIntegration.connected
                 ? '飞书同步尚未配置，点击同步按钮查看设置步骤'
                 : externalFeishuSync
-                  ? '外部 Meegle 同步已连接，等待同步器写入工作项'
+                  ? localAgentReady
+                    ? '本机同步代理已连接，刷新页面会自动拉取飞书实时数据'
+                    : '外部 Meegle 同步已连接；启动本机代理并完成授权后可自动更新'
                   : '后端飞书直连已连接，可立即同步需求和缺陷'}
             </small>
           </span>
@@ -244,6 +260,8 @@ export function WorkItems({
           </button>
         </div>
       </div>
+
+      <FeishuLiveSyncCard />
 
       <article className="card work-items-card">
         <div className="work-items-topbar">
@@ -423,7 +441,24 @@ export function WorkItems({
         }
       >
         <div className="feishu-connect-form">
-          <Field label="方案 A：通过本机 Codex 执行（适合当前服务器）">
+          <Field label="方案 A：页面驱动本机同步代理（推荐）">
+            <div className="credential-note">
+              <KeyRound size={16} />
+              <div>
+                <p>
+                  在已登录飞书的当前电脑启动代理，然后使用上方“本机飞书实时同步”卡片完成
+                  密钥绑定和授权。页面刷新会自动触发同步，无需复制飞书 Cookie。
+                </p>
+                <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                  {`npm install -g @lark-project/meegle@1.0.27
+meegle config set host project.feishu.cn
+meegle auth login --device-code
+npm run feishu:agent`}
+                </code>
+              </div>
+            </div>
+          </Field>
+          <Field label="方案 B：通过本机 Codex Skill 执行（降级）">
             <div className="credential-note">
               <Sparkles size={16} />
               <div>
@@ -449,9 +484,9 @@ npm run sync:feishu:watch`}
               </p>
             </div>
           </div>
-          <Field label="方案 B：外部同步机">
+          <Field label="方案 C：命令行常驻同步（备选）">
             <div className="credential-note">
-              <KeyRound size={16} />
+              <Terminal size={16} />
               <div>
                 <p>在登录过飞书的电脑执行一次授权，然后常驻同步：</p>
                 <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
@@ -460,7 +495,7 @@ meegle config set host project.feishu.cn
 meegle auth login --device-code
 
 export PLATFORM_BASE_URL=http://8.145.45.84:8787
-export PLATFORM_SYNC_TOKEN=<服务器 FEISHU_INGEST_TOKEN>
+export PLATFORM_SYNC_TOKEN=<页面生成后仅展示一次，或服务器 FEISHU_INGEST_TOKEN>
 export FEISHU_PROJECT_KEY=rjcloud
 
 npm run sync:feishu
@@ -469,7 +504,7 @@ npm run sync:feishu:watch`}
               </div>
             </div>
           </Field>
-          <Field label="方案 C：服务器直连（需要能访问飞书）">
+          <Field label="方案 D：服务器直连（需要能访问飞书）">
             <div className="credential-note">
               <ShieldCheck size={16} />
               <div>
@@ -486,7 +521,7 @@ FEISHU_DEFECT_TYPE_KEY=issue`}
               </div>
             </div>
           </Field>
-          <Field label="方案 D：纯前端快照（仅展示，不会触发飞书同步）">
+          <Field label="方案 E：纯前端快照（仅展示，不会触发飞书同步）">
             <div className="credential-note">
               <CloudDownload size={16} />
               <div>

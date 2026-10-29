@@ -23,6 +23,12 @@ function bearerToken(headers: Record<string, string | string[] | undefined>): st
   return headerValue(headers, 'x-feishu-ingest-token')
 }
 
+export function feishuIngestBearerToken(
+  headers: Record<string, string | string[] | undefined>,
+): string {
+  return bearerToken(headers)
+}
+
 function isLoopback(ip: string | undefined): boolean {
   if (!ip) return false
   const normalized = ip.toLowerCase()
@@ -51,8 +57,9 @@ function safeEqual(left: string, right: string): boolean {
 export function assertFeishuIngestAuthorized(
   request: IngestRequestIdentity,
   expectedToken: string,
+  verifyStoredToken?: (token: string) => boolean,
 ): void {
-  if (!expectedToken) {
+  if (!expectedToken && !verifyStoredToken) {
     if (isLoopback(request.ip) && !hasForwardedAddress(request.headers)) return
     throw new AppError(
       503,
@@ -62,7 +69,7 @@ export function assertFeishuIngestAuthorized(
   }
 
   const token = bearerToken(request.headers)
-  if (!token || !safeEqual(token, expectedToken)) {
+  if (!token || (!(expectedToken && safeEqual(token, expectedToken)) && !verifyStoredToken?.(token))) {
     throw new AppError(401, 'FEISHU_INGEST_UNAUTHORIZED', '飞书同步凭证无效')
   }
 }
