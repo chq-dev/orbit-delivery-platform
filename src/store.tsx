@@ -19,9 +19,19 @@ import {
   type WorkItemInput,
 } from './api'
 import {
+  fetchFeishuSnapshot,
+  getFeishuSnapshotConfig,
+  mapFeishuSnapshotItems,
+  mergeFeishuSnapshot,
+  readCachedFeishuSnapshot,
+  writeCachedFeishuSnapshot,
+  type FeishuSnapshot,
+} from './feishuSnapshot'
+import {
   type Account,
   type FeishuInboxItem,
   type FeishuIntegrationStatus,
+  type FeishuSnapshotStatus,
   type FeishuSyncResult,
   type PipelineRun,
   type Repository,
@@ -38,6 +48,7 @@ interface DataContextValue {
   reports: TestReport[]
   feishuInbox: FeishuInboxItem[]
   feishuIntegration: FeishuIntegrationStatus
+  feishuSnapshot: FeishuSnapshotStatus
   loading: boolean
   toasts: ToastMessage[]
   addRepository: (input: RepositoryInput) => Promise<Repository>
@@ -52,6 +63,7 @@ interface DataContextValue {
   connectFeishu: (input: FeishuConnectInput) => Promise<FeishuIntegrationStatus>
   testFeishu: () => Promise<{ ok: true; projectName?: string }>
   syncFeishu: () => Promise<FeishuSyncResult>
+  refreshFeishuSnapshot: (announce?: boolean) => Promise<number>
   disconnectFeishu: () => Promise<FeishuIntegrationStatus>
   startPipeline: (input: PipelineInput) => Promise<PipelineRun>
   reload: (silent?: boolean) => Promise<void>
@@ -64,7 +76,10 @@ const DataContext = createContext<DataContextValue | null>(null)
 export function DataProvider({ children }: { children: ReactNode }) {
   const [repositories, setRepositories] = useState<Repository[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [workItems, setWorkItems] = useState<WorkItem[]>([])
+  const [serverWorkItems, setServerWorkItems] = useState<WorkItem[]>([])
+  const [snapshot, setSnapshot] = useState<FeishuSnapshot | null>(() =>
+    readCachedFeishuSnapshot(),
+  )
   const [pipelines, setPipelines] = useState<PipelineRun[]>([])
   const [reports, setReports] = useState<TestReport[]>([])
   const [feishuInbox, setFeishuInbox] = useState<FeishuInboxItem[]>([])
@@ -73,12 +88,29 @@ export function DataProvider({ children }: { children: ReactNode }) {
     webhookConfigured: false,
     eventPath: '/api/integrations/feishu/events',
   })
+  const snapshotConfig = useMemo(() => getFeishuSnapshotConfig(), [])
+  const [feishuSnapshot, setFeishuSnapshot] = useState<FeishuSnapshotStatus>({
+    configured: true,
+    url: snapshotConfig.url,
+    loading: false,
+    itemCount: snapshot?.items.length ?? 0,
+    lastUpdatedAt: snapshot?.syncedAt || undefined,
+  })
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const toastSequence = useRef(0)
   const initialLoadStarted = useRef(false)
   const hasLoaded = useRef(false)
   const pipelineStatuses = useRef<Map<string, PipelineRun['status']>>(new Map())
+
+  const snapshotWorkItems = useMemo(
+    () => (snapshot ? mapFeishuSnapshotItems(snapshot, repositories) : []),
+    [repositories, snapshot],
+  )
+  const workItems = useMemo(
+    () => mergeFeishuSnapshot(serverWorkItems, snapshotWorkItems),
+    [serverWorkItems, snapshotWorkItems],
+  )
 
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id))
@@ -105,7 +137,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       setRepositories(data.repositories)
       setAccounts(data.accounts)
-      setWorkItems(data.workItems)
+      setServerWorkItems(data.workItems)
       setPipelines(data.pipelines)
       setReports(data.reports)
       setFeishuInbox(data.feishuInbox)
@@ -145,11 +177,55 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [applyBootstrap, notify],
   )
 
+  const refreshFeishuSnapshot = useCallback(
+    async (announce = false) => {
+      setFeishuSnapshot((current) => ({ ...current, loading: true, error: undefined }))
+      try {
+        const result = await fetchFeishuSnapshot(snapshotConfig.url)
+        if (result.snapshot.items.length === 0 && !result.snapshot.syncedAt) {
+          throw new Error('飞书快照尚未生成，请先运行 npm run sync:feishu')
+        }
+        setSnapshot(result.snapshot)
+        writeCachedFeishuSnapshot(result.snapshot)
+        setFeishuSnapshot({
+          configured: true,
+          url: snapshotConfig.url,
+          loading: false,
+          itemCount: result.snapshot.items.length,
+          lastUpdatedAt: result.snapshot.syncedAt || new Date().toISOString(),
+        })
+        if (announce) {
+          notify(
+            '飞书工作项已更新',
+            `${result.snapshot.items.length} 条数据来自前端快照${result.skipped > 0 ? `，跳过 ${result.skipped} 条无效记录` : ''}`,
+          )
+        }
+        return result.snapshot.items.length
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '无法读取飞书快照'
+        setFeishuSnapshot((current) => ({ ...current, loading: false, error: message }))
+        if (announce) notify('飞书前端快照更新失败', message, 'warning')
+        throw error
+      }
+    },
+    [notify, snapshotConfig.url],
+  )
+
   useEffect(() => {
     if (initialLoadStarted.current) return
     initialLoadStarted.current = true
     void reload(false)
-  }, [reload])
+    void refreshFeishuSnapshot().catch(() => undefined)
+  }, [refreshFeishuSnapshot, reload])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshFeishuSnapshot().catch(() => undefined)
+      }
+    }, snapshotConfig.refreshMs)
+    return () => window.clearInterval(timer)
+  }, [refreshFeishuSnapshot, snapshotConfig.refreshMs])
 
   const hasRunningPipeline = pipelines.some((run) => run.status === 'running')
   useEffect(() => {
@@ -197,7 +273,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setRepositories((current) =>
           current.map((item) => (item.id === repository.id ? repository : item)),
         )
-        setWorkItems((current) =>
+        setServerWorkItems((current) =>
           current.map((item) =>
             item.repoId === repository.id ? { ...item, branch: repository.branch } : item,
           ),
@@ -254,7 +330,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     async (input: WorkItemInput) => {
       try {
         const item = await api.createWorkItem(input)
-        setWorkItems((current) => [item, ...current])
+        setServerWorkItems((current) => [item, ...current])
         notify(
           input.type === 'requirement' ? '需求已创建' : '缺陷已登记',
           `${item.id} · ${item.title}`,
@@ -273,7 +349,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     async (inputs: WorkItemInput[]) => {
       try {
         const result = await api.importWorkItems(inputs)
-        setWorkItems((current) => [...result.items, ...current])
+        setServerWorkItems((current) => [...result.items, ...current])
         const requirementCount = result.items.filter((item) => item.type === 'requirement').length
         const defectCount = result.items.length - requirementCount
         const summary = [
@@ -326,6 +402,21 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const syncFeishu = useCallback(async () => {
     try {
+      try {
+        const count = await refreshFeishuSnapshot()
+        const syncedAt = new Date().toISOString()
+        notify('飞书前端快照已更新', `${count} 条工作项已直接刷新到当前列表`)
+        return {
+          fetched: count,
+          upserted: count,
+          skipped: 0,
+          message: `已从前端快照更新 ${count} 条工作项`,
+          syncedAt,
+        }
+      } catch (snapshotError) {
+        if (!feishuIntegration.connected) throw snapshotError
+      }
+
       const result = await api.syncFeishu()
       notify(
         '飞书工作项已同步',
@@ -337,7 +428,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reportApiError('飞书工作项同步失败', error)
       throw error
     }
-  }, [notify, reload, reportApiError])
+  }, [
+    feishuIntegration.connected,
+    notify,
+    refreshFeishuSnapshot,
+    reload,
+    reportApiError,
+  ])
 
   const disconnectFeishu = useCallback(async () => {
     try {
@@ -356,7 +453,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       try {
         const run = await api.startPipeline(input)
         setPipelines((current) => [run, ...current])
-        setWorkItems((current) =>
+        setServerWorkItems((current) =>
           current.map((item) =>
             item.id === run.workItemId ? { ...item, status: '进行中', updatedAt: '刚刚' } : item,
           ),
@@ -381,6 +478,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reports,
       feishuInbox,
       feishuIntegration,
+      feishuSnapshot,
       loading,
       toasts,
       addRepository,
@@ -392,6 +490,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       connectFeishu,
       testFeishu,
       syncFeishu,
+      refreshFeishuSnapshot,
       disconnectFeishu,
       startPipeline,
       reload,
@@ -408,6 +507,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       dismissToast,
       feishuInbox,
       feishuIntegration,
+      feishuSnapshot,
       importAccounts,
       importWorkItems,
       loading,
@@ -415,6 +515,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       pipelines,
       reload,
       reports,
+      refreshFeishuSnapshot,
       repositories,
       startPipeline,
       updateRepositorySettings,

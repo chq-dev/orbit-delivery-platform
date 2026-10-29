@@ -1,0 +1,67 @@
+import 'dotenv/config'
+import { resolve } from 'node:path'
+import { config } from '../config.js'
+import { createDatabase } from '../db/database.js'
+import type { Priority, WorkItemType } from '../domain/types.js'
+import {
+  buildFeishuSnapshot,
+  writeFeishuSnapshot,
+} from '../services/feishuSnapshotService.js'
+import type { SyncedFeishuWorkItem } from '../services/workItemService.js'
+
+interface FeishuWorkItemRow {
+  type: WorkItemType
+  title: string
+  description: string
+  priority: Priority
+  owner: string
+  external_id: string
+  updated_at: string
+}
+
+function snapshotPath(): string {
+  return resolve(
+    process.cwd(),
+    process.env.FEISHU_SNAPSHOT_PATH?.trim() || 'data/feishu-work-items.json',
+  )
+}
+
+const db = createDatabase({ filename: config.dbPath })
+try {
+  const rows = db
+    .prepare(
+      `SELECT type, title, description, priority, owner, external_id, updated_at
+       FROM work_items
+       WHERE source = 'feishu' AND external_id IS NOT NULL AND external_id <> ''
+       ORDER BY updated_at DESC, id DESC`,
+    )
+    .all() as FeishuWorkItemRow[]
+  const items: SyncedFeishuWorkItem[] = rows.map((row) => ({
+    externalId: row.external_id,
+    type: row.type,
+    title: row.title,
+    description: row.description,
+    priority: row.priority,
+    owner: row.owner,
+    updatedAt: Number.isNaN(Date.parse(row.updated_at))
+      ? new Date().toISOString()
+      : row.updated_at,
+  }))
+  const path = snapshotPath()
+  const syncedAt = new Date().toISOString()
+  writeFeishuSnapshot(path, buildFeishuSnapshot(config.feishuProjectKey, items, syncedAt))
+  console.log(
+    JSON.stringify(
+      {
+        snapshotFile: path,
+        projectKey: config.feishuProjectKey,
+        items: items.length,
+        syncedAt,
+      },
+      null,
+      2,
+    ),
+  )
+} finally {
+  db.close()
+}

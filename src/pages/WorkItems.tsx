@@ -44,6 +44,7 @@ export function WorkItems({
     notify,
     feishuIntegration,
     feishuInbox,
+    feishuSnapshot,
     syncFeishu,
   } = useData()
   const [tab, setTab] = useState<TabKey>('all')
@@ -103,9 +104,21 @@ export function WorkItems({
     (feishuIntegration.authMode === 'token' || feishuIntegration.authMode === 'plugin')
   const externalFeishuSync =
     feishuIntegration.connected && feishuIntegration.authMode === 'cli'
+  const frontendFeishuSync = feishuSnapshot.configured
 
   const openFeishuSync = async (type: WorkItemType) => {
     setImportMode(type)
+    if (frontendFeishuSync) {
+      setSyncingType(type)
+      try {
+        await syncFeishu()
+      } catch {
+        if (!feishuIntegration.connected) setGuideOpen(true)
+      } finally {
+        setSyncingType(null)
+      }
+      return
+    }
     if (directFeishuSync) {
       setSyncingType(type)
       try {
@@ -185,7 +198,13 @@ export function WorkItems({
           <span>
             <strong>rjcloud 飞书项目</strong>
             <small>
-              {!feishuIntegration.connected
+              {frontendFeishuSync
+                ? feishuSnapshot.loading
+                  ? '正在读取前端同步快照…'
+                  : feishuSnapshot.error
+                    ? `前端快照不可用：${feishuSnapshot.error}`
+                    : `前端快照 ${feishuSnapshot.itemCount} 条${feishuSnapshot.lastUpdatedAt ? ` · 更新于 ${feishuSnapshot.lastUpdatedAt}` : ''}`
+                : !feishuIntegration.connected
                 ? '飞书同步尚未配置，点击同步按钮查看设置步骤'
                 : externalFeishuSync
                   ? '外部 Meegle 同步已连接，等待同步器写入工作项'
@@ -268,7 +287,9 @@ export function WorkItems({
                           <strong>{item.title}</strong>
                           <small>
                             {item.source === 'feishu' && item.externalId ? `飞书 ${item.externalId} · ` : ''}
-                            {item.id}{item.type === 'defect' && ' · 测试通过后自动关闭'}
+                            {item.id}
+                            {item.frontendOnly && ' · 前端快照'}
+                            {item.type === 'defect' && ' · 测试通过后自动关闭'}
                           </small>
                         </div>
                       </div>
@@ -305,7 +326,12 @@ export function WorkItems({
                               event.stopPropagation()
                               openDelivery(item.id)
                             }}
-                            disabled={item.status === '已关闭'}
+                            disabled={item.status === '已关闭' || item.frontendOnly || !repo}
+                            title={
+                              item.frontendOnly || !repo
+                                ? '前端快照仅用于展示，需先由后端同步后才能发起交付'
+                                : undefined
+                            }
                           >
                             <Rocket size={13} /> 发起交付
                           </button>
@@ -324,7 +350,7 @@ export function WorkItems({
             <h3>{workItems.length === 0 ? '尚未同步到工作项' : '没有匹配的工作项'}</h3>
             <p>
               {workItems.length === 0
-                ? '请在可访问飞书的机器上运行 npm run sync:feishu，或配置后端飞书访问凭证；同步完成后列表会自动刷新。'
+                ? '请确认前端快照地址可访问，或在能访问飞书的机器上运行 npm run sync:feishu；快照更新后列表会自动刷新。'
                 : '调整筛选条件，或创建一个新的需求 / 缺陷。'}
             </p>
           </div>
@@ -418,6 +444,19 @@ FEISHU_DEFECT_TYPE_KEY=issue`}
               </div>
             </div>
           </Field>
+          <Field label="方案 C：纯前端快照（不经过业务后端）">
+            <div className="credential-note">
+              <CloudDownload size={16} />
+              <div>
+                <p>在已授权的同步机生成同源 JSON，前端每 60 秒直接读取并刷新列表：</p>
+                <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                  {`meegle auth login --device-code
+export FEISHU_SNAPSHOT_PATH=./data/feishu-work-items.json
+npm run sync:feishu:snapshot:watch`}
+                </code>
+              </div>
+            </div>
+          </Field>
           <p>
             插件凭证在飞书项目的空间管理 → 插件 → 访问凭证中获取。不要使用浏览器 Cookie
             或短期抓包 Token 做长期部署。
@@ -447,7 +486,11 @@ FEISHU_DEFECT_TYPE_KEY=issue`}
                     setDetailItem(null)
                     openDelivery(detailItem.id)
                   }}
-                  disabled={detailItem.status === '已关闭'}
+                  disabled={
+                    detailItem.status === '已关闭' ||
+                    detailItem.frontendOnly ||
+                    !repositories.some((repo) => repo.id === detailItem.repoId)
+                  }
                 >
                   <Rocket size={15} /> 发起交付
                 </button>

@@ -90,6 +90,28 @@ curl -sS http://8.145.45.84:8787/api/health
 后续 watch 轮询才能做到无需人工操作；飞书不允许匿名读取，因此无法通过纯前端代码
 或写死源码彻底消除首次授权。
 
+### 纯前端列表刷新（同源快照）
+
+浏览器不能直接读取 `project.feishu.cn/goapi`：未登录会跳转登录页，已登录时接口也没有
+允许平台域名读取的 CORS 响应头。因此不要把 Chrome Cookie、抓包 Token 或 Plugin
+Secret 放进前端。列表采用“授权同步机生成快照、浏览器只读轮询”的方式：
+
+1. 能访问飞书的机器执行一次 `meegle auth login --device-code`。
+2. 按需设置 `FEISHU_SNAPSHOT_PATH`，默认写入 `data/feishu-work-items.json`。
+3. 运行 `npm run sync:feishu:snapshot:watch`，同步器会原子写入
+   `data/feishu-work-items.json`，格式包含 `syncedAt` 和去重后的真实工作项。
+4. Vite 开发服务器会把该文件映射为 `/feishu-work-items.json`，生产构建会将其输出到
+   `dist/feishu-work-items.json`；前端默认每 60 秒读取并合并到“需求与缺陷”列表。
+
+跨服务器部署时，把 `FEISHU_SNAPSHOT_PATH` 指向 Web 静态目录，或把生成的 JSON 同步到
+该目录。也可以通过 `VITE_FEISHU_SNAPSHOT_URL` 指向任意允许 CORS 的只读快照地址。
+前端仅消费 `externalId`、标题、描述、优先级、负责人和更新时间，不会接触飞书凭证。
+前端快照中的工作项标记为“仅展示”，发起交付前仍需由后端同步或导入为平台工作项。
+
+如果当前数据库已经包含真实飞书工作项，可先用 `npm run snapshot:from-db` 生成一次
+`data/feishu-work-items.json`，再启动页面即可由前端直接读取；后续用 Meegle watch
+覆盖同一文件即可持续更新。快照文件和数据库都在 `.gitignore` 中，不会提交真实项目数据。
+
 首次部署时可选择后端直连飞书，或在另一台能访问飞书的机器上运行外部同步器。两者都会把真实需求和缺陷写入「需求与缺陷」列表；外部同步模式由同步器按 `FEISHU_SYNC_INTERVAL_MS` 轮询。数据库路径仍建议挂载持久卷，避免重新部署后丢失本地状态：
 
 1. 在「平台账号」绑定 Git 账号。

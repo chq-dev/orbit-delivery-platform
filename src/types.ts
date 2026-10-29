@@ -49,6 +49,7 @@ export interface WorkItem {
   createdAt: string
   source?: 'local' | 'feishu'
   externalId?: string
+  frontendOnly?: boolean
 }
 
 export type StageStatus = 'pending' | 'running' | 'success' | 'failed'
@@ -169,6 +170,15 @@ export interface FeishuSyncResult {
   skipped: number
   message: string
   syncedAt: string
+}
+
+export interface FeishuSnapshotStatus {
+  configured: boolean
+  url: string
+  loading: boolean
+  itemCount: number
+  lastUpdatedAt?: string
+  error?: string
 }
 
 export interface ToastMessage {

@@ -6,6 +6,10 @@ import {
   fetchMeegleWorkItems,
   type MeegleSyncConfig,
 } from '../services/meegleCliClient.js'
+import {
+  buildFeishuSnapshot,
+  writeFeishuSnapshot,
+} from '../services/feishuSnapshotService.js'
 import type { SyncedFeishuWorkItem } from '../services/workItemService.js'
 
 interface SyncState {
@@ -33,6 +37,7 @@ interface SyncSummary {
   skipped: number
   warnings: string[]
   syncedAt: string
+  snapshotFile: string
 }
 
 function textEnv(name: string, fallback = ''): string {
@@ -81,6 +86,17 @@ function syncConfig(state: SyncState): MeegleSyncConfig {
 
 function platformBaseUrl(): string {
   return textEnv('PLATFORM_BASE_URL', 'http://127.0.0.1:8787').replace(/\/$/, '')
+}
+
+function snapshotFilePath(): string {
+  return resolve(
+    process.cwd(),
+    textEnv('FEISHU_SNAPSHOT_PATH', 'data/feishu-work-items.json'),
+  )
+}
+
+function snapshotOnly(): boolean {
+  return process.argv.includes('--snapshot-only') || booleanEnv('FEISHU_SNAPSHOT_ONLY', false)
 }
 
 function platformHeaders(): Record<string, string> {
@@ -187,7 +203,15 @@ async function runOnce(): Promise<SyncSummary> {
   const config = syncConfig(state)
   await assertMeegleAuthenticated(config)
   const fetched = await fetchMeegleWorkItems(config)
-  const repoId = fetched.items.length > 0 ? await resolveRepoId() : undefined
+  const syncedAt = new Date().toISOString()
+  const snapshotFile = snapshotFilePath()
+  writeFeishuSnapshot(
+    snapshotFile,
+    buildFeishuSnapshot(config.projectKey, fetched.items, syncedAt),
+  )
+
+  const repoId =
+    !snapshotOnly() && fetched.items.length > 0 ? await resolveRepoId() : undefined
   let created = 0
   let updated = 0
   let skipped = 0
@@ -201,7 +225,6 @@ async function runOnce(): Promise<SyncSummary> {
     }
   }
 
-  const syncedAt = new Date().toISOString()
   saveState({
     lastSuccessfulSyncAt: syncedAt,
     projectKey: config.projectKey,
@@ -217,6 +240,7 @@ async function runOnce(): Promise<SyncSummary> {
     skipped: fetched.skipped + skipped,
     warnings: fetched.warnings,
     syncedAt,
+    snapshotFile,
   }
 }
 
