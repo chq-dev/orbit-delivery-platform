@@ -96,14 +96,16 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     })
   })
 
-  router.get('/bootstrap', (_request, response) => {
+  router.get('/bootstrap', (request, response) => {
+    const includeWorkItems = request.query.includeWorkItems !== '0'
+    const includeFeishuInbox = request.query.includeFeishuInbox !== '0'
     response.json({
       repositories: listRepositories(db),
       accounts: listAccounts(db),
-      workItems: listWorkItemSummaries(db),
+      workItems: includeWorkItems ? listWorkItemSummaries(db) : [],
       pipelines: listPipelines(db),
       reports: listTestReports(db),
-      feishuInbox: listFeishuInbox(db),
+      feishuInbox: includeFeishuInbox ? listFeishuInbox(db) : [],
       feishuIntegration: getFeishuStatus(db),
     })
   })

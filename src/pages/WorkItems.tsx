@@ -51,15 +51,18 @@ export function WorkItems({
 }) {
   const {
     workItems,
+    workItemsLoading,
+    workItemsError,
     repositories,
     pipelines,
     notify,
     feishuIntegration,
-    feishuInbox,
+    refreshFeishuInbox,
     feishuSnapshot,
     feishuAgent,
     syncFeishu,
     getWorkItemDetail,
+    refreshWorkItems,
   } = useData()
   const [tab, setTab] = useState<TabKey>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -210,9 +213,14 @@ export function WorkItems({
       }
       return
     }
-    if (feishuInbox.some((item) => item.type === type)) {
-      setImportOpen(true)
-      return
+    try {
+      const inbox = await refreshFeishuInbox()
+      if (inbox.some((item) => item.type === type)) {
+        setImportOpen(true)
+        return
+      }
+    } catch {
+      // The data provider exposes the inbox error inside the import dialog.
     }
     setGuideOpen(true)
   }
@@ -454,12 +462,27 @@ export function WorkItems({
         </div>
         {filtered.length === 0 && (
           <div className="empty-state table-empty">
-            <h3>{workItems.length === 0 ? '尚未同步到工作项' : '没有匹配的工作项'}</h3>
+            <h3>
+              {workItemsLoading && workItems.length === 0
+                ? '正在加载工作项…'
+                : workItems.length === 0
+                  ? '尚未同步到工作项'
+                  : '没有匹配的工作项'}
+            </h3>
             <p>
-              {workItems.length === 0
+              {workItemsError
+                ? `工作项加载失败：${workItemsError}`
+                : workItemsLoading && workItems.length === 0
+                  ? '列表数据较大，正在后台加载，页面其他区域可以继续使用。'
+                  : workItems.length === 0
                 ? '请确认前端快照地址可访问，或在能访问飞书的机器上运行 npm run sync:feishu；快照更新后列表会自动刷新。'
                 : '调整筛选条件，或创建一个新的需求 / 缺陷。'}
             </p>
+            {workItemsError && (
+              <button className="btn btn-secondary btn-sm" onClick={() => void refreshWorkItems(true)}>
+                重新加载
+              </button>
+            )}
           </div>
         )}
         <div className="table-footer">

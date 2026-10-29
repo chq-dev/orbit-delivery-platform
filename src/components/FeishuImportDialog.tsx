@@ -14,7 +14,16 @@ export function FeishuImportDialog({
   mode: WorkItemType
   onClose: () => void
 }) {
-  const { repositories, workItems, feishuInbox, feishuIntegration, importWorkItems } = useData()
+  const {
+    repositories,
+    workItems,
+    feishuInbox,
+    feishuInboxLoading,
+    feishuInboxError,
+    feishuIntegration,
+    importWorkItems,
+    refreshFeishuInbox,
+  } = useData()
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const available = useMemo(
@@ -26,13 +35,19 @@ export function FeishuImportDialog({
     [workItems],
   )
   const pending = available.filter((item) => !importedExternalIds.has(item.externalId))
+  const pendingKey = pending.map((item) => item.externalId).join('|')
+
+  useEffect(() => {
+    if (!open) return
+    void refreshFeishuInbox().catch(() => undefined)
+  }, [open, refreshFeishuInbox])
 
   useEffect(() => {
     if (!open) return
     setSelected(new Set(pending.map((item) => item.externalId)))
     // Default to the currently available inbox items whenever the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, mode])
+  }, [open, mode, pendingKey])
 
   const toggle = (externalId: string) => {
     setSelected((current) => {
@@ -91,7 +106,11 @@ export function FeishuImportDialog({
             <button className="btn btn-secondary" onClick={onClose}>
               取消
             </button>
-            <button className="btn btn-primary" onClick={importSelected} disabled={!selectedCount}>
+            <button
+              className="btn btn-primary"
+              onClick={importSelected}
+              disabled={!selectedCount || feishuInboxLoading}
+            >
               导入 {selectedCount || ''} 条到本地
             </button>
           </div>
@@ -131,6 +150,12 @@ export function FeishuImportDialog({
       </div>
 
       <div className="feishu-inbox-list">
+        {feishuInboxLoading && available.length === 0 && (
+          <div className="feishu-inbox-empty">正在加载飞书收件箱…</div>
+        )}
+        {feishuInboxError && (
+          <div className="feishu-inbox-empty">飞书收件箱加载失败：{feishuInboxError}</div>
+        )}
         {available.map((item) => {
           const imported = importedExternalIds.has(item.externalId)
           const isSelected = selected.has(item.externalId)
@@ -161,7 +186,9 @@ export function FeishuImportDialog({
             </button>
           )
         })}
-        {available.length === 0 && <div className="feishu-inbox-empty">当前没有可导入的工作项</div>}
+        {!feishuInboxLoading && !feishuInboxError && available.length === 0 && (
+          <div className="feishu-inbox-empty">当前没有可导入的工作项</div>
+        )}
       </div>
     </Modal>
   )

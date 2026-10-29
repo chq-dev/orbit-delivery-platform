@@ -60,6 +60,7 @@ interface FeishuAgentBindResult {
 }
 
 const FEISHU_AGENT_AUTO_SYNC_INTERVAL_MS = 10 * 60_000
+const WORK_ITEMS_REFRESH_INTERVAL_MS = 60_000
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
@@ -103,9 +104,13 @@ interface DataContextValue {
   repositories: Repository[]
   accounts: Account[]
   workItems: WorkItem[]
+  workItemsLoading: boolean
+  workItemsError?: string
   pipelines: PipelineRun[]
   reports: TestReport[]
   feishuInbox: FeishuInboxItem[]
+  feishuInboxLoading: boolean
+  feishuInboxError?: string
   feishuIntegration: FeishuIntegrationStatus
   feishuSnapshot: FeishuSnapshotStatus
   feishuAgent: FeishuClientAgentState
@@ -123,6 +128,8 @@ interface DataContextValue {
   addWorkItem: (input: WorkItemInput) => Promise<WorkItem>
   getWorkItemDetail: (id: string) => Promise<WorkItem>
   importWorkItems: (inputs: WorkItemInput[]) => Promise<number>
+  refreshWorkItems: (force?: boolean) => Promise<void>
+  refreshFeishuInbox: (force?: boolean) => Promise<FeishuInboxItem[]>
   connectFeishu: (input: FeishuConnectInput) => Promise<FeishuIntegrationStatus>
   testFeishu: () => Promise<{ ok: true; projectName?: string }>
   syncFeishu: () => Promise<FeishuSyncResult>
@@ -146,12 +153,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [repositories, setRepositories] = useState<Repository[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [serverWorkItems, setServerWorkItems] = useState<WorkItem[]>([])
+  const [workItemsLoading, setWorkItemsLoading] = useState(true)
+  const [workItemsError, setWorkItemsError] = useState<string>()
   const [snapshot, setSnapshot] = useState<FeishuSnapshot | null>(() =>
     readCachedFeishuSnapshot(),
   )
   const [pipelines, setPipelines] = useState<PipelineRun[]>([])
   const [reports, setReports] = useState<TestReport[]>([])
   const [feishuInbox, setFeishuInbox] = useState<FeishuInboxItem[]>([])
+  const [feishuInboxLoading, setFeishuInboxLoading] = useState(false)
+  const [feishuInboxError, setFeishuInboxError] = useState<string>()
   const [feishuIntegration, setFeishuIntegration] = useState<FeishuIntegrationStatus>({
     connected: false,
     webhookConfigured: false,
@@ -186,6 +197,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const feishuAgentHealth = useRef<FeishuClientAgentHealth | null>(null)
   const feishuAgentSyncInFlight = useRef(false)
   const lastFeishuAgentSyncAt = useRef(0)
+  const workItemsRequest = useRef<Promise<void> | null>(null)
+  const lastWorkItemsRefreshAt = useRef(0)
+  const feishuInboxRef = useRef<FeishuInboxItem[]>([])
+  const feishuInboxRequest = useRef<Promise<FeishuInboxItem[]> | null>(null)
+  const lastFeishuInboxRefreshAt = useRef(0)
 
   const snapshotWorkItems = useMemo(
     () => (snapshot ? mapFeishuSnapshotItems(snapshot, repositories) : []),
@@ -216,6 +232,65 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [notify],
   )
 
+  const refreshWorkItems = useCallback((force = false): Promise<void> => {
+    if (workItemsRequest.current) return workItemsRequest.current
+    if (!force && Date.now() - lastWorkItemsRefreshAt.current < WORK_ITEMS_REFRESH_INTERVAL_MS) {
+      return Promise.resolve()
+    }
+
+    setWorkItemsLoading(true)
+    const run = async () => {
+      try {
+        const items = await api.listWorkItems()
+        setServerWorkItems(items)
+        hasServerFeishuItems.current = items.some((item) => item.source === 'feishu')
+        lastWorkItemsRefreshAt.current = Date.now()
+        setWorkItemsError(undefined)
+      } catch (error) {
+        setWorkItemsError(
+          error instanceof Error ? error.message : '工作项加载失败，请稍后重试',
+        )
+        throw error
+      } finally {
+        workItemsRequest.current = null
+        setWorkItemsLoading(false)
+      }
+    }
+    const request = run()
+    workItemsRequest.current = request
+    return request
+  }, [])
+
+  const refreshFeishuInbox = useCallback((force = false): Promise<FeishuInboxItem[]> => {
+    if (feishuInboxRequest.current) return feishuInboxRequest.current
+    if (!force && Date.now() - lastFeishuInboxRefreshAt.current < WORK_ITEMS_REFRESH_INTERVAL_MS) {
+      return Promise.resolve(feishuInboxRef.current)
+    }
+
+    setFeishuInboxLoading(true)
+    const run = async () => {
+      try {
+        const items = await api.listFeishuInbox()
+        feishuInboxRef.current = items
+        setFeishuInbox(items)
+        lastFeishuInboxRefreshAt.current = Date.now()
+        setFeishuInboxError(undefined)
+        return items
+      } catch (error) {
+        setFeishuInboxError(
+          error instanceof Error ? error.message : '飞书收件箱加载失败，请稍后重试',
+        )
+        throw error
+      } finally {
+        feishuInboxRequest.current = null
+        setFeishuInboxLoading(false)
+      }
+    }
+    const request = run()
+    feishuInboxRequest.current = request
+    return request
+  }, [])
+
   const applyBootstrap = useCallback(
     (data: BootstrapData) => {
       const previousStatuses = pipelineStatuses.current
@@ -228,13 +303,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       setRepositories(data.repositories)
       setAccounts(data.accounts)
-      setServerWorkItems(data.workItems)
-      hasServerFeishuItems.current = data.workItems.some(
-        (item) => item.source === 'feishu',
-      )
       setPipelines(data.pipelines)
       setReports(data.reports)
-      setFeishuInbox(data.feishuInbox)
+      if (data.feishuInbox.length > 0) {
+        feishuInboxRef.current = data.feishuInbox
+        lastFeishuInboxRefreshAt.current = Date.now()
+        setFeishuInbox(data.feishuInbox)
+      }
       setFeishuIntegration(data.feishuIntegration)
       pipelineStatuses.current = new Map(data.pipelines.map((run) => [run.id, run.status]))
 
@@ -245,10 +320,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
           `${latest.title} · ${latest.version} 已完成测试并归档报告`,
           'success',
         )
+        void refreshWorkItems(true).catch(() => undefined)
       }
       hasLoaded.current = true
     },
-    [notify],
+    [notify, refreshWorkItems],
   )
 
   const reload = useCallback(
@@ -267,8 +343,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       } finally {
         setLoading(false)
       }
+      await refreshWorkItems().catch(() => undefined)
     },
-    [applyBootstrap, notify],
+    [applyBootstrap, notify, refreshWorkItems],
   )
 
   const refreshFeishuSnapshot = useCallback(
@@ -424,6 +501,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         if (!result) throw new Error('本机代理未返回有效的同步结果')
         lastFeishuAgentSyncAt.current = Date.now()
         await reload(true)
+        await refreshWorkItems(true).catch(() => undefined)
         await refreshFeishuSnapshot().catch(() => undefined)
         await refreshFeishuAgent(true)
         if (announce) {
@@ -443,7 +521,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
         feishuAgentSyncInFlight.current = false
       }
     },
-    [notify, refreshFeishuAgent, refreshFeishuSnapshot, reload, waitForAgentCommand],
+    [
+      notify,
+      refreshFeishuAgent,
+      refreshFeishuSnapshot,
+      refreshWorkItems,
+      reload,
+      waitForAgentCommand,
+    ],
   )
 
   const bindFeishuAgent = useCallback(async (): Promise<FeishuAgentBindResult> => {
@@ -531,6 +616,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const completed = status?.health?.lastRun
         if (!completed || Date.parse(completed.at) < startedAt - 5_000) continue
         await reload(true)
+        await refreshWorkItems(true).catch(() => undefined)
         await refreshFeishuSnapshot().catch(() => undefined)
         if (completed.status === 'success') {
           const summary = syncResultFrom(completed.summary)
@@ -546,6 +632,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }
       if (!cancelled) {
         await reload(true)
+        await refreshWorkItems(true).catch(() => undefined)
         notify('飞书授权完成', '首次同步仍在后台执行，页面稍后会自动刷新', 'info')
       }
     }
@@ -584,6 +671,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     fetchAgentStatus,
     notify,
     refreshFeishuSnapshot,
+    refreshWorkItems,
     reload,
   ])
 
@@ -805,12 +893,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const result = await api.testFeishu()
       notify('飞书连接正常', result.projectName ?? '插件、项目和工作项类型权限校验通过')
       await reload(true)
+      await refreshWorkItems(true).catch(() => undefined)
       return result
     } catch (error) {
       reportApiError('飞书连接测试失败', error)
       throw error
     }
-  }, [notify, reload, reportApiError])
+  }, [notify, refreshWorkItems, reload, reportApiError])
 
   const syncFeishu = useCallback(async () => {
     try {
@@ -823,6 +912,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       ) {
         const result = await api.syncFeishu()
         await reload(true)
+        await refreshWorkItems(true).catch(() => undefined)
         await refreshFeishuSnapshot().catch(() => undefined)
         notify(
           '飞书工作项已同步',
@@ -850,6 +940,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     notify,
     refreshFeishuAgent,
     refreshFeishuSnapshot,
+    refreshWorkItems,
     reload,
     reportApiError,
     syncFeishuAgent,
@@ -893,9 +984,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       repositories,
       accounts,
       workItems,
+      workItemsLoading,
+      workItemsError,
       pipelines,
       reports,
       feishuInbox,
+      feishuInboxLoading,
+      feishuInboxError,
       feishuIntegration,
       feishuSnapshot,
       feishuAgent,
@@ -910,6 +1005,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addWorkItem,
       getWorkItemDetail,
       importWorkItems,
+      refreshWorkItems,
+      refreshFeishuInbox,
       connectFeishu,
       testFeishu,
       syncFeishu,
@@ -939,12 +1036,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
       feishuAgent,
       feishuAgentLogin,
       feishuInbox,
+      feishuInboxError,
+      feishuInboxLoading,
       feishuIntegration,
       feishuSnapshot,
       feishuSyncToken,
       importAccounts,
       getWorkItemDetail,
       importWorkItems,
+      refreshWorkItems,
+      refreshFeishuInbox,
       loading,
       notify,
       pipelines,
@@ -961,6 +1062,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       syncFeishu,
       testFeishu,
       toasts,
+      workItemsError,
+      workItemsLoading,
       workItems,
     ],
   )

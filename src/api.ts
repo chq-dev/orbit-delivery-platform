@@ -123,7 +123,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  bootstrap: () => request<BootstrapData>('/bootstrap'),
+  bootstrap: () =>
+    request<BootstrapData>('/bootstrap?includeWorkItems=0&includeFeishuInbox=0'),
+  listWorkItems: () => request<WorkItem[]>('/work-items'),
+  listFeishuInbox: () => request<FeishuInboxItem[]>('/feishu/inbox'),
   createRepository: (input: RepositoryInput) =>
     request<Repository>('/repositories', { method: 'POST', body: JSON.stringify(input) }),
   updateRepositorySettings: (id: string, input: RepositorySettingsInput) =>
