@@ -34,6 +34,8 @@ export const stageDefinitions: StageDefinition[] = [
   { key: 'report', name: '测试报告归档', description: '生成测试报告并关闭缺陷' },
 ]
 
+export const CLIENT_DELIVERY_TRIGGER = '客户端本地交付'
+
 interface PipelineRow {
   id: string
   work_item_id: string
@@ -168,6 +170,7 @@ function hydratePipeline(db: AppDatabase, row: PipelineRow): PipelineRun {
     triggeredBy: row.triggered_by,
     autoCommit: row.auto_commit === 1,
     autoClose: row.auto_close === 1,
+    clientExecuted: row.triggered_by === CLIENT_DELIVERY_TRIGGER,
     simulation: row.simulation === 1,
   }
 }

@@ -1,8 +1,8 @@
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   ChevronDown,
-  Copy,
   FileText,
   FolderGit2,
   GitBranch,
@@ -14,12 +14,29 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createPendingLocalDeliveryJob,
+  markLocalDeliveryStartFailed,
+  pipelineFromDeliveryResult,
+  probeLocalDeliveryAgent,
+  startLocalDelivery,
+  waitForLocalDelivery,
+  type LocalDeliveryAgentReadiness,
+} from '../localDeliveryAgent'
 import { useData } from '../store'
-import type { PipelineRun, WorkItem } from '../types'
+import type { LocalDeliveryJob, PipelineRun, WorkItem } from '../types'
 import { searchWorkItems } from '../workItemSearch'
+import { PipelineSteps } from './PipelineSteps'
 import { Field, Modal, StatusBadge } from './ui'
 
 const MAX_VISIBLE_WORK_ITEMS = 50
+
+function deliveryStatusLabel(job: LocalDeliveryJob | null, error: string): string {
+  if (error || job?.status === 'failed') return '本机执行失败'
+  if (job?.status === 'succeeded') return '本机执行完成'
+  if (job?.status === 'running') return '本机执行中'
+  return '等待本机执行'
+}
 
 function WorkItemPicker({
   items,
@@ -214,22 +231,50 @@ export function DeliveryDialog({
   onStarted: (run: PipelineRun) => void
   initialWorkItemId?: string
 }) {
-  const { workItems, repositories, startPipeline, notify } = useData()
+  const {
+    workItems,
+    repositories,
+    notify,
+    reload,
+    refreshWorkItems,
+  } = useData()
   const [workItemId, setWorkItemId] = useState('')
   const [repoId, setRepoId] = useState('')
-  const [executionMode, setExecutionMode] = useState<'client' | 'server'>('client')
   const [autoCommit, setAutoCommit] = useState(true)
   const [pushAfterAcceptance, setPushAfterAcceptance] = useState(true)
   const [autoClose, setAutoClose] = useState(true)
   const [launching, setLaunching] = useState(false)
-  const [localCommand, setLocalCommand] = useState('')
+  const [deliveryJob, setDeliveryJob] = useState<LocalDeliveryJob | null>(null)
+  const [deliveryError, setDeliveryError] = useState('')
+  const progressRef = useRef<HTMLDivElement | null>(null)
+  const progressVisible = Boolean(deliveryJob || deliveryError)
+  const [localAgent, setLocalAgent] = useState<
+    LocalDeliveryAgentReadiness & { checking: boolean }
+  >({
+    checking: true,
+    online: false,
+    configured: false,
+    meegleAuthenticated: false,
+    codexAvailable: false,
+  })
 
   const availableItems = useMemo(
-    () => workItems.filter((item) => item.status !== '已关闭'),
+    () => workItems.filter((item) => item.status !== '已关闭' && !item.frontendOnly),
     [workItems],
   )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
+  const deliveryStages = useMemo(
+    () =>
+      (deliveryJob?.steps ?? []).map((step) => ({
+        key: step.key,
+        name: step.name,
+        description: step.description,
+        status: step.status,
+        log: step.log,
+      })),
+    [deliveryJob?.steps],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -237,88 +282,129 @@ export function DeliveryDialog({
     setWorkItemId(preferred?.id ?? '')
     const preferredRepoId = preferred?.repoId ?? repositories[0]?.id ?? ''
     setRepoId(preferredRepoId)
-    setExecutionMode(
-      repositories.find((repo) => repo.id === preferredRepoId)?.localPath ? 'client' : 'server',
-    )
     setAutoCommit(true)
     setPushAfterAcceptance(true)
     setAutoClose(true)
-    setLocalCommand('')
+    setDeliveryJob(null)
+    setDeliveryError('')
     // Selection should only reset when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialWorkItemId])
 
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setLocalAgent({
+      checking: true,
+      online: false,
+      configured: false,
+      meegleAuthenticated: false,
+      codexAvailable: false,
+    })
+    void probeLocalDeliveryAgent().then((state) => {
+      if (!cancelled) setLocalAgent({ ...state, checking: false })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !progressVisible) return
+    const frame = window.requestAnimationFrame(() => {
+      progressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [open, progressVisible])
+
   const handleItemChange = (item: WorkItem | undefined) => {
     setWorkItemId(item?.id ?? '')
-    setLocalCommand('')
+    setDeliveryJob(null)
+    setDeliveryError('')
     if (item) handleRepoChange(item.repoId)
   }
 
   const handleRepoChange = (id: string) => {
     setRepoId(id)
-    setLocalCommand('')
-    const repository = repositories.find((repo) => repo.id === id)
-    setExecutionMode(repository?.localPath ? 'client' : 'server')
-  }
-
-  const shellQuote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`
-
-  const buildLocalCommand = () => {
-    const configuredApi = (import.meta.env.VITE_API_BASE as string | undefined)?.trim()
-    const apiBase = configuredApi?.startsWith('http')
-      ? configuredApi.replace(/\/api\/?$/, '')
-      : window.location.origin
-    const args = [
-      'npm',
-      'run',
-      'deliver:local',
-      '--',
-      '--api',
-      apiBase,
-      '--work-item',
-      workItemId,
-      '--repo',
-      repoId,
-      '--path',
-      selectedRepo?.localPath ?? '',
-      '--branch',
-      selectedRepo?.branch ?? '',
-      '--run',
-    ]
-    if (!autoCommit) args.push('--no-commit')
-    else if (pushAfterAcceptance) args.push('--push')
-    if (autoClose) args.push('--close')
-    return args.map(shellQuote).join(' ')
-  }
-
-  const copyLocalCommand = async () => {
-    if (!selectedRepo?.localPath) {
-      notify('缺少客户端代码路径', '请先到代码仓库配置当前客户端的绝对路径', 'warning')
-      return
-    }
-    const command = buildLocalCommand()
-    setLocalCommand(command)
-    try {
-      await navigator.clipboard.writeText(command)
-      notify('本地交付命令已复制', '在 automationPrj 目录的终端中执行即可启动 Codex', 'success')
-    } catch {
-      notify('命令已生成', '浏览器未授予剪贴板权限，请从弹窗中手动复制', 'warning')
-    }
+    setDeliveryJob(null)
+    setDeliveryError('')
   }
 
   const launch = async () => {
     if (launching) return
-    if (executionMode === 'client') {
-      await copyLocalCommand()
+    if (!selectedRepo?.localPath) {
+      notify('缺少客户端代码路径', '请先到代码仓库配置当前客户端的绝对路径', 'warning')
+      return
+    }
+    if (!localAgent.online) {
+      notify('本机代理离线', '请先在当前客户端运行 npm run feishu:agent', 'warning')
+      return
+    }
+    if (!localAgent.configured) {
+      notify('本机代理未绑定平台', '请先到账号中心完成本机代理绑定', 'warning')
+      return
+    }
+    if (!localAgent.codexAvailable) {
+      notify(
+        '未找到 Codex CLI',
+        '请先设置 CODEX_BIN 为 Codex 可执行文件绝对路径，再重启本机代理',
+        'warning',
+      )
       return
     }
     setLaunching(true)
+    setDeliveryError('')
+    const pending = createPendingLocalDeliveryJob({
+      workItemId,
+      repoId,
+      autoCommit,
+      pushAfterAcceptance,
+      autoClose,
+    })
+    setDeliveryJob(pending)
     try {
-      const run = await startPipeline({ workItemId, repoId, autoCommit, autoClose })
+      const started = await startLocalDelivery({
+        workItemId,
+        repoId,
+        autoCommit,
+        pushAfterAcceptance,
+        autoClose,
+      })
+      setDeliveryJob(started)
+      notify(
+        '本机交付已启动',
+        `${workItemId} · ${selectedRepo.name} · ${selectedRepo.branch}`,
+        'info',
+      )
+      const completed = await waitForLocalDelivery(started.id, setDeliveryJob)
+      setDeliveryJob(completed)
+      await reload(true)
+      await refreshWorkItems(true).catch(() => undefined)
+      const run = pipelineFromDeliveryResult(completed.result)
+      if (!run) {
+        notify(
+          '本机交付完成',
+          '代码已在客户端执行完成，但平台未返回流水线记录，请刷新流水线列表查看',
+          'warning',
+        )
+        onClose()
+        return
+      }
+      notify('本机交付完成', `${run.id} · ${run.branch}`, 'success')
       onClose()
       onStarted(run)
-    } catch {
-      // The data provider already reports the API error as a toast.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '本机交付执行失败'
+      setDeliveryJob((current) =>
+        current?.status === 'failed'
+          ? current
+          : markLocalDeliveryStartFailed(current ?? pending, message),
+      )
+      setDeliveryError(message)
+      notify('本机交付失败', message, 'warning')
+      void probeLocalDeliveryAgent().then((state) =>
+        setLocalAgent({ ...state, checking: false }),
+      )
     } finally {
       setLaunching(false)
     }
@@ -329,29 +415,40 @@ export function DeliveryDialog({
       open={open}
       onClose={onClose}
       title="启动一键交付"
-      subtitle="自动完成需求解析、设计报告、编码、集成验证、提交、编译、升级与测试"
+      subtitle="在本机真实执行需求解析、设计、编码、集成验证与提交；构建、升级、测试仅在存在真实证据时完成"
       size="lg"
       footer={
         <>
           <span className="modal-footer-hint">
-            <ShieldCheck size={15} /> {executionMode === 'client'
-              ? '代码、测试、提交与推送均在本机执行，远端只保存需求与仓库配置'
-              : '服务端执行仅适用于后端与代码检出位于同一台主机'}
+            <ShieldCheck size={15} />{' '}
+            {localAgent.checking
+              ? '正在检测当前客户端的本机交付代理'
+              : !localAgent.online
+                ? '本机代理离线，请先在客户端运行 npm run feishu:agent'
+                : !localAgent.configured
+                  ? '本机代理已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
+                  : !localAgent.codexAvailable
+                    ? '未检测到 Codex CLI，请设置 CODEX_BIN 为可执行文件绝对路径后重启代理'
+                    : '点击后由本机代理在配置路径直接执行 Codex，只有真实代码变更才会创建提交'}
           </span>
           <div className="modal-footer-actions">
             <button className="btn btn-secondary" onClick={onClose}>
-              取消
+              {launching ? '后台执行' : '取消'}
             </button>
             <button
               className="btn btn-primary"
               onClick={launch}
-              disabled={!workItemId || !repoId || launching}
+              disabled={
+                !workItemId ||
+                !repoId ||
+                launching ||
+                localAgent.checking ||
+                !localAgent.online ||
+                !localAgent.configured ||
+                !localAgent.codexAvailable
+              }
             >
-              {launching
-                ? '启动中…'
-                : executionMode === 'client'
-                  ? '生成并复制本地命令'
-                  : '启动服务端交付'} <ArrowRight size={16} />
+              {launching ? '本机执行中…' : '一键本机执行'} <ArrowRight size={16} />
             </button>
           </div>
         </>
@@ -359,6 +456,47 @@ export function DeliveryDialog({
     >
       <div className="delivery-dialog-grid">
         <div className="delivery-form">
+          {(deliveryJob || deliveryError) && (
+            <div
+              ref={progressRef}
+              className={`delivery-progress-panel ${deliveryJob?.status ?? 'failed'}`}
+            >
+              <div className="delivery-progress-head">
+                <div>
+                  <span className="eyebrow">
+                    <Terminal size={13} /> LOCAL EXECUTION
+                  </span>
+                  <h3>{deliveryStatusLabel(deliveryJob, deliveryError)}</h3>
+                </div>
+                {deliveryJob && (
+                  <span className={`delivery-progress-status ${deliveryJob.status}`}>
+                    {deliveryJob.status === 'running'
+                      ? '执行中'
+                      : deliveryJob.status === 'succeeded'
+                        ? '已完成'
+                        : '已失败'}
+                  </span>
+                )}
+              </div>
+              {deliveryStages.length > 0 && <PipelineSteps stages={deliveryStages} compact />}
+              <div className="delivery-progress-logs">
+                {(deliveryJob?.steps ?? []).map((step) => (
+                  <div className={`delivery-progress-log ${step.status}`} key={step.key}>
+                    <span className="delivery-progress-log-dot" />
+                    <strong>{step.name}</strong>
+                    <span>{step.log ?? step.description}</span>
+                  </div>
+                ))}
+                {deliveryError && (
+                  <div className="delivery-progress-error">
+                    <AlertTriangle size={15} />
+                    <span>{deliveryError}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="field">
             <span className="field-label">
               选择需求或缺陷 <em>*</em>
@@ -388,22 +526,19 @@ export function DeliveryDialog({
             </Field>
           </div>
 
-          <Field label="执行位置" hint="远端服务器无法访问客户端路径时，选择客户端本地执行">
-            <select
-              value={executionMode}
-              onChange={(event) => setExecutionMode(event.target.value as 'client' | 'server')}
-            >
-              <option value="client">客户端本地（推荐）</option>
-              <option value="server">服务端执行（仅本机后端）</option>
-            </select>
+          <Field label="执行位置" hint="代码只在本机执行，服务端不再提供模拟交付入口">
+            <div className="input-with-icon readonly-input">
+              <Terminal size={15} />
+              <span>客户端本地 · 本机代理</span>
+            </div>
           </Field>
 
           <Field
             label="客户端代码路径"
             hint={
               selectedRepo?.localPath
-                ? '该路径由当前客户端执行脚本校验；代码、测试、提交与推送都在本机完成'
-                : '未配置客户端路径，本次交付按模拟模式执行'
+                ? '一键执行时由本机代理读取平台仓库配置并校验该绝对路径'
+                : '未配置客户端路径，无法一键执行；请先到代码仓库填写'
             }
           >
             <div className="input-with-icon readonly-input">
@@ -438,7 +573,7 @@ export function DeliveryDialog({
               <span className="custom-check" />
               <span>
                 <strong>验收通过后推送</strong>
-                <small>Codex 成功结束后再请求确认，将本地提交推送到目标分支</small>
+                <small>勾选即授权；Codex 成功结束后自动将本地提交推送到目标分支</small>
               </span>
             </label>
             <label className="check-row">
@@ -451,17 +586,44 @@ export function DeliveryDialog({
             </label>
           </div>
 
-          {localCommand && (
-            <Field label="本地执行命令（已复制）" hint="在 automationPrj 仓库根目录运行">
+          {(deliveryJob || deliveryError) && (
+            <Field
+              label="本机执行状态"
+              hint={`本机代理 ${
+                localAgent.checking
+                  ? '检测中'
+                  : localAgent.online
+                    ? localAgent.configured
+                      ? '在线'
+                      : '未绑定'
+                    : '离线'
+              }`}
+            >
               <div className="credential-note">
                 <Terminal size={16} />
                 <div>
-                  <code style={{ display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.7 }}>
-                    {localCommand}
-                  </code>
-                  <button className="btn btn-secondary btn-xs" onClick={() => void copyLocalCommand()}>
-                    <Copy size={12} /> 重新复制
-                  </button>
+                  <strong>{deliveryStatusLabel(deliveryJob, deliveryError)}</strong>
+                  <p>{deliveryError || deliveryJob?.error || deliveryJob?.stage || '正在准备执行'}</p>
+                  {deliveryJob?.localPath && (
+                    <p>
+                      <code>{deliveryJob.localPath}</code>
+                      {deliveryJob.branch ? ` · ${deliveryJob.branch}` : ''}
+                    </p>
+                  )}
+                  {deliveryJob?.result?.commit && (
+                    <p>
+                      提交 <code>{deliveryJob.result.commit.slice(0, 12)}</code>
+                      {deliveryJob.result.changedFiles?.length
+                        ? ` · ${deliveryJob.result.changedFiles.length} 个代码文件有变更`
+                        : ''}
+                    </p>
+                  )}
+                  {deliveryJob?.result?.changedFiles && deliveryJob.result.changedFiles.length > 0 && (
+                    <p>
+                      {deliveryJob.result.changedFiles.slice(0, 8).join(', ')}
+                      {deliveryJob.result.changedFiles.length > 8 ? ' …' : ''}
+                    </p>
+                  )}
                 </div>
               </div>
             </Field>
@@ -472,7 +634,7 @@ export function DeliveryDialog({
             <div>
               <strong>客户端执行说明</strong>
               <p>
-                页面不会把 Mac 路径发送给远端执行。命令会在本机校验目录、分支和 origin，调用 Codex 完成设计、编码、验证与本地提交；加 <code>--push</code> 才会推送分支。
+                点击“一键本机执行”后，页面直接请求当前客户端的 <code>npm run feishu:agent</code> 代理。代理从平台读取仓库路径与分支，在本地校验 Git 工作区后调用 Codex 完成设计、编码、验证与提交；勾选验收后推送时才会写入远程分支。
               </p>
             </div>
           </div>

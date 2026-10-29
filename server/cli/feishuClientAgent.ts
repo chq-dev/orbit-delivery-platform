@@ -1,21 +1,38 @@
 import 'dotenv/config'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import {
   parseFeishuAgentConfig,
   publicFeishuAgentConfig,
   validateFeishuAgentConfig,
   type FeishuAgentStoredConfig,
 } from '../services/feishuAgentConfig.js'
+import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
+import {
+  buildLocalDeliveryCommand,
+  createLocalDeliveryAgentSteps,
+  fetchJsonWithRetry,
+  LOCAL_DELIVERY_CONTRACT_VERSION,
+  parseLocalDeliveryAgentRequest,
+  resolveLocalDeliveryTarget,
+  supportsLocalDeliveryContract,
+  updateLocalDeliveryAgentStep,
+  type LocalDeliveryAgentRequest,
+  type LocalDeliveryBootstrap,
+  type LocalDeliveryAgentStep,
+} from '../services/localDeliveryAgentService.js'
 
 interface CommandResult {
   stdout: string
@@ -51,6 +68,39 @@ interface AgentSyncResult {
   syncedAt: string
 }
 
+type LocalDeliveryJobStatus = 'running' | 'succeeded' | 'failed'
+
+interface LocalDeliveryJob {
+  id: string
+  status: LocalDeliveryJobStatus
+  stage: string
+  workItemId: string
+  repoId: string
+  localPath?: string
+  branch?: string
+  steps: LocalDeliveryAgentStep[]
+  startedAt: string
+  finishedAt?: string
+  result?: unknown
+  error?: string
+}
+
+function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
+  return {
+    id: job.id,
+    status: job.status,
+    stage: job.stage,
+    workItemId: job.workItemId,
+    repoId: job.repoId,
+    localPath: job.localPath,
+    branch: job.branch,
+    steps: job.steps,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    error: job.error,
+  }
+}
+
 const agentHost = process.env.FEISHU_AGENT_HOST?.trim() || '127.0.0.1'
 const agentPort = positiveInteger(process.env.FEISHU_AGENT_PORT, 18_787)
 const heartbeatIntervalMs = positiveInteger(
@@ -60,6 +110,10 @@ const heartbeatIntervalMs = positiveInteger(
 const loginPollIntervalMs = positiveInteger(
   process.env.FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS,
   3_000,
+)
+const deliveryTimeoutMs = positiveInteger(
+  process.env.FEISHU_AGENT_DELIVERY_TIMEOUT_MS,
+  45 * 60_000,
 )
 const meegleCommand = process.env.MEEGLE_BIN?.trim() || 'meegle'
 const meegleHost = process.env.MEEGLE_HOST?.trim() || 'project.feishu.cn'
@@ -74,6 +128,8 @@ const allowedOrigins = new Set(
     process.env.FEISHU_AGENT_ALLOWED_ORIGINS ||
     [
       'http://8.145.45.84:8787',
+      'http://localhost:8787',
+      'http://127.0.0.1:8787',
       'http://localhost:4173',
       'http://127.0.0.1:4173',
       'http://localhost:5173',
@@ -88,6 +144,7 @@ const allowedOrigins = new Set(
 let pendingLogin: PendingLogin | null = null
 let running = false
 let lastRun: LastRun | null = null
+let deliveryJob: LocalDeliveryJob | null = null
 let heartbeatInFlight = false
 let loginPollInFlight = false
 let lastHeartbeatError = ''
@@ -219,17 +276,28 @@ async function currentHealth(): Promise<{
   running: boolean
   lastRun: LastRun | null
   pendingLogin: LoginChallenge | null
+  delivery: LocalDeliveryJob | null
+  codex: {
+    available: boolean
+    path?: string
+  }
 }> {
   const config = readConfig()
   const auth = await currentAuthStatus()
+  const codexBinary = resolveCodexBinary()
   return {
     ok: true,
-    version: 3,
+    version: 5,
     config: publicFeishuAgentConfig(config),
     meegle: auth,
     running,
     lastRun,
     pendingLogin,
+    delivery: deliveryJob ? deliveryJobSummary(deliveryJob) : null,
+    codex: {
+      available: Boolean(codexBinary),
+      path: codexBinary,
+    },
   }
 }
 
@@ -306,6 +374,336 @@ async function runSync(): Promise<AgentSyncResult> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function optionalText(value: unknown): string | undefined {
+  return text(value) || undefined
+}
+
+function setStep(
+  job: LocalDeliveryJob,
+  key: string,
+  status: LocalDeliveryAgentStep['status'],
+  log?: string,
+): void {
+  updateLocalDeliveryAgentStep(job.steps, key, status, log)
+  if (status === 'running') {
+    job.stage = job.steps.find((step) => step.key === key)?.name ?? job.stage
+  }
+}
+
+async function fetchPlatformHealth(
+  job: LocalDeliveryJob,
+  config: FeishuAgentStoredConfig,
+): Promise<unknown> {
+  return fetchJsonWithRetry<unknown>(`${config.platformBaseUrl}/api/health`, {
+    label: '读取平台版本',
+    attempts: 3,
+    timeoutMs: 12_000,
+    onRetry: ({ attempt, attempts, error, delayMs }) => {
+      setStep(
+        job,
+        'platform',
+        'running',
+        `第 ${attempt}/${attempts} 次连接平台失败：${error}；${delayMs}ms 后重试`,
+      )
+    },
+  })
+}
+
+async function fetchDeliveryBootstrap(
+  job: LocalDeliveryJob,
+  config: FeishuAgentStoredConfig,
+): Promise<LocalDeliveryBootstrap> {
+  const payload = await fetchJsonWithRetry<unknown>(
+    `${config.platformBaseUrl}/api/bootstrap?includeWorkItems=1&includeFeishuInbox=0`,
+    {
+      label: '读取平台工作项与仓库配置',
+      attempts: 2,
+      timeoutMs: 35_000,
+      onRetry: ({ attempt, attempts, error }) => {
+        setStep(
+          job,
+          'platform',
+          'running',
+          `第 ${attempt}/${attempts} 次读取平台配置失败：${error}；准备重试`,
+        )
+      },
+    },
+  )
+  if (
+    !isRecord(payload) ||
+    !Array.isArray(payload.repositories) ||
+    !Array.isArray(payload.workItems)
+  ) {
+    throw new Error('平台返回的仓库或工作项数据格式不正确')
+  }
+  return {
+    repositories: payload.repositories.filter(isRecord).map((repository) => ({
+      id: text(repository.id),
+      name: optionalText(repository.name),
+      branch: optionalText(repository.branch),
+      localPath: optionalText(repository.localPath),
+    })),
+    workItems: payload.workItems.filter(isRecord).map((workItem) => ({
+      id: text(workItem.id),
+      title: optionalText(workItem.title),
+      repoId: optionalText(workItem.repoId),
+      branch: optionalText(workItem.branch),
+    })),
+  }
+}
+
+async function validateClientCheckout(
+  job: LocalDeliveryJob,
+  localPath: string,
+  branch: string,
+): Promise<{ checkout: string; branch: string }> {
+  setStep(job, 'checkout', 'running', '正在校验绝对路径、Git 根目录与目标分支')
+  if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
+  if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
+    throw new Error(`客户端代码路径不存在或不是目录：${localPath}`)
+  }
+  const checkout = realpathSync(localPath)
+  const root = await runCommand(
+    'git',
+    ['-C', checkout, 'rev-parse', '--show-toplevel'],
+    process.env,
+    15_000,
+  )
+  if (root.exitCode !== 0) {
+    throw new Error(`读取 Git 工作区失败：${root.stderr.trim() || root.stdout.trim()}`)
+  }
+  const gitRoot = realpathSync(root.stdout.trim())
+  if (gitRoot !== checkout) {
+    throw new Error(`客户端代码路径不是 Git 工作区根目录：${localPath}`)
+  }
+  const currentBranch = await runCommand(
+    'git',
+    ['-C', checkout, 'symbolic-ref', '--short', 'HEAD'],
+    process.env,
+    15_000,
+  )
+  if (currentBranch.exitCode !== 0) {
+    throw new Error(`读取本地分支失败：${currentBranch.stderr.trim() || currentBranch.stdout.trim()}`)
+  }
+  const actualBranch = currentBranch.stdout.trim()
+  if (actualBranch !== branch) {
+    throw new Error(`本地仓库当前分支为 ${actualBranch}，与配置分支 ${branch} 不一致`)
+  }
+  setStep(job, 'checkout', 'success', `${checkout} · ${actualBranch}`)
+  return { checkout, branch: actualBranch }
+}
+
+function localDeliveryEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env }
+  for (const key of [
+    'PLATFORM_SYNC_TOKEN',
+    'FEISHU_INGEST_TOKEN',
+    'FEISHU_ACCESS_TOKEN',
+    'FEISHU_PLUGIN_SECRET',
+    'MEEGLE_USER_ACCESS_TOKEN',
+  ]) {
+    delete environment[key]
+  }
+  return environment
+}
+
+function commandFailureMessage(result: CommandResult): string {
+  const raw = result.stderr.trim() || result.stdout.trim()
+  const message = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-30)
+    .join('\n')
+  return (message || `本地交付命令退出码 ${result.exitCode}`).slice(-4_000)
+}
+
+const DELIVERY_STEP_ORDER = [
+  'platform',
+  'contract',
+  'checkout',
+  'codex',
+  'evidence',
+  'commit',
+  'writeback',
+]
+
+function failureStepKey(message: string): string {
+  if (/契约|deliveryContractVersion/i.test(message)) return 'contract'
+  if (
+    /不支持交付参数|缺少工作项|缺少代码仓库|自动提交|布尔值|未启用自动提交/.test(message)
+  ) {
+    return 'contract'
+  }
+  if (/没有检测到代码文件变更|报告|执行证据/.test(message)) return 'evidence'
+  if (/HEAD 没有变化|提交|暂存|commit|推送失败/i.test(message)) return 'commit'
+  if (/回写平台|平台未返回|流水线记录/.test(message)) return 'writeback'
+  if (/路径|分支|Git 工作区|工作区根目录/.test(message)) return 'checkout'
+  if (
+    /读取平台|尚未绑定平台|本机代理|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
+      message,
+    )
+  ) {
+    return 'platform'
+  }
+  if (/Codex|CODEX/i.test(message)) return 'codex'
+  return 'codex'
+}
+
+function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
+  let failedKey = failureStepKey(message)
+  const runningKey = job.steps.find((step) => step.status === 'running')?.key
+  if (failedKey === 'codex' && runningKey && runningKey !== 'codex') {
+    failedKey = runningKey
+  }
+  const failedIndex = DELIVERY_STEP_ORDER.indexOf(failedKey)
+  job.steps.forEach((step) => {
+    const index = DELIVERY_STEP_ORDER.indexOf(step.key)
+    if (index < failedIndex) {
+      if (step.status === 'running') {
+        step.status = 'success'
+        step.finishedAt = new Date().toISOString()
+        step.log = step.log || '已完成'
+      }
+      return
+    }
+    if (step.key === failedKey) {
+      step.status = 'failed'
+      step.finishedAt = new Date().toISOString()
+      step.log = message.slice(0, 2_000)
+      return
+    }
+    if (step.status === 'running') {
+      step.status = 'failed'
+      step.finishedAt = new Date().toISOString()
+      step.log = `前序步骤失败，本步骤未完成：${message.slice(0, 1_000)}`
+    }
+  })
+  const failedStep = job.steps.find((step) => step.key === failedKey)
+  job.stage = `本机交付失败：${failedStep?.name ?? '未知步骤'}`
+}
+
+async function executeLocalDelivery(
+  job: LocalDeliveryJob,
+  config: FeishuAgentStoredConfig,
+  request: LocalDeliveryAgentRequest,
+): Promise<void> {
+  try {
+    job.steps = createLocalDeliveryAgentSteps()
+    setStep(job, 'platform', 'running', '正在连接平台健康检查接口')
+    const health = await fetchPlatformHealth(job, config)
+    setStep(job, 'platform', 'running', '平台连接成功，正在校验真实交付契约')
+    setStep(job, 'contract', 'running', '检查 deliveryContractVersion')
+    if (!supportsLocalDeliveryContract(health)) {
+      throw new Error(
+        '平台服务端尚未部署真实交付契约，无法保证代码变更、提交和阶段证据；请先升级服务器后重试',
+      )
+    }
+    setStep(job, 'contract', 'success', `交付契约版本 ${LOCAL_DELIVERY_CONTRACT_VERSION}`)
+
+    job.stage = '读取平台工作项与仓库配置'
+    const bootstrap = await fetchDeliveryBootstrap(job, config)
+    setStep(job, 'platform', 'success', '已读取工作项与仓库配置')
+    const target = resolveLocalDeliveryTarget(bootstrap, request)
+    job.localPath = target.localPath
+    job.branch = target.branch
+    await validateClientCheckout(job, target.localPath, target.branch)
+    setStep(job, 'codex', 'running', 'Codex 正在分析需求、生成设计与代码')
+    job.stage = 'Codex 正在执行需求解析、编码与验证'
+
+    const args = buildLocalDeliveryCommand({
+      platformBaseUrl: config.platformBaseUrl,
+      ...request,
+      localPath: target.localPath,
+      branch: target.branch,
+    })
+    const result = await runCommand(
+      npmCommand,
+      args,
+      localDeliveryEnvironment(),
+      deliveryTimeoutMs,
+    )
+    if (result.exitCode !== 0) throw new Error(commandFailureMessage(result))
+
+    const payload = parseJson(result.stdout)
+    job.result = isRecord(payload) ? payload : { status: 'success' }
+    const changedFiles = isRecord(payload) && Array.isArray(payload.changedFiles)
+      ? payload.changedFiles.filter((file): file is string => typeof file === 'string')
+      : []
+    const evidence = isRecord(payload) && isRecord(payload.evidence) ? payload.evidence : {}
+    const commit = isRecord(payload) && typeof payload.commit === 'string' ? payload.commit : ''
+    const platformPipeline =
+      isRecord(payload) && isRecord(payload.platformPipeline) ? payload.platformPipeline : undefined
+    setStep(
+      job,
+      'codex',
+      'success',
+      changedFiles.length > 0
+        ? `Codex 完成，修改 ${changedFiles.length} 个代码文件`
+        : 'Codex 已完成执行',
+    )
+    const reportCount = ['designReport', 'integrationReport', 'testReport', 'buildReport', 'upgradeReport']
+      .filter((key) => evidence[key] === true).length
+    setStep(job, 'evidence', 'success', `已确认 ${changedFiles.length} 个代码变更、${reportCount} 份真实报告`)
+    setStep(
+      job,
+      'commit',
+      'success',
+      commit ? `本地提交 ${commit.slice(0, 12)}` : '本地提交已记录',
+    )
+    setStep(
+      job,
+      'writeback',
+      'success',
+      platformPipeline && typeof platformPipeline.id === 'string'
+        ? `平台流水线 ${platformPipeline.id}`
+        : '平台已确认真实执行记录',
+    )
+    job.status = 'succeeded'
+    job.stage = '本机交付完成'
+  } catch (error) {
+    const message = errorMessage(error)
+    markDeliveryFailure(job, message)
+    job.status = 'failed'
+    job.error = message
+  } finally {
+    job.finishedAt = new Date().toISOString()
+  }
+}
+
+function startLocalDelivery(input: unknown): LocalDeliveryJob {
+  if (deliveryJob?.status === 'running') {
+    throw new Error('本机已有交付正在执行，请等待完成后再启动')
+  }
+  const raw = isRecord(input) ? input : {}
+  const job: LocalDeliveryJob = {
+    id: `delivery-${randomUUID()}`,
+    status: 'running',
+    stage: '准备本机交付',
+    workItemId: text(raw.workItemId),
+    repoId: text(raw.repoId),
+    steps: createLocalDeliveryAgentSteps(),
+    startedAt: new Date().toISOString(),
+  }
+  deliveryJob = job
+  try {
+    const config = readConfig()
+    if (!config) throw new Error('本机代理尚未绑定平台同步密钥')
+    if (!resolveCodexBinary()) throw new Error(codexBinaryError())
+    const request = parseLocalDeliveryAgentRequest(input)
+    job.workItemId = request.workItemId
+    job.repoId = request.repoId
+    void executeLocalDelivery(job, config, request)
+  } catch (error) {
+    const message = errorMessage(error)
+    markDeliveryFailure(job, message)
+    job.status = 'failed'
+    job.error = message
+    job.finishedAt = new Date().toISOString()
+  }
+  return job
 }
 
 async function postAgentJson(
@@ -581,6 +979,11 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
   response.end(`${JSON.stringify(payload)}\n`)
 }
 
+function isLoopbackRequest(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
 async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let size = 0
@@ -598,7 +1001,11 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   if (!setCors(request, response)) {
-    sendJson(response, 403, { error: 'origin_not_allowed' })
+    sendJson(response, 403, {
+      ok: false,
+      error: 'origin_not_allowed',
+      message: `页面来源 ${text(request.headers.origin)} 未获准访问本机代理，请加入 FEISHU_AGENT_ALLOWED_ORIGINS`,
+    })
     return
   }
   if (request.method === 'OPTIONS') {
@@ -607,8 +1014,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
   const path = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).pathname
+  if (path.startsWith('/delivery/') && !isLoopbackRequest(request)) {
+    sendJson(response, 403, { ok: false, error: '本机交付接口仅允许本机页面访问' })
+    return
+  }
   if (request.method === 'GET' && (path === '/health' || path === '/status')) {
     sendJson(response, 200, await currentHealth())
+    return
+  }
+  if (request.method === 'POST' && path === '/delivery/start') {
+    sendJson(response, 202, { ok: true, job: startLocalDelivery(await readBody(request)) })
+    return
+  }
+  const deliveryStatusMatch = path.match(/^\/delivery\/status\/([^/]+)$/)
+  if (request.method === 'GET' && deliveryStatusMatch) {
+    const jobId = decodeURIComponent(deliveryStatusMatch[1])
+    if (!deliveryJob || deliveryJob.id !== jobId) {
+      sendJson(response, 404, { ok: false, error: '本机交付任务不存在或已过期' })
+      return
+    }
+    sendJson(response, 200, { ok: true, job: deliveryJob })
     return
   }
   if (request.method === 'POST' && path === '/configure') {

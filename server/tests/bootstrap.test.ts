@@ -56,6 +56,10 @@ test('bootstrap 默认兼容完整数据，传 includeWorkItems=0 时跳过工�
       server?.once('error', reject)
     })
     const { port } = server.address() as AddressInfo
+    const health = (await fetch(`http://127.0.0.1:${port}/api/health`).then((response) =>
+      response.json(),
+    )) as { deliveryContractVersion?: number }
+    assert.equal(health.deliveryContractVersion, 1)
     const light = (await fetch(
       `http://127.0.0.1:${port}/api/bootstrap?includeWorkItems=0&includeFeishuInbox=0`,
     ).then((response) => response.json())) as {

@@ -73,14 +73,6 @@ export interface WorkItemInput {
   externalId?: string
 }
 
-export interface PipelineInput {
-  workItemId: string
-  repoId?: string
-  autoCommit: boolean
-  autoClose: boolean
-  triggeredBy?: string
-}
-
 export interface ImportResult<T> {
   items: T[]
   count: number
@@ -173,6 +165,4 @@ export const api = {
     request<FeishuIntegrationStatus>('/integrations/feishu/disconnect', {
       method: 'POST',
     }),
-  startPipeline: (input: PipelineInput) =>
-    request<PipelineRun>('/pipelines', { method: 'POST', body: JSON.stringify(input) }),
 }

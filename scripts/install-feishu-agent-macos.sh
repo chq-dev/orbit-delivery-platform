@@ -6,12 +6,22 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NPM_BIN="$(command -v npm)"
 NODE_BIN="$(command -v node)"
 NODE_DIR="$(dirname "$NODE_BIN")"
+CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
+if [[ -z "$CODEX_BIN" ]]; then
+  CODEX_BIN="$(find "$HOME/.vscode/extensions" "$HOME/.vscode-insiders/extensions" \
+    -type f -name codex -perm -111 2>/dev/null | head -n 1)"
+fi
+CODEX_ENV=""
+if [[ -n "$CODEX_BIN" ]]; then
+  CODEX_ENV="    <string>CODEX_BIN=$CODEX_BIN</string>"
+fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 UID_VALUE="$(id -u)"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 launchctl remove "$LABEL" 2>/dev/null || true
 launchctl bootout "gui/$UID_VALUE/$LABEL" 2>/dev/null || true
+sleep 1
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -25,6 +35,7 @@ cat > "$PLIST" <<EOF
     <string>/usr/bin/env</string>
     <string>HOME=$HOME</string>
     <string>PATH=$NODE_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+$CODEX_ENV
     <string>/bin/zsh</string>
     <string>-lc</string>
     <string>cd "$REPO_ROOT" &amp;&amp; exec "$NPM_BIN" run feishu:agent</string>
@@ -47,7 +58,8 @@ EOF
 
 plutil -lint "$PLIST"
 if ! launchctl bootstrap "gui/$UID_VALUE" "$PLIST" 2>/dev/null; then
-  launchctl load -w "$PLIST"
+  sleep 1
+  launchctl bootstrap "gui/$UID_VALUE" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST"
 fi
 launchctl kickstart -k "gui/$UID_VALUE/$LABEL" 2>/dev/null || true
 sleep 3

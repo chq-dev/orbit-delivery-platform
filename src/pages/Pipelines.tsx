@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowRight,
   Box,
   Check,
@@ -85,6 +86,7 @@ function RunListCard({
         </span>
         <span className="run-list-meta">
           {run.id} · {run.version}
+          {!run.clientExecuted ? ' · 无客户端执行证据' : ''}
         </span>
         {run.status === 'running' && (
           <span className="run-list-progress">
@@ -137,6 +139,10 @@ export function Pipelines({
 
   const run = pipelines.find((entry) => entry.id === selectedId) ?? pipelines[0]
   const report = reports.find((entry) => entry.pipelineId === run?.id)
+  const stageByKey = new Map((run?.stages ?? []).map((stage) => [stage.key, stage]))
+  const commitStage = stageByKey.get('commit')
+  const upgradeStage = stageByKey.get('upgrade')
+  const testStage = stageByKey.get('test')
   const progressStyle = { '--progress': `${run?.progress ?? 0}%` } as CSSProperties
   const runningCount = pipelines.filter((entry) => entry.status === 'running').length
   const successCount = pipelines.filter((entry) => entry.status === 'success').length
@@ -216,6 +222,16 @@ export function Pipelines({
         {run && (
           <section className="pipeline-detail">
             <article className="pipeline-detail-card card">
+              {(run.simulation || !run.clientExecuted) && (
+                <div className="feishu-live-warning" style={{ marginBottom: 14 }}>
+                  <AlertTriangle size={15} />
+                  <span>
+                    {run.clientExecuted
+                      ? '这是服务端模拟记录，没有真实执行 Codex、构建、设备升级或测试。请重新使用“一键本机执行”发起真实交付。'
+                      : '这是旧版服务端流水线，没有客户端 Codex 执行与代码变更证据；即使阶段显示成功，也不能视为真实交付。请重新使用“一键本机执行”。'}
+                  </span>
+                </div>
+              )}
               <div className="pipeline-detail-head">
                 <div>
                   <div className="pipeline-detail-meta-top">
@@ -270,7 +286,11 @@ export function Pipelines({
                     {run.status === 'running'
                       ? `正在执行 · ${run.stages.find((stage) => stage.status === 'running')?.name ?? '即将完成'}`
                       : run.status === 'success'
-                        ? '所有阶段已完成'
+                        ? !run.clientExecuted
+                          ? '旧版服务端记录，无客户端代码执行证据'
+                          : run.stages.some((stage) => stage.status === 'pending')
+                            ? '代码交付已完成，未取得证据的阶段未执行'
+                            : '所有阶段已完成'
                         : run.status === 'failed'
                           ? '流水线执行中断'
                           : '等待执行'}
@@ -294,7 +314,9 @@ export function Pipelines({
                     <h2>执行阶段</h2>
                     <p>每个阶段的耗时与执行摘要</p>
                   </div>
-                  <span className="soft-tag"><ServerCog size={13} /> runner-01</span>
+                  <span className="soft-tag">
+                    <ServerCog size={13} /> {run.clientExecuted ? '客户端 runner' : '旧版服务端记录'}
+                  </span>
                 </div>
                 <div className="stage-timeline">
                   {run.stages.map((stage, index) => (
@@ -360,21 +382,37 @@ export function Pipelines({
                     <div>
                       <small>本地路径</small>
                       <strong className="mono run-path" title={run.localPath || '未配置'}>
-                        <FolderGit2 size={12} /> {run.localPath || '模拟模式'}
+                        <FolderGit2 size={12} /> {run.localPath || '未记录客户端路径'}
                       </strong>
                     </div>
                     <div><small>提交哈希</small><strong className="mono">{run.commit}</strong></div>
-                    <div><small>执行模式</small><strong>{run.simulation ? '模拟交付' : '真实 Git'}</strong></div>
+                    <div>
+                      <small>执行模式</small>
+                      <strong>
+                        {run.clientExecuted
+                          ? '客户端本机执行'
+                          : '旧版服务端记录（无代码执行证据）'}
+                      </strong>
+                    </div>
                     <div><small>开始时间</small><strong>{run.createdAt}</strong></div>
-                    <div><small>执行节点</small><strong>runner-01 / 上海</strong></div>
+                    <div><small>执行节点</small><strong>{run.clientExecuted ? '当前客户端' : '旧版服务端 runner'}</strong></div>
                   </div>
                   <div className="run-config-flags">
                     <span>
-                      <CheckCircle2 size={13} /> {run.autoCommit ? '自动提交代码' : '跳过提交'}
+                      {commitStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
+                      {commitStage?.status === 'success' ? '本地提交已创建' : '提交阶段未完成'}
                     </span>
-                    <span><CheckCircle2 size={13} /> 自动设备升级</span>
                     <span>
-                      <CheckCircle2 size={13} /> {run.autoClose ? '缺陷自动关闭' : '人工关闭缺陷'}
+                      {upgradeStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
+                      {upgradeStage?.status === 'success' ? '设备升级有证据' : '设备升级未执行'}
+                    </span>
+                    <span>
+                      {testStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
+                      {testStage?.status === 'success'
+                        ? run.autoClose
+                          ? '测试有证据，缺陷自动关闭'
+                          : '测试有证据，缺陷人工关闭'
+                        : '测试未执行'}
                     </span>
                   </div>
                 </article>
@@ -427,7 +465,7 @@ export function Pipelines({
               <div className="terminal-body">
                 <div><span className="term-info">INFO</span> pipeline {run.id} started by {run.triggeredBy}</div>
                 <div><span className="term-info">INFO</span> resolve work item: {run.workItemId}</div>
-                <div><span className="term-info">INFO</span> checkout: {run.localPath || 'simulation'}</div>
+                <div><span className="term-info">INFO</span> checkout: {run.localPath || '未记录'}</div>
                 {run.stages.filter((stage) => stage.status !== 'pending').map((stage) => (
                   <div key={stage.key}>
                     <span className={stage.status === 'failed' ? 'term-error' : 'term-success'}>

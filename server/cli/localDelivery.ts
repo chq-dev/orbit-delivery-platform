@@ -1,10 +1,22 @@
 import 'dotenv/config'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
 import { buildLocalSkillInstruction } from '../../src/skillInstruction'
+import {
+  fetchJsonWithRetry,
+  supportsLocalDeliveryContract,
+} from '../services/localDeliveryAgentService.js'
 import type { Repository, WorkItem } from '../../src/types'
 
 interface BootstrapData {
@@ -30,6 +42,27 @@ interface GitResult {
   status: number
   stdout: string
   stderr: string
+}
+
+interface DeliveryEvidence {
+  changedFiles: string[]
+  designReport: boolean
+  integrationReport: boolean
+  testReport: boolean
+  buildReport: boolean
+  upgradeReport: boolean
+}
+
+interface DeliveryStageResult {
+  index: number
+  status: 'success' | 'pending' | 'failed'
+  log: string
+}
+
+interface DeliveryReportInput {
+  title: string
+  summary: string
+  content: string
 }
 
 function usage(): string {
@@ -132,12 +165,146 @@ function validateCheckout(localPath: string, expectedBranch: string) {
 }
 
 async function fetchBootstrap(api: string): Promise<BootstrapData> {
-  const response = await fetch(`${api}/api/bootstrap`, {
-    headers: { accept: 'application/json' },
-    signal: AbortSignal.timeout(20_000),
+  const health = await fetchJsonWithRetry<unknown>(`${api}/api/health`, {
+    label: '读取平台版本',
+    attempts: 3,
+    timeoutMs: 12_000,
   })
-  if (!response.ok) throw new Error(`读取平台数据失败（HTTP ${response.status}）`)
-  return (await response.json()) as BootstrapData
+  if (!supportsLocalDeliveryContract(health)) {
+    throw new Error(
+      '平台服务端尚未部署真实交付契约，无法保证代码变更、提交和阶段证据；请先升级服务器后重试',
+    )
+  }
+  return fetchJsonWithRetry<BootstrapData>(
+    `${api}/api/bootstrap?includeWorkItems=1&includeFeishuInbox=0`,
+    {
+      label: '读取平台工作项与仓库配置',
+      attempts: 2,
+      timeoutMs: 30_000,
+    },
+  )
+}
+
+function artifactEvidence(artifactDir: string): DeliveryEvidence {
+  const hasContent = (path: string): boolean => {
+    try {
+      return existsSync(path) && statSync(path).isFile() && statSync(path).size > 0
+    } catch {
+      return false
+    }
+  }
+  return {
+    changedFiles: [],
+    designReport: hasContent(join(artifactDir, 'design-report.md')),
+    integrationReport: hasContent(join(artifactDir, 'integration-report.md')),
+    testReport: hasContent(join(artifactDir, 'test-report.md')),
+    buildReport:
+      hasContent(join(artifactDir, 'build-report.md')) ||
+      hasContent(join(artifactDir, 'build.log')),
+    upgradeReport:
+      hasContent(join(artifactDir, 'upgrade-report.md')) ||
+      hasContent(join(artifactDir, 'upgrade.log')),
+  }
+}
+
+function changedCodeFiles(checkout: string, previousHead: string, finalHead: string, noCommit: boolean): string[] {
+  const result = noCommit
+    ? git(checkout, ['status', '--porcelain', '--untracked-files=all'])
+    : git(checkout, ['diff', '--name-only', `${previousHead}..${finalHead}`])
+  if (result.status !== 0) {
+    throw new Error(`读取代码变更失败：${result.stderr || result.stdout || `退出码 ${result.status}`}`)
+  }
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => noCommit ? line.slice(3).trim() : line.trim())
+    .filter((file) => file && !file.startsWith('delivery-artifacts/'))
+}
+
+function readReportFile(path: string, title: string): DeliveryReportInput | undefined {
+  if (!existsSync(path)) return undefined
+  const content = readFileSync(path, 'utf8').trim()
+  if (!content) return undefined
+  const summaryLine = content
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .find((line) => line && !line.startsWith('```'))
+  return {
+    title,
+    summary: (summaryLine || `${title}已由 Codex 实际生成`).slice(0, 500),
+    content,
+  }
+}
+
+function deliveryReports(artifactDir: string): {
+  design?: DeliveryReportInput
+  integration?: DeliveryReportInput
+} {
+  return {
+    design: readReportFile(join(artifactDir, 'design-report.md'), '开发设计报告'),
+    integration: readReportFile(join(artifactDir, 'integration-report.md'), '集成报告'),
+  }
+}
+
+function deliveryStageResults(
+  evidence: DeliveryEvidence,
+  autoCommit: boolean,
+): DeliveryStageResult[] {
+  const changed = evidence.changedFiles.length
+  return [
+    { index: 0, status: 'success', log: 'Codex 已实际读取需求、检查代码并完成影响分析' },
+    {
+      index: 1,
+      status: evidence.designReport ? 'success' : 'pending',
+      log: evidence.designReport
+        ? '已生成 delivery-artifacts/<work-item>/design-report.md'
+        : '未检测到 design-report.md，不能标记设计报告完成',
+    },
+    {
+      index: 2,
+      status: changed > 0 ? 'success' : 'failed',
+      log: `Codex 实际修改代码文件 ${changed} 个：${evidence.changedFiles.slice(0, 8).join(', ') || '无'}`,
+    },
+    {
+      index: 3,
+      status: evidence.integrationReport ? 'success' : 'pending',
+      log: evidence.integrationReport
+        ? '已生成 delivery-artifacts/<work-item>/integration-report.md'
+        : '未检测到 integration-report.md，不能标记集成验证完成',
+    },
+    {
+      index: 4,
+      status: autoCommit ? 'success' : 'pending',
+      log: autoCommit ? '已创建本地提交' : '未启用自动提交，代码保留在工作区',
+    },
+    {
+      index: 5,
+      status: evidence.buildReport ? 'success' : 'pending',
+      log: evidence.buildReport
+        ? '检测到真实构建证据文件'
+        : '未检测到 build-report.md 或 build.log，本阶段未执行',
+    },
+    {
+      index: 6,
+      status: evidence.upgradeReport ? 'success' : 'pending',
+      log: evidence.upgradeReport
+        ? '检测到真实设备升级证据文件'
+        : '未检测到 upgrade-report.md 或 upgrade.log，本阶段未执行',
+    },
+    {
+      index: 7,
+      status: evidence.testReport ? 'success' : 'pending',
+      log: evidence.testReport
+        ? '检测到 test-report.md，自动化测试有实际证据'
+        : '未检测到 test-report.md，本阶段未执行',
+    },
+    {
+      index: 8,
+      status: evidence.testReport ? 'success' : 'pending',
+      log: evidence.testReport
+        ? '测试报告已归档'
+        : '没有真实测试报告，未生成测试归档',
+    },
+  ]
 }
 
 async function recordPlatformDelivery(
@@ -148,6 +315,9 @@ async function recordPlatformDelivery(
   checkout: string,
   commit: string,
   branch: string,
+  evidence: DeliveryEvidence,
+  stageResults: DeliveryStageResult[],
+  reports: ReturnType<typeof deliveryReports>,
 ): Promise<unknown> {
   if (args.noCommit) return null
   const response = await fetch(`${api}/api/pipelines/local`, {
@@ -159,11 +329,13 @@ async function recordPlatformDelivery(
       branch,
       localPath: checkout,
       commit,
-      autoClose: args.close && item.type === 'defect',
+      autoClose: args.close && item.type === 'defect' && evidence.testReport,
       pushed: args.push,
       summary: args.push
         ? `客户端本地交付完成，提交已推送至 origin/${branch}`
         : '客户端本地交付完成，提交保留在本地',
+      stageResults,
+      reports,
     }),
     signal: AbortSignal.timeout(20_000),
   })
@@ -171,7 +343,33 @@ async function recordPlatformDelivery(
     const payload = await response.text().catch(() => '')
     throw new Error(`回写平台失败（HTTP ${response.status}）：${payload}`)
   }
-  return response.json()
+  const payload = (await response.json().catch(() => null)) as {
+    id?: unknown
+    clientExecuted?: unknown
+    stages?: unknown
+  } | null
+  if (!payload || typeof payload.id !== 'string' || !payload.id) {
+    throw new Error('平台未返回真实流水线记录，不能把本次交付标记为完成')
+  }
+  if (payload.clientExecuted !== true) {
+    throw new Error('平台未确认本次交付由客户端执行，不能把结果标记为完成')
+  }
+  if (Array.isArray(payload.stages)) {
+    const stages = payload.stages.filter(
+      (stage): stage is { key?: unknown; status?: unknown } =>
+        typeof stage === 'object' && stage !== null && !Array.isArray(stage),
+    )
+    const buildClaimed = stages.some(
+      (stage) => stage.key === 'build' && stage.status === 'success',
+    )
+    const upgradeClaimed = stages.some(
+      (stage) => stage.key === 'upgrade' && stage.status === 'success',
+    )
+    if ((buildClaimed && !evidence.buildReport) || (upgradeClaimed && !evidence.upgradeReport)) {
+      throw new Error('平台阶段状态与客户端证据不一致，已停止把本次交付标记为完成')
+    }
+  }
+  return payload
 }
 
 function buildPrompt(
@@ -190,12 +388,13 @@ function buildPrompt(
     `Expected branch: ${branch}`,
     `Platform work item: ${item.id}`,
     runDescription,
-    `Create the required reports under ${join(localPath, 'delivery-artifacts', item.id)}.`,
+    `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
+    'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
     autoCommit
       ? `Create a local commit whose subject starts with "${item.id}: " only after the design and integration reports exist and the narrowest useful validation has run.`
       : 'Do not create a Git commit. Leave validated changes in the working tree for human review.',
     'Do not push. The local delivery runner performs the optional push after Codex exits successfully.',
-    'Never invent build, device, test, or report results.',
+    'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
   ].join('\n')
 }
 
@@ -274,7 +473,8 @@ async function main(): Promise<void> {
     return
   }
 
-  const codexCommand = process.env.CODEX_BIN?.trim() || 'codex'
+  const codexCommand = resolveCodexBinary()
+  if (!codexCommand) throw new Error(codexBinaryError())
   const lastMessagePath = join(artifactDir, 'codex-last-message.md')
   const result = spawnSync(
     codexCommand,
@@ -282,6 +482,7 @@ async function main(): Promise<void> {
       'exec',
       '-C',
       checkout.checkout,
+      '--skip-git-repo-check',
       '--sandbox',
       'workspace-write',
       '--output-last-message',
@@ -297,6 +498,20 @@ async function main(): Promise<void> {
   if (!args.noCommit && finalHead === checkout.head) {
     throw new Error('Codex 已结束，但本地 HEAD 没有变化；未找到交付提交，已停止推送')
   }
+
+  const evidence = artifactEvidence(artifactDir)
+  evidence.changedFiles = changedCodeFiles(
+    checkout.checkout,
+    checkout.head,
+    finalHead,
+    args.noCommit,
+  )
+  if (evidence.changedFiles.length === 0) {
+    throw new Error('Codex 已结束，但没有检测到代码文件变更；已停止推送与平台回写')
+  }
+
+  const stageResults = deliveryStageResults(evidence, !args.noCommit)
+  const reports = deliveryReports(artifactDir)
 
   if (args.push) {
     await confirmPush(branch, args.yes)
@@ -317,9 +532,14 @@ async function main(): Promise<void> {
       checkout.checkout,
       finalHead,
       branch,
+      evidence,
+      stageResults,
+      reports,
     )
   } catch (error) {
-    console.warn(error instanceof Error ? error.message : String(error))
+    throw new Error(
+      `本地代码已提交 ${finalHead}${args.push ? `并推送到 origin/${branch}` : '，尚未推送'}，但${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 
   console.log(JSON.stringify({
@@ -330,6 +550,15 @@ async function main(): Promise<void> {
     previousHead: checkout.head,
     commit: finalHead,
     pushed: args.push,
+    changedFiles: evidence.changedFiles,
+    evidence: {
+      designReport: evidence.designReport,
+      integrationReport: evidence.integrationReport,
+      testReport: evidence.testReport,
+      buildReport: evidence.buildReport,
+      upgradeReport: evidence.upgradeReport,
+    },
+    stageResults,
     platformPipeline,
     promptFile: promptPath,
     lastMessageFile: lastMessagePath,

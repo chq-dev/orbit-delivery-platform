@@ -273,7 +273,7 @@ export function Repositories({
               <div className={`repo-local-path ${repo.localPath ? '' : 'repo-local-path-empty'}`}>
                 <FolderGit2 size={14} />
                 <span title={repo.localPath || undefined}>
-                  {repo.localPath || '未配置客户端代码路径，交付将按模拟模式执行'}
+                  {repo.localPath || '未配置客户端代码路径，无法执行本机交付'}
                 </span>
               </div>
 
@@ -494,7 +494,7 @@ export function Repositories({
         </Field>
         <Field
           label="客户端代码路径"
-          hint="保存当前客户端的绝对目录；跨服务器访问时，需在本机运行后端才能执行真实 Git 提交。留空则交付使用模拟提交。"
+          hint="保存当前客户端的绝对目录；一键交付由本机代理读取该路径并执行 Codex。留空则无法发起真实本机交付。"
         >
           <div className="input-with-icon">
             <FolderGit2 size={15} />

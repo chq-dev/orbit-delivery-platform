@@ -31,13 +31,12 @@ import {
   verifyFeishuSyncToken,
 } from './services/feishuSyncTokenService.js'
 import {
-  advancePipeline,
   cancelPipeline,
   getPipeline,
   listPipelines,
-  startPipeline,
 } from './services/pipelineService.js'
 import { recordLocalDelivery } from './services/localDeliveryService.js'
+import { LOCAL_DELIVERY_CONTRACT_VERSION } from './services/localDeliveryAgentService.js'
 import { getTestReport, listTestReports, reportAsMarkdown } from './services/reportService.js'
 import {
   createRepository,
@@ -76,6 +75,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       status: 'ok',
       database: 'connected',
       timestamp: new Date().toISOString(),
+      deliveryContractVersion: LOCAL_DELIVERY_CONTRACT_VERSION,
       feishu: {
         mode: feishu.authMode,
         autoSyncEnabled: config.feishuAutoSync,
@@ -237,16 +237,24 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.json(getPipeline(db, request.params.id))
   })
 
-  router.post('/pipelines', (request, response) => {
-    response.status(201).json(startPipeline(db, request.body))
+  router.post('/pipelines', (_request, _response) => {
+    throw new AppError(
+      409,
+      'SERVER_PIPELINE_DISABLED',
+      '服务端模拟流水线已停用，请由本机代理执行并将真实结果回写到 /api/pipelines/local',
+    )
   })
 
   router.post('/pipelines/local', (request, response) => {
     response.status(201).json(recordLocalDelivery(db, request.body ?? {}))
   })
 
-  router.post('/pipelines/:id/advance', (request, response) => {
-    response.json(advancePipeline(db, request.params.id))
+  router.post('/pipelines/:id/advance', (_request, _response) => {
+    throw new AppError(
+      409,
+      'SERVER_PIPELINE_DISABLED',
+      '服务端不能推进交付阶段；阶段结果必须来自本机真实执行证据',
+    )
   })
 
   router.post('/pipelines/:id/cancel', (request, response) => {

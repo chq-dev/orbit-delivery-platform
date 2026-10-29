@@ -98,6 +98,11 @@ connects to `127.0.0.1` and is not blocked by browser local-network policy. Afte
 device authorization, the agent automatically runs a full sync. The browser
 never receives the Feishu login token or the platform sync token.
 
+This loopback-free rule applies to Feishu synchronization. The separate
+`客户端本地` delivery action intentionally calls the loopback-only
+`POST /delivery/start` endpoint so the browser can launch code changes in the
+configured client checkout; see `$orbit-local-delivery`.
+
 The two credentials have different sources:
 
 - Feishu auth is held by `meegle auth login --device-code` on the sync host.
@@ -105,9 +110,11 @@ The two credentials have different sources:
   stored server-side only as a SHA-256 hash. If `FEISHU_INGEST_TOKEN` is set,
   that environment value takes precedence and cannot be rotated from the page.
 
-The loopback endpoints remain available for local diagnostics:
+The loopback endpoints remain available for local diagnostics and controlled
+local delivery:
 `GET /health`, `POST /configure`, `POST /login/start`, `POST /login/poll`,
-`POST /sync`, and `POST /rotate-token`. The Orbit page does not depend on them.
+`POST /sync`, `POST /rotate-token`, `POST /delivery/start`, and
+`GET /delivery/status/:id`. Feishu synchronization does not depend on them.
 A heartbeat older than 45 seconds is reported as offline.
 
 When invoked from the Orbit page, use the copied Codex instruction as the task

@@ -13,7 +13,6 @@ import {
   type AccountInput,
   type BootstrapData,
   type FeishuConnectInput,
-  type PipelineInput,
   type RepositoryInput,
   type RepositorySettingsInput,
   type WorkItemInput,
@@ -141,7 +140,6 @@ interface DataContextValue {
   rotateFeishuSyncToken: () => Promise<FeishuSyncTokenStatus>
   refreshFeishuSnapshot: (announce?: boolean) => Promise<number>
   disconnectFeishu: () => Promise<FeishuIntegrationStatus>
-  startPipeline: (input: PipelineInput) => Promise<PipelineRun>
   reload: (silent?: boolean) => Promise<void>
   dismissToast: (id: number) => void
   notify: (title: string, message: string, tone?: ToastMessage['tone']) => void
@@ -948,27 +946,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
     }
   }, [notify, reportApiError])
 
-  const startPipeline = useCallback(
-    async (input: PipelineInput) => {
-      try {
-        const run = await api.startPipeline(input)
-        setPipelines((current) => [run, ...current])
-        setServerWorkItems((current) =>
-          current.map((item) =>
-            item.id === run.workItemId ? { ...item, status: '进行中', updatedAt: '刚刚' } : item,
-          ),
-        )
-        pipelineStatuses.current.set(run.id, run.status)
-        notify('交付流水线已启动', `${run.id} · ${run.repoName} · ${run.branch}`, 'info')
-        return run
-      } catch (error) {
-        reportApiError('交付流水线启动失败', error)
-        throw error
-      }
-    },
-    [notify, reportApiError],
-  )
-
   const value = useMemo<DataContextValue>(
     () => ({
       repositories,
@@ -1008,7 +985,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       rotateFeishuSyncToken,
       refreshFeishuSnapshot,
       disconnectFeishu,
-      startPipeline,
       reload,
       dismissToast,
       notify,
@@ -1046,7 +1022,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       refreshFeishuSyncToken,
       repositories,
       rotateFeishuSyncToken,
-      startPipeline,
       syncFeishuAgent,
       updateRepositorySettings,
       syncFeishu,

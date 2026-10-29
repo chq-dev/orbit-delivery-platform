@@ -247,6 +247,7 @@ test('缺陷交付完成九个阶段并自动关闭、归档三类报告', () =>
   })
   assert.equal(started.status, 'running')
   assert.equal(started.progress, 8)
+  assert.equal(started.clientExecuted, false)
   assert.equal(started.stages.filter((stage) => stage.status === 'running').length, 1)
   assert.equal(getWorkItem(db, workItemId).status, '进行中')
 
@@ -371,6 +372,13 @@ test('客户端本地交付结果可回写平台并更新工作项', () => {
     autoClose: false,
     pushed: true,
     summary: '客户端验证与测试完成',
+    stageResults: [
+      { index: 0, status: 'success', log: '真实解析需求' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '真实修改代码' },
+      { index: 3, status: 'success', log: '真实完成集成验证' },
+      { index: 4, status: 'success', log: '真实创建提交' },
+    ],
   })
 
   assert.equal(run.status, 'success')
@@ -378,10 +386,92 @@ test('客户端本地交付结果可回写平台并更新工作项', () => {
   assert.equal(run.commit, commit)
   assert.equal(run.localPath, '/Users/chenhuaqu/sme/sme-main')
   assert.equal(run.simulation, false)
+  assert.equal(run.clientExecuted, true)
   assert.equal(run.stages.length, 9)
-  assert.equal(run.stages.every((stage) => stage.status === 'success'), true)
+  assert.equal(run.stages.slice(0, 5).every((stage) => stage.status === 'success'), true)
+  assert.equal(run.stages.slice(5).every((stage) => stage.status === 'pending'), true)
   assert.match(run.stages[4].log ?? '', /已推送至 origin\/develop/)
   assert.equal(getWorkItem(db, item.id).status, '已交付')
+})
+
+test('拒绝缺少真实代码与提交证据的本地交付回写', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '拒绝伪造交付',
+    description: '验证平台不会默认把未执行阶段记为成功',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  assert.throws(
+    () =>
+      recordLocalDelivery(db, {
+        workItemId: item.id,
+        repoId: repositoryId,
+        branch: 'develop',
+        localPath: '/Users/chenhuaqu/sme/sme-main',
+        commit: 'fedcba9876543210fedcba9876543210fedcba98',
+      }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 422,
+  )
+  assert.throws(
+    () =>
+      recordLocalDelivery(db, {
+        workItemId: item.id,
+        repoId: repositoryId,
+        branch: 'develop',
+        localPath: '/Users/chenhuaqu/sme/sme-main',
+        commit: 'fedcba9876543210fedcba9876543210fedcba98',
+        stageResults: [
+          { index: 0, status: 'success', log: '解析' },
+          { index: 2, status: 'pending', log: '没有代码变更' },
+          { index: 4, status: 'success', log: '提交' },
+        ],
+      }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 422,
+  )
+})
+
+test('客户端本地交付只记录实际证据并保存真实报告', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '客户端证据回写',
+    description: '验证阶段状态与报告来自本机真实执行结果',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const run = recordLocalDelivery(db, {
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    commit: '1234567890abcdef1234567890abcdef12345678',
+    pushed: false,
+    stageResults: [
+      { index: 0, status: 'success', log: '真实完成需求分析' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '真实修改 3 个代码文件' },
+      { index: 3, status: 'success', log: '真实执行集成检查' },
+      { index: 4, status: 'success', log: '真实创建提交' },
+      { index: 5, status: 'pending', log: '未执行构建' },
+      { index: 6, status: 'pending', log: '未执行升级' },
+      { index: 7, status: 'success', log: '真实执行测试' },
+      { index: 8, status: 'success', log: '真实归档测试报告' },
+    ],
+    reports: {
+      design: {
+        title: '开发设计报告',
+        summary: '真实设计摘要',
+        content: '# 设计\n\n真实内容',
+      },
+    },
+  })
+
+  assert.equal(run.stages[2].log, '真实修改 3 个代码文件')
+  assert.equal(run.stages[5].status, 'pending')
+  assert.equal(run.designReport?.summary, '真实设计摘要')
+  assert.match(run.designReport?.sections[0].content ?? '', /真实内容/)
 })
 
 test('飞书绑定状态、Webhook 验签和缺陷关闭回写队列', () => {

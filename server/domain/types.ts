@@ -92,6 +92,7 @@ export interface PipelineRun {
   triggeredBy: string
   autoCommit: boolean
   autoClose: boolean
+  clientExecuted: boolean
   simulation: boolean
 }
 

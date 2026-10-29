@@ -9,7 +9,6 @@ import {
   syncFeishu,
 } from './services/feishuIntegrationService.js'
 import { bootstrapFeishuIntegration } from './services/feishuBootstrapService.js'
-import { advanceRunningPipelines } from './services/pipelineService.js'
 import { CredentialVault } from './security/vault.js'
 
 const db = createDatabase({
@@ -42,11 +41,6 @@ const server = app.listen(config.port, () => {
 })
 
 const pipelineTimer = setInterval(() => {
-  try {
-    advanceRunningPipelines(db)
-  } catch (error) {
-    console.error('流水线调度失败', error)
-  }
   try {
     void processFeishuOutbox(db, vault).catch((error) => {
       console.error('飞书状态回写失败', error)

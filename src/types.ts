@@ -100,6 +100,7 @@ export interface PipelineRun {
   triggeredBy: string
   autoCommit: boolean
   autoClose: boolean
+  clientExecuted: boolean
   simulation: boolean
 }
 
@@ -216,6 +217,50 @@ export interface FeishuClientAgentHealth {
     verificationUriComplete: string
     expiresAt: number
   } | null
+  delivery?: LocalDeliveryJob | null
+  codex?: {
+    available: boolean
+    path?: string
+  }
+}
+
+export type LocalDeliveryJobStatus = 'running' | 'succeeded' | 'failed'
+
+export type LocalDeliveryStepStatus = 'pending' | 'running' | 'success' | 'failed'
+
+export interface LocalDeliveryStep {
+  key: string
+  name: string
+  description: string
+  status: LocalDeliveryStepStatus
+  log?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface LocalDeliveryResult {
+  status?: string
+  commit?: string
+  changedFiles?: string[]
+  evidence?: Record<string, boolean>
+  promptFile?: string
+  lastMessageFile?: string
+  platformPipeline?: PipelineRun
+}
+
+export interface LocalDeliveryJob {
+  id: string
+  status: LocalDeliveryJobStatus
+  stage: string
+  workItemId: string
+  repoId: string
+  localPath?: string
+  branch?: string
+  steps?: LocalDeliveryStep[]
+  startedAt: string
+  finishedAt?: string
+  result?: LocalDeliveryResult
+  error?: string
 }
 
 export interface FeishuClientAgentState {

@@ -2506,6 +2506,136 @@ p {
   min-width: 0;
 }
 
+.delivery-progress-panel {
+  margin-bottom: 16px;
+  padding: 15px 16px 13px;
+  border: 1px solid rgba(91, 92, 226, 0.16);
+  border-radius: 11px;
+  background: linear-gradient(180deg, #fafaff 0%, #ffffff 100%);
+}
+
+.delivery-progress-panel.failed {
+  border-color: rgba(224, 82, 82, 0.22);
+  background: linear-gradient(180deg, #fff9f9 0%, #ffffff 100%);
+}
+
+.delivery-progress-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.delivery-progress-head h3 {
+  margin: 5px 0 0;
+  color: #29304a;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.delivery-progress-status {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  color: #6b7186;
+  border-radius: 999px;
+  background: #f0f1f5;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.delivery-progress-status.running {
+  color: #5557cf;
+  background: #eeefff;
+}
+
+.delivery-progress-status.succeeded {
+  color: #187c69;
+  background: #e9f8f3;
+}
+
+.delivery-progress-status.failed {
+  color: #b53232;
+  background: #fdeeee;
+}
+
+.delivery-progress-panel .pipeline-steps {
+  margin: 16px 0 11px;
+}
+
+.delivery-progress-panel .pipeline-step-copy strong {
+  color: #4c5369;
+  font-size: 9px;
+}
+
+.delivery-progress-panel .pipeline-step-failed .pipeline-step-copy strong {
+  color: #b53232;
+}
+
+.delivery-progress-logs {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid #eceef4;
+}
+
+.delivery-progress-log {
+  display: grid;
+  grid-template-columns: 7px 82px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  color: #7b8297;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.delivery-progress-log strong {
+  color: #4d546b;
+  font-weight: 600;
+}
+
+.delivery-progress-log span:last-child {
+  overflow-wrap: anywhere;
+}
+
+.delivery-progress-log-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #d7dae3;
+}
+
+.delivery-progress-log.running .delivery-progress-log-dot {
+  background: var(--primary);
+  box-shadow: 0 0 0 3px rgba(91, 92, 226, 0.12);
+}
+
+.delivery-progress-log.success .delivery-progress-log-dot {
+  background: #27b59c;
+}
+
+.delivery-progress-log.failed .delivery-progress-log-dot {
+  background: var(--red);
+}
+
+.delivery-progress-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 3px;
+  padding: 8px 9px;
+  color: #a62f2f;
+  border-radius: 7px;
+  background: #fdf0f0;
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.delivery-progress-error svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .work-item-picker {
   position: relative;
 }
