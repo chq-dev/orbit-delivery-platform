@@ -273,7 +273,7 @@ export function Repositories({
               <div className={`repo-local-path ${repo.localPath ? '' : 'repo-local-path-empty'}`}>
                 <FolderGit2 size={14} />
                 <span title={repo.localPath || undefined}>
-                  {repo.localPath || '未配置本地代码路径，交付将按模拟模式执行'}
+                  {repo.localPath || '未配置客户端代码路径，交付将按模拟模式执行'}
                 </span>
               </div>
 
@@ -351,7 +351,7 @@ export function Repositories({
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         title="接入 Git 仓库"
-        subtitle="配置仓库地址、目标分支、本地代码路径与认证账号"
+        subtitle="配置仓库地址、目标分支、客户端代码路径与认证账号"
         footer={
           <>
             <span className="modal-footer-hint">
@@ -404,8 +404,8 @@ export function Repositories({
           </Field>
         </div>
         <Field
-          label="本地代码路径"
-          hint="可选，必须是本机已存在的绝对目录；配置后交付会执行真实提交与推送"
+          label="客户端代码路径"
+          hint="填写当前客户端上的绝对目录（如 /Users/name/sme/sme-main）。保存时不在服务器校验；真实提交要求服务端能访问该路径。"
         >
           <div className="input-with-icon">
             <FolderGit2 size={15} />
@@ -457,7 +457,7 @@ export function Repositories({
         footer={
           <>
             <span className="modal-footer-hint">
-              <CheckCircle2 size={15} /> 修改分支会同步关联工作项；本地路径用于真实提交与验收后推送
+              <CheckCircle2 size={15} /> 修改分支会同步关联工作项；客户端路径用于真实提交与验收后推送
             </span>
             <div className="modal-footer-actions">
               <button className="btn btn-secondary" onClick={() => setBranchRepo(null)}>
@@ -493,8 +493,8 @@ export function Repositories({
           </div>
         </Field>
         <Field
-          label="本地代码路径"
-          hint="必须是本机已存在的绝对目录；留空则后续交付使用模拟提交"
+          label="客户端代码路径"
+          hint="保存当前客户端的绝对目录；跨服务器访问时，需在本机运行后端才能执行真实 Git 提交。留空则交付使用模拟提交。"
         >
           <div className="input-with-icon">
             <FolderGit2 size={15} />

@@ -1,4 +1,3 @@
-import { existsSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import type { AppDatabase } from '../db/database.js'
 import { nextSequence } from '../db/sequences.js'
@@ -74,7 +73,7 @@ export function createRepository(db: AppDatabase, input: RepositoryInput): Repos
   const name = requiredText(input.name, '仓库名称', { max: 200 })
   const url = httpUrl(input.url, '仓库地址')
   const branch = requiredText(input.branch, '默认分支', { max: 200 })
-  const localPath = normalizeLocalPath(input.localPath)
+  const localPath = normalizeClientPath(input.localPath)
   const language = optionalText(input.language, '开发语言', 100) ?? 'Vue 3 + Lua'
   const accountId = requiredText(input.accountId, 'Git 账号', { max: 200 })
 
@@ -115,7 +114,7 @@ export function updateRepositorySettings(
     : requiredText(input.branch, '默认管理分支', { max: 200 })
   const localPath = input.localPath === undefined
     ? repository.local_path
-    : normalizeLocalPath(input.localPath)
+    : normalizeClientPath(input.localPath)
 
   db.transaction(() => {
     db.prepare(
@@ -132,12 +131,9 @@ export function updateRepositorySettings(
   return getRepository(db, id)
 }
 
-function normalizeLocalPath(value: unknown): string {
+function normalizeClientPath(value: unknown): string {
   if (value === undefined || value === null || value === '') return ''
-  const localPath = requiredText(value, '本地代码路径', { max: 1_000 })
-  if (!isAbsolute(localPath)) throw unprocessable('本地代码路径必须是绝对路径')
-  if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
-    throw unprocessable('本地代码路径不存在或不是目录')
-  }
+  const localPath = requiredText(value, '客户端代码路径', { max: 1_000 })
+  if (!isAbsolute(localPath)) throw unprocessable('客户端代码路径必须是绝对路径')
   return localPath
 }

@@ -184,24 +184,17 @@ export function mergeFeishuSnapshot(
   serverItems: WorkItem[],
   snapshotItems: WorkItem[],
 ): WorkItem[] {
-  const snapshotByIdentity = new Map(
-    snapshotItems.map((item) => [identityOf(item.externalId ?? item.id), item]),
+  const serverIdentities = new Set(
+    serverItems
+      .filter((item) => item.source === 'feishu' && item.externalId)
+      .map((item) => identityOf(item.externalId as string)),
   )
-  const mergedServerItems = serverItems.map((item) => {
+  const serverOnly = serverItems.map((item) => {
     if (item.source !== 'feishu' || !item.externalId) return item
-    const identity = identityOf(item.externalId)
-    const snapshot = snapshotByIdentity.get(identity)
-    if (!snapshot) return item
-    snapshotByIdentity.delete(identity)
-    return {
-      ...item,
-      title: snapshot.title,
-      description: snapshot.description,
-      priority: snapshot.priority,
-      owner: snapshot.owner,
-      updatedAt: snapshot.updatedAt,
-      frontendOnly: false,
-    }
+    return { ...item, frontendOnly: false }
   })
-  return [...mergedServerItems, ...snapshotByIdentity.values()]
+  const additional = snapshotItems.filter(
+    (item) => !serverIdentities.has(identityOf(item.externalId ?? item.id)),
+  )
+  return [...serverOnly, ...additional]
 }

@@ -10,6 +10,7 @@ import { bootstrapFeishuIntegration } from '../services/feishuBootstrapService.j
 import { ingestFeishuWorkItems } from '../services/feishuIngestService.js'
 import { getFeishuStatus } from '../services/feishuIntegrationService.js'
 import { createRepository } from '../services/repositoryService.js'
+import { readFeishuSnapshotFromDatabase } from '../services/feishuSnapshotService.js'
 import { importWorkItems, listWorkItems } from '../services/workItemService.js'
 
 function setup() {
@@ -95,6 +96,14 @@ test('外部同步批量写入工作项并按 externalId 幂等更新', () => {
   assert.equal(status.authMode, 'cli')
   assert.equal(status.projectKey, 'rjcloud')
   assert.match(status.lastSyncMessage ?? '', /外部 Meegle CLI/)
+
+  const snapshot = readFeishuSnapshotFromDatabase(db, 'rjcloud')
+  assert.ok(snapshot)
+  assert.equal(snapshot.items.length, 2)
+  assert.equal(
+    snapshot.items.find((item) => item.externalId === 'rjcloud:story:101')?.title,
+    '实时需求（已更新）',
+  )
   db.close()
 })
 

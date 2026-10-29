@@ -194,10 +194,9 @@ test('仓库分支与本地路径可修改并同步到关联工作项', () => {
     () => updateRepositorySettings(db, repositoryId, { localPath: 'relative/path' }),
     (error: unknown) => error instanceof AppError && error.statusCode === 422,
   )
-  assert.throws(
-    () => updateRepositorySettings(db, repositoryId, { localPath: join(tempDir, 'missing') }),
-    (error: unknown) => error instanceof AppError && error.statusCode === 422,
-  )
+  const clientPath = join(tempDir, 'missing-client-checkout')
+  const withClientPath = updateRepositorySettings(db, repositoryId, { localPath: clientPath })
+  assert.equal(withClientPath.localPath, clientPath)
 
   updateRepositorySettings(db, repositoryId, { branch: 'develop', localPath: '' })
 })

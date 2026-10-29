@@ -75,7 +75,7 @@ export function DeliveryDialog({
       footer={
         <>
           <span className="modal-footer-hint">
-            <ShieldCheck size={15} /> 提交到配置的本地路径，测试验收通过后推送目标分支
+            <ShieldCheck size={15} /> 提交到服务端可访问的客户端路径，测试验收通过后推送目标分支
           </span>
           <div className="modal-footer-actions">
             <button className="btn btn-secondary" onClick={onClose}>
@@ -122,11 +122,11 @@ export function DeliveryDialog({
           </div>
 
           <Field
-            label="本地代码路径"
+            label="客户端代码路径"
             hint={
               selectedRepo?.localPath
-                ? '提交阶段在此目录创建真实 Git 提交，测试通过后推送到远端目标分支'
-                : '未配置本地路径，本次交付按模拟模式执行'
+                ? '服务端需能访问该目录；提交阶段在此创建真实 Git 提交，测试通过后推送到远端目标分支'
+                : '未配置客户端路径，本次交付按模拟模式执行'
             }
           >
             <div className="input-with-icon readonly-input">
@@ -141,7 +141,7 @@ export function DeliveryDialog({
               <span className="custom-check" />
               <span>
                 <strong>自动提交代码</strong>
-                <small>在本地路径创建提交，验收通过后推送目标分支</small>
+                <small>在服务端可访问的客户端路径创建提交，验收通过后推送目标分支</small>
               </span>
             </label>
             <label className="check-row">

@@ -1,10 +1,12 @@
 import express, { type ErrorRequestHandler } from 'express'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { config } from './config.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
 import { createApiRouter } from './routes.js'
 import type { CredentialVault } from './security/vault.js'
+import { readFeishuSnapshotFromDatabase } from './services/feishuSnapshotService.js'
 
 export function createApp(db: AppDatabase, vault: CredentialVault) {
   const app = express()
@@ -17,13 +19,42 @@ export function createApp(db: AppDatabase, vault: CredentialVault) {
       },
     }),
   )
+  app.use('/api', (_request, response, next) => {
+    response.setHeader('cache-control', 'no-store')
+    next()
+  })
   app.use('/api', createApiRouter(db, vault))
+
+  app.get('/feishu-work-items.json', (_request, response, next) => {
+    try {
+      const snapshot = readFeishuSnapshotFromDatabase(db, config.feishuProjectKey)
+      if (!snapshot) {
+        next()
+        return
+      }
+      response.setHeader('cache-control', 'no-store')
+      response.json(snapshot)
+    } catch (error) {
+      next(error)
+    }
+  })
 
   const webRoot = resolve(process.cwd(), 'dist')
   if (existsSync(resolve(webRoot, 'index.html'))) {
-    app.use(express.static(webRoot, { index: false, maxAge: '1h' }))
+    app.use(
+      express.static(webRoot, {
+        index: false,
+        maxAge: '1h',
+        setHeaders: (response, path) => {
+          if (path.endsWith('index.html') || path.endsWith('feishu-work-items.json')) {
+            response.setHeader('cache-control', 'no-store')
+          }
+        },
+      }),
+    )
     app.use((request, response, next) => {
       if (request.method !== 'GET') return next()
+      response.setHeader('cache-control', 'no-store')
       response.sendFile(resolve(webRoot, 'index.html'))
     })
   }

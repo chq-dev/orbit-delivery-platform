@@ -68,13 +68,17 @@ function sanitize(value: string): string {
 
 function normalizedPath(localPath: string): string {
   if (!localPath) {
-    throw new AppError(422, 'GIT_LOCAL_PATH_REQUIRED', '请先配置本地代码路径')
+    throw new AppError(422, 'GIT_LOCAL_PATH_REQUIRED', '请先配置客户端代码路径')
   }
   if (!isAbsolute(localPath)) {
-    throw new AppError(422, 'GIT_LOCAL_PATH_INVALID', '本地代码路径必须是绝对路径')
+    throw new AppError(422, 'GIT_LOCAL_PATH_INVALID', '客户端代码路径必须是绝对路径')
   }
   if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
-    throw new AppError(422, 'GIT_LOCAL_PATH_INVALID', '本地代码路径不存在或不是目录')
+    throw new AppError(
+      422,
+      'GIT_LOCAL_PATH_INVALID',
+      '当前服务端无法访问该客户端代码路径，或路径不是目录；跨服务器部署时请在代码所在客户端运行后端后再发起交付',
+    )
   }
   return localPath
 }

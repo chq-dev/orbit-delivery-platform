@@ -84,7 +84,7 @@ test('前端快照按飞书工作项 ID 合并并忽略无效记录', () => {
   assert.equal(merged.length, 2)
   const requirement = merged.find((item) => item.externalId?.endsWith(':story:6955195522'))
   assert.equal(requirement?.id, 'REQ-1082')
-  assert.equal(requirement?.title, '实时需求')
+  assert.equal(requirement?.title, '旧标题')
   assert.equal(requirement?.status, '进行中')
   assert.equal(requirement?.frontendOnly, false)
   assert.equal(merged.some((item) => item.id === 'BUG-FS-7142612744'), true)

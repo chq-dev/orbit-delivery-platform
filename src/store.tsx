@@ -19,6 +19,7 @@ import {
   type WorkItemInput,
 } from './api'
 import {
+  clearCachedFeishuSnapshot,
   fetchFeishuSnapshot,
   getFeishuSnapshotConfig,
   mapFeishuSnapshotItems,
@@ -183,6 +184,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
       try {
         const result = await fetchFeishuSnapshot(snapshotConfig.url)
         if (result.snapshot.items.length === 0 && !result.snapshot.syncedAt) {
+          setSnapshot(null)
+          clearCachedFeishuSnapshot()
+          setFeishuSnapshot((current) => ({
+            ...current,
+            loading: false,
+            itemCount: 0,
+            lastUpdatedAt: undefined,
+          }))
           throw new Error('飞书快照尚未生成，请先运行 npm run sync:feishu')
         }
         setSnapshot(result.snapshot)
@@ -256,7 +265,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       try {
         const repository = await api.createRepository(input)
         setRepositories((current) => [repository, ...current])
-        notify('仓库已接入', `${repository.name} · ${repository.branch} 已完成仓库校验`)
+        notify(
+          '仓库已接入',
+          `${repository.name} · ${repository.branch}${repository.localPath ? ' · 客户端路径已记录' : ''}`,
+        )
         return repository
       } catch (error) {
         reportApiError('仓库接入失败', error)
@@ -402,6 +414,41 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const syncFeishu = useCallback(async () => {
     try {
+      if (
+        feishuIntegration.connected &&
+        (feishuIntegration.authMode === 'token' || feishuIntegration.authMode === 'plugin')
+      ) {
+        try {
+          const result = await api.syncFeishu()
+          await reload(true)
+          await refreshFeishuSnapshot().catch(() => undefined)
+          notify(
+            '飞书工作项已同步',
+            result.skipped > 0 ? `${result.message}，${result.skipped} 条已跳过` : result.message,
+          )
+          return result
+        } catch (serverSyncError) {
+          try {
+            const count = await refreshFeishuSnapshot()
+            notify(
+              '后端同步失败，已加载最新可用快照',
+              `${count} 条工作项 · ${serverSyncError instanceof Error ? serverSyncError.message : '后端同步失败'}`,
+              'warning',
+            )
+            const syncedAt = new Date().toISOString()
+            return {
+              fetched: count,
+              upserted: count,
+              skipped: 0,
+              message: `已从快照更新 ${count} 条工作项`,
+              syncedAt,
+            }
+          } catch {
+            throw serverSyncError
+          }
+        }
+      }
+
       try {
         const count = await refreshFeishuSnapshot()
         const syncedAt = new Date().toISOString()
@@ -429,6 +476,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       throw error
     }
   }, [
+    feishuIntegration.authMode,
     feishuIntegration.connected,
     notify,
     refreshFeishuSnapshot,

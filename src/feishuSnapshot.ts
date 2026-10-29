@@ -13,7 +13,7 @@ export {
   type ParsedFeishuSnapshot,
 } from './feishuSnapshotCore'
 
-const CACHE_KEY = 'orbit.feishuSnapshot.v1'
+const CACHE_KEY = 'orbit.feishuSnapshot.v2'
 const DEFAULT_SNAPSHOT_URL = '/feishu-work-items.json'
 const DEFAULT_REFRESH_MS = 60_000
 const MIN_REFRESH_MS = 15_000
@@ -64,5 +64,14 @@ export function writeCachedFeishuSnapshot(snapshot: FeishuSnapshot): void {
     window.localStorage.setItem(CACHE_KEY, JSON.stringify(snapshot))
   } catch {
     // A full or disabled localStorage must not prevent live data from rendering.
+  }
+}
+
+export function clearCachedFeishuSnapshot(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(CACHE_KEY)
+  } catch {
+    // Ignore storage access failures; live API data must still be usable.
   }
 }
