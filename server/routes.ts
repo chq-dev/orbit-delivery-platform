@@ -22,6 +22,7 @@ import {
   listPipelines,
   startPipeline,
 } from './services/pipelineService.js'
+import { recordLocalDelivery } from './services/localDeliveryService.js'
 import { getTestReport, listTestReports, reportAsMarkdown } from './services/reportService.js'
 import {
   createRepository,
@@ -170,6 +171,10 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.post('/pipelines', (request, response) => {
     response.status(201).json(startPipeline(db, request.body))
+  })
+
+  router.post('/pipelines/local', (request, response) => {
+    response.status(201).json(recordLocalDelivery(db, request.body ?? {}))
   })
 
   router.post('/pipelines/:id/advance', (request, response) => {

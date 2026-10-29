@@ -22,7 +22,7 @@ import {
 } from './gitService.js'
 import { createTestReport, type TestReportSource } from './reportService.js'
 
-const stageDefinitions: StageDefinition[] = [
+export const stageDefinitions: StageDefinition[] = [
   { key: 'analysis', name: '需求解析', description: '识别需求意图、验收条件与影响模块' },
   { key: 'design', name: '开发设计报告', description: '生成技术方案、改动范围与测试策略' },
   { key: 'coding', name: '自动需求编码', description: '按设计报告生成代码变更与单元测试' },

@@ -20,6 +20,7 @@ import {
   getPipeline,
   startPipeline,
 } from '../services/pipelineService.js'
+import { recordLocalDelivery } from '../services/localDeliveryService.js'
 import { listTestReports } from '../services/reportService.js'
 import {
   createRepository,
@@ -324,6 +325,38 @@ test('配置本地路径后执行真实提交并在验收通过后推送分支',
     completed.commit,
   )
   assert.match(completed.stages[8].log ?? '', /已推送至 origin\/main/)
+})
+
+test('客户端本地交付结果可回写平台并更新工作项', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '客户端本地交付回写',
+    description: '验证客户端脚本完成后回写真实 commit',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const commit = 'abcdef1234567890abcdef1234567890abcdef12'
+  const run = recordLocalDelivery(db, {
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    commit,
+    autoClose: false,
+    pushed: true,
+    summary: '客户端验证与测试完成',
+  })
+
+  assert.equal(run.status, 'success')
+  assert.equal(run.progress, 100)
+  assert.equal(run.commit, commit)
+  assert.equal(run.localPath, '/Users/chenhuaqu/sme/sme-main')
+  assert.equal(run.simulation, false)
+  assert.equal(run.stages.length, 9)
+  assert.equal(run.stages.every((stage) => stage.status === 'success'), true)
+  assert.match(run.stages[4].log ?? '', /已推送至 origin\/develop/)
+  assert.equal(getWorkItem(db, item.id).status, '已交付')
 })
 
 test('飞书绑定状态、Webhook 验签和缺陷关闭回写队列', () => {

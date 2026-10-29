@@ -220,6 +220,28 @@ FEISHU_DEFAULT_REPO_ID=repo-1
 Use $rjcloud-local-delivery to deliver REQ-1082 locally.
 ```
 
+### 客户端本地执行
+
+远端平台无法访问开发机上的 `/Users/...` 路径。需要在客户端检出中执行代码时，使用
+客户端的 `npm run deliver:local` 脚本；页面“启动一键交付”选择“客户端本地”后会生成并复制命令：
+
+```bash
+npm run deliver:local -- \
+  --api http://8.145.45.84:8787 \
+  --work-item REQ-1137 \
+  --repo repo-1 \
+  --path /Users/chenhuaqu/sme/sme-main \
+  --branch dev-harvey \
+  --run \
+  --push
+```
+
+脚本会在客户端校验绝对路径、Git 根目录、分支和 origin，生成
+`delivery-artifacts/<work-item>/codex-prompt.md`，然后在该目录运行 `codex exec`。
+只有显式增加 `--push` 才会推送；非交互式推送还需要 `--yes`。项目内 skill 位于
+`skills/orbit-local-delivery/SKILL.md`。执行成功后脚本会把真实 commit、路径和分支回写
+`POST /api/pipelines/local`，平台会按现有规则更新工作项状态并处理缺陷关闭回写。
+
 该 skill 强制使用本地命令/API、工作区文件或本地导入队列，并要求在 `web/` 或 `lua/` 下遵守最近的 `AGENTS.md`；平台只在测试验收通过后推送配置分支，生产设备升级等其他外部写入会先请求确认。
 
 ### 组织级 coding-skills
