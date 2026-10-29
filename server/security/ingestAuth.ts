@@ -1,57 +1,72 @@
-import { timingSafeEqual } from 'node:crypto'
-import { AppError } from '../domain/errors.js'
+/*
+ * @Author: chenhuaqu 30004390@qq.com
+ * @Date: 2026-10-29 09:40:27
+ * @LastEditors: chenhuaqu 30004390@qq.com
+ * @LastEditTime: 2026-10-29 15:05:39
+ * @FilePath: /automationPrj/server/security/ingestAuth.ts
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
+import { timingSafeEqual } from 'node:crypto';
+import { AppError } from '../domain/errors.js';
 
 export interface IngestRequestIdentity {
-  headers: Record<string, string | string[] | undefined>
-  ip?: string
+  headers: Record<string, string | string[] | undefined>;
+  ip?: string;
 }
 
 function headerValue(
   headers: Record<string, string | string[] | undefined>,
   name: string,
 ): string {
-  const value = headers[name] ?? headers[name.toLowerCase()]
-  if (Array.isArray(value)) return value[0]?.trim() ?? ''
-  return value?.trim() ?? ''
+  const value = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0]?.trim() ?? '';
+  return value?.trim() ?? '';
 }
 
-function bearerToken(headers: Record<string, string | string[] | undefined>): string {
-  const authorization = headerValue(headers, 'authorization')
+function bearerToken(
+  headers: Record<string, string | string[] | undefined>,
+): string {
+  const authorization = headerValue(headers, 'authorization');
   if (authorization.toLowerCase().startsWith('bearer ')) {
-    return authorization.slice(7).trim()
+    return authorization.slice(7).trim();
   }
-  return headerValue(headers, 'x-feishu-ingest-token')
+  return headerValue(headers, 'x-feishu-ingest-token');
 }
 
 export function feishuIngestBearerToken(
   headers: Record<string, string | string[] | undefined>,
 ): string {
-  return bearerToken(headers)
+  return bearerToken(headers);
 }
 
 function isLoopback(ip: string | undefined): boolean {
-  if (!ip) return false
-  const normalized = ip.toLowerCase()
+  if (!ip) return false;
+  const normalized = ip.toLowerCase();
   return (
     normalized === '127.0.0.1' ||
     normalized === '::1' ||
     normalized === '::ffff:127.0.0.1' ||
     normalized.startsWith('127.')
-  )
+  );
 }
 
-function hasForwardedAddress(headers: Record<string, string | string[] | undefined>): boolean {
+function hasForwardedAddress(
+  headers: Record<string, string | string[] | undefined>,
+): boolean {
   return Boolean(
     headerValue(headers, 'forwarded') ||
-      headerValue(headers, 'x-forwarded-for') ||
-      headerValue(headers, 'x-real-ip'),
-  )
+    headerValue(headers, 'x-forwarded-for') ||
+    headerValue(headers, 'x-real-ip'),
+  );
 }
 
 function safeEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left)
-  const rightBuffer = Buffer.from(right)
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer)
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    timingSafeEqual(leftBuffer, rightBuffer)
+  );
 }
 
 export function assertFeishuIngestAuthorized(
@@ -60,16 +75,20 @@ export function assertFeishuIngestAuthorized(
   verifyStoredToken?: (token: string) => boolean,
 ): void {
   if (!expectedToken && !verifyStoredToken) {
-    if (isLoopback(request.ip) && !hasForwardedAddress(request.headers)) return
+    if (isLoopback(request.ip) && !hasForwardedAddress(request.headers)) return;
     throw new AppError(
       503,
       'FEISHU_INGEST_TOKEN_NOT_CONFIGURED',
       '外部飞书同步必须配置 FEISHU_INGEST_TOKEN；本机回环请求除外',
-    )
+    );
   }
 
-  const token = bearerToken(request.headers)
-  if (!token || (!(expectedToken && safeEqual(token, expectedToken)) && !verifyStoredToken?.(token))) {
-    throw new AppError(401, 'FEISHU_INGEST_UNAUTHORIZED', '飞书同步凭证无效')
+  const token = bearerToken(request.headers);
+  if (
+    !token ||
+    (!(expectedToken && safeEqual(token, expectedToken)) &&
+      !verifyStoredToken?.(token))
+  ) {
+    throw new AppError(401, 'FEISHU_INGEST_UNAUTHORIZED', '飞书同步凭证无效');
   }
 }

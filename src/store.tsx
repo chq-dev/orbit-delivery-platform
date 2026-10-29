@@ -147,7 +147,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const feishuAgentHealth = useRef<FeishuClientAgentHealth | null>(null)
   const feishuAgentSyncInFlight = useRef(false)
   const lastFeishuAgentSyncAt = useRef(0)
-  const feishuLoginPollTimer = useRef<number | null>(null)
 
   const snapshotWorkItems = useMemo(
     () => (snapshot ? mapFeishuSnapshotItems(snapshot, repositories) : []),
@@ -293,7 +292,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
                     userCode: health.pendingLogin?.userCode ?? '',
                     expiresAt: health.pendingLogin?.expiresAt ?? 0,
                   },
-                  polling: false,
+                  polling: true,
                 },
           )
         }
@@ -468,10 +467,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
   ])
 
   const beginFeishuAgentLogin = useCallback(async () => {
-    if (feishuLoginPollTimer.current !== null) {
-      window.clearTimeout(feishuLoginPollTimer.current)
-      feishuLoginPollTimer.current = null
-    }
     try {
       const challenge = await startFeishuAgentLogin()
       setFeishuAgentLogin({ challenge, polling: true })
@@ -480,34 +475,51 @@ export function DataProvider({ children }: { children: ReactNode }) {
         `打开授权链接并输入用户码 ${challenge.userCode}`,
         'info',
       )
-
-      const poll = async () => {
-        try {
-          const result = await pollFeishuAgentLogin()
-          if (result.authenticated) {
-            feishuLoginPollTimer.current = null
-            setFeishuAgentLogin({ polling: false })
-            notify('飞书授权完成', '正在拉取最新需求和缺陷', 'success')
-            await refreshFeishuAgent(true)
-            await syncFeishuAgent(true).catch(() => undefined)
-            return
-          }
-          setFeishuAgentLogin({ challenge, polling: true })
-          feishuLoginPollTimer.current = window.setTimeout(() => void poll(), 3_000)
-        } catch (error) {
-          feishuLoginPollTimer.current = null
-          const message = error instanceof Error ? error.message : '飞书授权轮询失败'
-          setFeishuAgentLogin({ challenge, polling: false, error: message })
-          notify('飞书授权未完成', message, 'warning')
-        }
-      }
-      feishuLoginPollTimer.current = window.setTimeout(() => void poll(), 3_000)
       return challenge
     } catch (error) {
       reportApiError('无法发起飞书设备授权', error)
       throw error
     }
-  }, [notify, refreshFeishuAgent, reportApiError, syncFeishuAgent])
+  }, [notify, reportApiError])
+
+  useEffect(() => {
+    const challenge = feishuAgentLogin.challenge
+    if (!challenge || !feishuAgentLogin.polling) return
+    let cancelled = false
+    let timer: number | undefined
+
+    const poll = async () => {
+      try {
+        const result = await pollFeishuAgentLogin()
+        if (cancelled) return
+        if (result.authenticated) {
+          setFeishuAgentLogin({ polling: false })
+          notify('飞书授权完成', '正在拉取最新需求和缺陷', 'success')
+          await refreshFeishuAgent(true)
+          await syncFeishuAgent(true).catch(() => undefined)
+          return
+        }
+        timer = window.setTimeout(() => void poll(), 3_000)
+      } catch (error) {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : '飞书授权轮询失败'
+        setFeishuAgentLogin({ challenge, polling: false, error: message })
+        notify('飞书授权未完成', message, 'warning')
+      }
+    }
+
+    timer = window.setTimeout(() => void poll(), 1_500)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [
+    feishuAgentLogin.challenge,
+    feishuAgentLogin.polling,
+    notify,
+    refreshFeishuAgent,
+    syncFeishuAgent,
+  ])
 
   const tryFeishuAgentAutoSync = useCallback(async () => {
     if (document.visibilityState !== 'visible' || feishuAgentSyncInFlight.current) return
@@ -549,15 +561,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [refreshFeishuAgent, tryFeishuAgentAutoSync])
-
-  useEffect(
-    () => () => {
-      if (feishuLoginPollTimer.current !== null) {
-        window.clearTimeout(feishuLoginPollTimer.current)
-      }
-    },
-    [],
-  )
 
   useEffect(() => {
     const timer = window.setInterval(() => {

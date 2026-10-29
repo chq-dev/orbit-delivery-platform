@@ -64,6 +64,17 @@ meegle config set host project.feishu.cn
 npm run feishu:agent
 ```
 
+macOS 可安装为当前用户登录自启，代理退出后会自动重启：
+
+```bash
+./scripts/install-feishu-agent-macos.sh
+tail -f /tmp/orbit-feishu-agent.out /tmp/orbit-feishu-agent.err
+```
+
+该脚本使用当前仓库路径、`npm` 和 Node.js 路径生成
+`~/Library/LaunchAgents/com.orbit.feishu-agent.plist`。如果更换了仓库目录或 Node 版本，
+重新执行脚本即可。
+
 随后打开平台「需求与缺陷」或「账号中心」页面，在「本机飞书实时同步」卡片中依次点击：
 
 1. `生成密钥并绑定`：平台生成 32 字节随机密钥，数据库只保存 SHA-256 哈希和尾号，明文只发送给本机代理。
