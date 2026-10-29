@@ -10,9 +10,11 @@ import {
   CloudDownload,
   Copy,
   GitBranch,
+  KeyRound,
   Plus,
   Rocket,
   Search,
+  ShieldCheck,
   Sparkles,
   UserRound,
   Workflow,
@@ -35,7 +37,15 @@ export function WorkItems({
 }: {
   onNavigate: (page: PageKey, runId?: string) => void
 }) {
-  const { workItems, repositories, pipelines, notify } = useData()
+  const {
+    workItems,
+    repositories,
+    pipelines,
+    notify,
+    feishuIntegration,
+    feishuInbox,
+    syncFeishu,
+  } = useData()
   const [tab, setTab] = useState<TabKey>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
@@ -46,6 +56,8 @@ export function WorkItems({
   const [detailItem, setDetailItem] = useState<WorkItem | null>(null)
   const [importMode, setImportMode] = useState<WorkItemType>('requirement')
   const [importOpen, setImportOpen] = useState(false)
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [syncingType, setSyncingType] = useState<WorkItemType | null>(null)
 
   const counts = useMemo(
     () => ({
@@ -86,9 +98,31 @@ export function WorkItems({
     setDeliveryOpen(true)
   }
 
-  const openImport = (type: WorkItemType) => {
+  const directFeishuSync =
+    feishuIntegration.connected &&
+    (feishuIntegration.authMode === 'token' || feishuIntegration.authMode === 'plugin')
+  const externalFeishuSync =
+    feishuIntegration.connected && feishuIntegration.authMode === 'cli'
+
+  const openFeishuSync = async (type: WorkItemType) => {
     setImportMode(type)
-    setImportOpen(true)
+    if (directFeishuSync) {
+      setSyncingType(type)
+      try {
+        await syncFeishu()
+        setImportOpen(true)
+      } catch {
+        // The data provider already reports the API error as a toast.
+      } finally {
+        setSyncingType(null)
+      }
+      return
+    }
+    if (externalFeishuSync && feishuInbox.some((item) => item.type === type)) {
+      setImportOpen(true)
+      return
+    }
+    setGuideOpen(true)
   }
 
   const copySkillInstruction = async () => {
@@ -150,15 +184,21 @@ export function WorkItems({
           <span className="feishu-project-mark">飞书</span>
           <span>
             <strong>rjcloud 飞书项目</strong>
-            <small>本地同步模式已连接，不打开外部项目页面</small>
+            <small>
+              {!feishuIntegration.connected
+                ? '飞书同步尚未配置，点击同步按钮查看设置步骤'
+                : externalFeishuSync
+                  ? '外部 Meegle 同步已连接，等待同步器写入工作项'
+                  : '后端飞书直连已连接，可立即同步需求和缺陷'}
+            </small>
           </span>
         </div>
         <div className="integration-link-actions">
-          <button onClick={() => openImport('requirement')}>
-            <CloudDownload size={14} /> 同步飞书需求
+          <button onClick={() => void openFeishuSync('requirement')} disabled={syncingType !== null}>
+            <CloudDownload size={14} /> {syncingType === 'requirement' ? '同步中…' : '同步飞书需求'}
           </button>
-          <button onClick={() => openImport('defect')}>
-            <CloudDownload size={14} /> 同步飞书缺陷
+          <button onClick={() => void openFeishuSync('defect')} disabled={syncingType !== null}>
+            <CloudDownload size={14} /> {syncingType === 'defect' ? '同步中…' : '同步飞书缺陷'}
           </button>
         </div>
       </div>
@@ -315,6 +355,75 @@ export function WorkItems({
         mode={importMode}
         onClose={() => setImportOpen(false)}
       />
+
+      <Modal
+        open={guideOpen}
+        onClose={() => setGuideOpen(false)}
+        title="配置飞书实时同步"
+        subtitle="飞书项目需要一次授权或服务端凭证，之后工作项会自动写入当前列表"
+        size="lg"
+        footer={
+          <div className="modal-footer-actions">
+            <button className="btn btn-primary" onClick={() => setGuideOpen(false)}>
+              我知道了
+            </button>
+          </div>
+        }
+      >
+        <div className="feishu-connect-form">
+          <div className="credential-note">
+            <ShieldCheck size={16} />
+            <div>
+              <strong>为什么不能完全匿名获取</strong>
+              <p>
+                飞书项目页面需要登录，浏览器跨域也无法直接读取 project.feishu.cn 的数据。
+                因此必须提供一次凭证；凭证只保存在服务端或同步机，不会写入前端代码或浏览器。
+              </p>
+            </div>
+          </div>
+          <Field label="方案 A：外部同步机（推荐，适合当前服务器）">
+            <div className="credential-note">
+              <KeyRound size={16} />
+              <div>
+                <p>在登录过飞书的电脑执行一次授权，然后常驻同步：</p>
+                <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                  {`npm install -g @lark-project/meegle@1.0.27
+meegle config set host project.feishu.cn
+meegle auth login --device-code
+
+export PLATFORM_BASE_URL=http://8.145.45.84:8787
+export PLATFORM_SYNC_TOKEN=<服务器 FEISHU_INGEST_TOKEN>
+export FEISHU_PROJECT_KEY=rjcloud
+
+npm run sync:feishu
+npm run sync:feishu:watch`}
+                </code>
+              </div>
+            </div>
+          </Field>
+          <Field label="方案 B：服务器直连（需要能访问飞书）">
+            <div className="credential-note">
+              <ShieldCheck size={16} />
+              <div>
+                <p>在服务器配置长期插件凭证后，服务启动即自动同步，无需再运行同步器：</p>
+                <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                  {`FEISHU_AUTO_SYNC=true
+FEISHU_PLUGIN_ID=<飞书项目插件 ID>
+FEISHU_PLUGIN_SECRET=<飞书项目插件 Secret>
+FEISHU_USER_KEY=<插件授权用户 user_key>
+FEISHU_PROJECT_KEY=rjcloud
+FEISHU_REQUIREMENT_TYPE_KEY=story
+FEISHU_DEFECT_TYPE_KEY=issue`}
+                </code>
+              </div>
+            </div>
+          </Field>
+          <p>
+            插件凭证在飞书项目的空间管理 → 插件 → 访问凭证中获取。不要使用浏览器 Cookie
+            或短期抓包 Token 做长期部署。
+          </p>
+        </div>
+      </Modal>
 
       <Modal
         open={Boolean(detailItem)}

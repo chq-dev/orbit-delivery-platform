@@ -65,6 +65,31 @@ npm run sync:feishu:watch
 
 同步器使用官方 `meegle workitem query` 按 `story` 和 `issue` 拉取数据，默认增量查询并按外部工作项 ID 幂等更新。首次运行会做全量同步，之后按 `FEISHU_SYNC_INTERVAL_MS` 轮询；可用 `FEISHU_SYNC_FULL=true` 强制全量。服务器侧的 `FEISHU_INGEST_TOKEN` 用于保护写入接口；未配置时仅允许本机回环调用。
 
+服务器 `.env` 最少需要：
+
+```bash
+DB_PATH=./data/orbit.db
+VAULT_KEY=<至少 32 位随机字符串>
+FEISHU_AUTO_SYNC=false
+FEISHU_INGEST_TOKEN=<自行生成的强随机字符串>
+```
+
+同步机上的 `PLATFORM_SYNC_TOKEN` 必须与服务器 `FEISHU_INGEST_TOKEN` 完全一致，可用
+`openssl rand -hex 32` 生成。`FEISHU_INGEST_TOKEN` 不是从飞书获取的，而是平台内部
+用于保护写入接口的共享密钥；飞书侧的凭证是 `meegle auth login` 保存的登录态，
+或管理员提供的一次性 `MEEGLE_USER_ACCESS_TOKEN`。
+
+可用健康接口确认配置是否真正生效：
+
+```bash
+curl -sS http://8.145.45.84:8787/api/health
+```
+
+外部同步成功后应看到 `feishu.ingestTokenConfigured=true`、`feishu.mode="cli"`、
+`feishu.connected=true` 和大于 0 的 `feishu.workItemCount`。只有配置了上述凭证，
+后续 watch 轮询才能做到无需人工操作；飞书不允许匿名读取，因此无法通过纯前端代码
+或写死源码彻底消除首次授权。
+
 首次部署时可选择后端直连飞书，或在另一台能访问飞书的机器上运行外部同步器。两者都会把真实需求和缺陷写入「需求与缺陷」列表；外部同步模式由同步器按 `FEISHU_SYNC_INTERVAL_MS` 轮询。数据库路径仍建议挂载持久卷，避免重新部署后丢失本地状态：
 
 1. 在「平台账号」绑定 Git 账号。
