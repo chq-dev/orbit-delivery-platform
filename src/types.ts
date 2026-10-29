@@ -219,8 +219,32 @@ export interface FeishuClientAgentHealth {
 export interface FeishuClientAgentState {
   checking: boolean
   online: boolean
+  lastSeenAt?: string
   health?: FeishuClientAgentHealth
   error?: string
+}
+
+export type FeishuAgentCommandType = 'login_start' | 'sync' | 'rotate_token'
+export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'
+
+export interface FeishuAgentCommand {
+  id: string
+  type: FeishuAgentCommandType
+  status: FeishuAgentCommandStatus
+  createdAt: string
+  updatedAt: string
+  result?: unknown
+  error?: string
+}
+
+export interface FeishuAgentBridgeStatus {
+  online: boolean
+  lastSeenAt?: string
+  staleAfterSeconds: number
+  health?: FeishuClientAgentHealth
+  activeCommand: FeishuAgentCommand | null
+  lastCommand: FeishuAgentCommand | null
+  commands: FeishuAgentCommand[]
 }
 
 export interface FeishuLoginChallenge {

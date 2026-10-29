@@ -29,15 +29,13 @@ import {
   type FeishuSnapshot,
 } from './feishuSnapshot'
 import {
-  configureFeishuAgent,
-  fetchFeishuAgentHealth,
-  pollFeishuAgentLogin,
-  rotateFeishuAgentToken,
-  runFeishuAgentSync as runFeishuAgentSyncRequest,
-  startFeishuAgentLogin,
+  enqueueFeishuAgentCommand,
+  fetchFeishuAgentStatus,
 } from './feishuAgent'
 import {
   type Account,
+  type FeishuAgentBridgeStatus,
+  type FeishuAgentCommand,
   type FeishuAgentLoginState,
   type FeishuClientAgentHealth,
   type FeishuClientAgentState,
@@ -46,7 +44,6 @@ import {
   type FeishuLoginChallenge,
   type FeishuSnapshotStatus,
   type FeishuSyncResult,
-  type FeishuSyncTokenBootstrapResult,
   type FeishuSyncTokenStatus,
   type PipelineRun,
   type Repository,
@@ -60,6 +57,46 @@ interface FeishuAgentBindResult {
   agentConfigured: boolean
   token?: string
   error?: unknown
+}
+
+const FEISHU_AGENT_AUTO_SYNC_INTERVAL_MS = 10 * 60_000
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+}
+
+function loginChallengeFrom(value: unknown): FeishuLoginChallenge | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const userCode = typeof record.userCode === 'string' ? record.userCode.trim() : ''
+  const verificationUriComplete =
+    typeof record.verificationUriComplete === 'string'
+      ? record.verificationUriComplete.trim()
+      : ''
+  if (!userCode || !verificationUriComplete) return null
+  return {
+    userCode,
+    verificationUri:
+      typeof record.verificationUri === 'string' && record.verificationUri.trim()
+        ? record.verificationUri.trim()
+        : verificationUriComplete,
+    verificationUriComplete,
+    expiresAt: Number(record.expiresAt) || 0,
+  }
+}
+
+function syncResultFrom(value: unknown): FeishuSyncResult | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (typeof record.message !== 'string' || typeof record.syncedAt !== 'string') return null
+  return {
+    fetched: Number(record.fetched) || 0,
+    upserted: Number(record.upserted) || 0,
+    archived: Number(record.archived) || 0,
+    skipped: Number(record.skipped) || 0,
+    message: record.message,
+    syncedAt: record.syncedAt,
+  }
 }
 
 interface DataContextValue {
@@ -271,43 +308,68 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [notify, snapshotConfig.url],
   )
 
+  const applyFeishuAgentStatus = useCallback((status: FeishuAgentBridgeStatus) => {
+    const health = status.health
+    feishuAgentHealth.current = health ?? null
+    setFeishuAgent({
+      checking: false,
+      online: status.online,
+      lastSeenAt: status.lastSeenAt,
+      health,
+    })
+    const challenge = loginChallengeFrom(health?.pendingLogin)
+    if (challenge) {
+      setFeishuAgentLogin((current) =>
+        current.challenge?.userCode === challenge.userCode && current.polling
+          ? current
+          : { challenge, polling: true },
+      )
+    }
+  }, [])
+
+  const fetchAgentStatus = useCallback(async () => {
+    const status = await fetchFeishuAgentStatus()
+    applyFeishuAgentStatus(status)
+    return status
+  }, [applyFeishuAgentStatus])
+
   const refreshFeishuAgent = useCallback(
     async (quiet = false) => {
       if (!quiet) {
         setFeishuAgent((current) => ({ ...current, checking: true, error: undefined }))
       }
       try {
-        const health = await fetchFeishuAgentHealth()
-        feishuAgentHealth.current = health
-        setFeishuAgent({ checking: false, online: true, health })
-        if (health.pendingLogin) {
-          setFeishuAgentLogin((current) =>
-            current.challenge
-              ? current
-              : {
-                  challenge: {
-                    verificationUri: health.pendingLogin?.verificationUriComplete ?? '',
-                    verificationUriComplete:
-                      health.pendingLogin?.verificationUriComplete ?? '',
-                    userCode: health.pendingLogin?.userCode ?? '',
-                    expiresAt: health.pendingLogin?.expiresAt ?? 0,
-                  },
-                  polling: true,
-                },
-          )
-        }
-        return health
+        const status = await fetchAgentStatus()
+        return status.online ? status.health ?? null : null
       } catch (error) {
         feishuAgentHealth.current = null
-        setFeishuAgent({
+        setFeishuAgent((current) => ({
+          ...current,
           checking: false,
           online: false,
-          error: error instanceof Error ? error.message : '本机同步代理不可用',
-        })
+          error: error instanceof Error ? error.message : '无法读取平台代理状态',
+        }))
         return null
       }
     },
-    [],
+    [fetchAgentStatus],
+  )
+
+  const waitForAgentCommand = useCallback(
+    async (command: FeishuAgentCommand, timeoutMs: number): Promise<FeishuAgentCommand> => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        await delay(command.type === 'sync' ? 2_000 : 1_200)
+        const status = await fetchAgentStatus()
+        const current = status.commands.find((entry) => entry.id === command.id)
+        if (current?.status === 'failed') {
+          throw new Error(current.error || '本机代理执行命令失败')
+        }
+        if (current?.status === 'succeeded') return current
+      }
+      throw new Error('等待本机代理执行超时，请检查代理是否在线')
+    },
+    [fetchAgentStatus],
   )
 
   const refreshFeishuSyncToken = useCallback(async () => {
@@ -345,7 +407,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       feishuAgentSyncInFlight.current = true
       try {
-        const result = await runFeishuAgentSyncRequest()
+        const command = await enqueueFeishuAgentCommand('sync')
+        const completed = await waitForAgentCommand(command, 15 * 60_000)
+        const result = syncResultFrom(completed.result)
+        if (!result) throw new Error('本机代理未返回有效的同步结果')
         lastFeishuAgentSyncAt.current = Date.now()
         await reload(true)
         await refreshFeishuSnapshot().catch(() => undefined)
@@ -367,82 +432,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
         feishuAgentSyncInFlight.current = false
       }
     },
-    [notify, refreshFeishuAgent, refreshFeishuSnapshot, reload],
+    [notify, refreshFeishuAgent, refreshFeishuSnapshot, reload, waitForAgentCommand],
   )
 
   const bindFeishuAgent = useCallback(async (): Promise<FeishuAgentBindResult> => {
-    const health = await refreshFeishuAgent()
-    if (!health) {
-      throw new Error('本机飞书同步代理未启动，请先在客户端运行 npm run feishu:agent')
+    const status = await fetchAgentStatus()
+    const tokenStatus = (await refreshFeishuSyncToken()) ?? feishuSyncToken
+    if (status.online && status.health?.config.configured) {
+      return { status: tokenStatus, agentConfigured: true }
     }
-    let status = (await refreshFeishuSyncToken()) ?? feishuSyncToken
-    if (health.config.configured) {
-      if (!status.configured) {
-        const boot = await api.bootstrapFeishuSyncToken()
-        status = boot.status
-        setFeishuSyncToken(status)
-        try {
-          await configureFeishuAgent({
-            platformBaseUrl: window.location.origin,
-            syncToken: boot.token,
-            projectKey: feishuIntegration.projectKey ?? 'rjcloud',
-            repoId: feishuIntegration.defaultRepoId,
-          })
-        } catch (error) {
-          notify(
-            '平台密钥已生成，但本机代理绑定失败',
-            '请保持代理运行，复制一次性密钥并在本机配置后重试',
-            'warning',
-          )
-          return { status, agentConfigured: false, token: boot.token, error }
-        }
-        await refreshFeishuAgent(true)
-        notify('本机飞书同步已绑定', '平台已生成新的同步密钥，并只保存到本机代理')
-        return { status, agentConfigured: true }
-      }
-      notify('本机飞书同步已绑定', '代理与平台同步密钥均已配置', 'info')
-      return { status, agentConfigured: true }
-    }
-
-    if (status.configured && status.source === 'env') {
-      throw new Error(
-        '平台同步密钥由 FEISHU_INGEST_TOKEN 管理，请在本机代理环境设置相同的 PLATFORM_SYNC_TOKEN 后重启代理',
-      )
-    }
-    if (status.configured) {
-      throw new Error(
-        '平台已生成过同步密钥，但本机代理没有保存。请在本机运行 npm run feishu:agent 后尝试轮换；若两者都不存在，则由服务器管理员重置密钥',
-      )
-    }
-
-    const boot: FeishuSyncTokenBootstrapResult = await api.bootstrapFeishuSyncToken()
-    setFeishuSyncToken(boot.status)
-    try {
-      await configureFeishuAgent({
-        platformBaseUrl: window.location.origin,
-        syncToken: boot.token,
-        projectKey: feishuIntegration.projectKey ?? 'rjcloud',
-        repoId: feishuIntegration.defaultRepoId,
-      })
-    } catch (error) {
-      notify(
-        '平台密钥已生成，但本机代理绑定失败',
-        '请保持代理运行，复制一次性密钥并在本机配置后重试',
-        'warning',
-      )
-      return { status: boot.status, agentConfigured: false, token: boot.token, error }
-    }
-    await refreshFeishuAgent(true)
-    notify('本机飞书同步已绑定', '平台已生成同步密钥，并只保存到本机代理')
-    return { status: boot.status, agentConfigured: true }
-  }, [
-    feishuIntegration.defaultRepoId,
-    feishuIntegration.projectKey,
-    feishuSyncToken,
-    notify,
-    refreshFeishuAgent,
-    refreshFeishuSyncToken,
-  ])
+    throw new Error(
+      '代理尚未完成平台绑定。请在客户端配置 FEISHU_AGENT_PLATFORM_URL 与 PLATFORM_SYNC_TOKEN 后重启 npm run feishu:agent',
+    )
+  }, [feishuSyncToken, fetchAgentStatus, refreshFeishuSyncToken])
 
   const rotateFeishuSyncToken = useCallback(async () => {
     const status = (await refreshFeishuSyncToken()) ?? feishuSyncToken
@@ -454,7 +456,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
     if (!health?.config.configured) {
       throw new Error('本机代理尚未保存当前同步密钥，无法通过代理轮换')
     }
-    const rotated = await rotateFeishuAgentToken()
+    const command = await enqueueFeishuAgentCommand('rotate_token')
+    await waitForAgentCommand(command, 60_000)
+    const rotated = await refreshFeishuSyncToken()
+    if (!rotated) throw new Error('无法读取轮换后的同步密钥状态')
     setFeishuSyncToken(rotated)
     await refreshFeishuAgent(true)
     notify('飞书同步密钥已轮换', '旧密钥已失效，新密钥只保存在本机代理')
@@ -464,11 +469,29 @@ export function DataProvider({ children }: { children: ReactNode }) {
     notify,
     refreshFeishuAgent,
     refreshFeishuSyncToken,
+    waitForAgentCommand,
   ])
 
   const beginFeishuAgentLogin = useCallback(async () => {
     try {
-      const challenge = await startFeishuAgentLogin()
+      const status = await fetchAgentStatus()
+      if (!status.online || !status.health) {
+        throw new Error('同步代理离线，无法发起飞书授权')
+      }
+      if (status.health.meegle.authenticated) {
+        throw new Error('飞书已经完成授权，无需重复登录')
+      }
+      const command = await enqueueFeishuAgentCommand('login_start')
+      const completed = await waitForAgentCommand(command, 45_000)
+      let challenge = loginChallengeFrom(
+        (completed.result as { challenge?: unknown } | undefined)?.challenge,
+      )
+      if (!challenge) challenge = loginChallengeFrom(status.health.pendingLogin)
+      if (!challenge) {
+        const latest = await fetchAgentStatus()
+        challenge = loginChallengeFrom(latest.health?.pendingLogin)
+      }
+      if (!challenge) throw new Error('代理未返回飞书授权码，请稍后重新发起')
       setFeishuAgentLogin({ challenge, polling: true })
       notify(
         '请在飞书完成设备授权',
@@ -480,23 +503,54 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reportApiError('无法发起飞书设备授权', error)
       throw error
     }
-  }, [notify, reportApiError])
+  }, [fetchAgentStatus, notify, reportApiError, waitForAgentCommand])
 
   useEffect(() => {
     const challenge = feishuAgentLogin.challenge
     if (!challenge || !feishuAgentLogin.polling) return
     let cancelled = false
     let timer: number | undefined
+    const startedAt = Date.now()
+
+    const refreshAfterLoginSync = async () => {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await delay(2_000)
+        if (cancelled) return
+        const status = await fetchAgentStatus().catch(() => null)
+        const completed = status?.health?.lastRun
+        if (!completed || Date.parse(completed.at) < startedAt - 5_000) continue
+        await reload(true)
+        await refreshFeishuSnapshot().catch(() => undefined)
+        if (completed.status === 'success') {
+          const summary = syncResultFrom(completed.summary)
+          notify(
+            '飞书数据已更新',
+            summary?.message || '授权完成后已拉取最新需求和缺陷',
+            'success',
+          )
+        } else {
+          notify('飞书授权成功，但首次同步失败', completed.error || '请稍后手动同步', 'warning')
+        }
+        return
+      }
+      if (!cancelled) {
+        await reload(true)
+        notify('飞书授权完成', '首次同步仍在后台执行，页面稍后会自动刷新', 'info')
+      }
+    }
 
     const poll = async () => {
       try {
-        const result = await pollFeishuAgentLogin()
+        const status = await fetchAgentStatus()
         if (cancelled) return
-        if (result.authenticated) {
+        if (status.health?.meegle.authenticated) {
           setFeishuAgentLogin({ polling: false })
           notify('飞书授权完成', '正在拉取最新需求和缺陷', 'success')
-          await refreshFeishuAgent(true)
-          await syncFeishuAgent(true).catch(() => undefined)
+          await refreshAfterLoginSync()
+          return
+        }
+        if (challenge.expiresAt > 0 && Date.now() > challenge.expiresAt + 5_000) {
+          setFeishuAgentLogin({ challenge, polling: false, error: '飞书授权已过期，请重新发起' })
           return
         }
         timer = window.setTimeout(() => void poll(), 3_000)
@@ -516,9 +570,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, [
     feishuAgentLogin.challenge,
     feishuAgentLogin.polling,
+    fetchAgentStatus,
     notify,
-    refreshFeishuAgent,
-    syncFeishuAgent,
+    refreshFeishuSnapshot,
+    reload,
   ])
 
   const tryFeishuAgentAutoSync = useCallback(async () => {
@@ -531,7 +586,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       lastFeishuAgentSyncAt.current,
       Number.isFinite(lastRunAt) ? lastRunAt : 0,
     )
-    if (Date.now() - lastSyncAt < 60_000) return
+    if (Date.now() - lastSyncAt < FEISHU_AGENT_AUTO_SYNC_INTERVAL_MS) return
     await syncFeishuAgent(false).catch(() => undefined)
   }, [refreshFeishuAgent, syncFeishuAgent])
 

@@ -74,28 +74,29 @@ export FEISHU_SYNC_STATE_PATH=./data/meegle-sync-state.json
 ```
 
 For CLI-only sync, the server must have `FEISHU_INGEST_TOKEN` set to the same
-value as `PLATFORM_SYNC_TOKEN`. The page-driven agent can instead bootstrap a
-database-backed token through the `本机飞书实时同步` card; the server stores only
-its SHA-256 hash. Without either token, remote ingest is refused and only
-loopback requests are accepted.
+value as `PLATFORM_SYNC_TOKEN`. The page can bootstrap a database-backed token
+through the sync-token API; the server stores only its SHA-256 hash. That token
+must be written to the sync host's `~/.config/orbit/feishu-sync.json` once before
+the agent can report heartbeats. Without either token, remote ingest and agent
+heartbeats are refused and only loopback requests are accepted.
 
 ## Run
 
 ### Page-driven local agent (preferred)
 
-On the machine that is logged in to Feishu, run the loopback agent and keep it
-alive:
+On the machine that is logged in to Feishu, run the agent and keep it alive:
 
 ```bash
 npm run feishu:agent
 ```
 
-In the Orbit page, use the `本机飞书实时同步` card to generate/bind the platform
-sync token and start device authorization. After login, page load, tab
-visibility, and the 60-second background check call `POST /sync` on the local
-agent. The agent runs a full sync and writes to the configured platform. The
-browser never receives the Feishu login token and the agent never returns the
-platform sync token to the page.
+The agent posts a heartbeat to
+`POST /api/integrations/feishu/agent/heartbeat` every 10 seconds and receives
+queued `login_start`, `sync`, and `rotate_token` commands. The Orbit page reads
+the same-origin `GET /api/integrations/feishu/agent/status` endpoint, so it never
+connects to `127.0.0.1` and is not blocked by browser local-network policy. After
+device authorization, the agent automatically runs a full sync. The browser
+never receives the Feishu login token or the platform sync token.
 
 The two credentials have different sources:
 
@@ -104,10 +105,10 @@ The two credentials have different sources:
   stored server-side only as a SHA-256 hash. If `FEISHU_INGEST_TOKEN` is set,
   that environment value takes precedence and cannot be rotated from the page.
 
-Agent endpoints are loopback-only by default and CORS-restricted:
+The loopback endpoints remain available for local diagnostics:
 `GET /health`, `POST /configure`, `POST /login/start`, `POST /login/poll`,
-`POST /sync`, and `POST /rotate-token`. Set `FEISHU_AGENT_ALLOWED_ORIGINS`
-when the Orbit page uses a different origin.
+`POST /sync`, and `POST /rotate-token`. The Orbit page does not depend on them.
+A heartbeat older than 45 seconds is reported as offline.
 
 When invoked from the Orbit page, use the copied Codex instruction as the task
 contract. Verify the authenticated host and platform write token before syncing.

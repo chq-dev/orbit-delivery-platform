@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -219,6 +219,26 @@ CREATE TABLE IF NOT EXISTS feishu_sync_credentials (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feishu_agent_state (
+  id TEXT PRIMARY KEY,
+  health_json TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_agent_commands (
+  id TEXT PRIMARY KEY,
+  command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+  result_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  claimed_at TEXT,
+  completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS feishu_outbox (
   id TEXT PRIMARY KEY,
   integration_id TEXT NOT NULL REFERENCES feishu_integrations(id) ON DELETE CASCADE,
@@ -238,4 +258,5 @@ CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
 CREATE INDEX IF NOT EXISTS idx_work_items_repo ON work_items(repo_id);
 CREATE INDEX IF NOT EXISTS idx_feishu_sync_logs_created ON feishu_sync_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_feishu_outbox_pending ON feishu_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_status ON feishu_agent_commands(status, created_at);
 `

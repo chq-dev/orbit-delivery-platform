@@ -195,6 +195,119 @@ test('Meegle CLI 客户端按 session_id 拉取后续分页', async () => {
   assert.equal(calls.some((args) => args.includes('--session-id')), true)
 })
 
+test('Meegle CLI 解析 moql_field_list 真实响应并映射负责人与优先级', async () => {
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    if (args[0] === 'workitem' && args[1] === 'query') {
+      if (args[args.indexOf('--mql') + 1].includes('`story`')) {
+        return result({
+          session_id: 'story-session',
+          list: [{ count: 1, group_infos: [{ group_id: '1' }] }],
+          data: {
+            '1': [
+              {
+                moql_field_list: [
+                  { key: 'name', value: { string_value: '真实需求' }, value_type: 'string_value' },
+                  {
+                    key: 'work_item_status',
+                    value: { key_label_value_list: [{ key: 'doing', label: '开发中' }] },
+                    value_type: 'key_label_value_list',
+                  },
+                  {
+                    key: 'priority',
+                    value: { key_label_value_list: [{ key: 'P1', label: '高' }] },
+                    value_type: 'key_label_value_list',
+                  },
+                  {
+                    key: 'current_status_operator',
+                    value: {
+                      user_value_list: [
+                        {
+                          email: 'alice@example.com',
+                          name_cn: 'Alice',
+                          user_key: 'user-1',
+                        },
+                      ],
+                    },
+                    value_type: 'user_value_list',
+                  },
+                  { key: 'updated_at', value: { string_value: '2026-10-29' }, value_type: 'string_value' },
+                  { key: 'description', value: { string_value: '来自查询的真实描述' }, value_type: 'string_value' },
+                  { key: 'work_item_id', value: { long_value: 7141584505 }, value_type: 'long_value' },
+                ],
+              },
+            ],
+          },
+        })
+      }
+      return result({ list: [{ count: 0 }], data: {} })
+    }
+    if (args[0] === 'workitem' && args[1] === '+batch-get') {
+      throw new Error('description 已由 MQL 返回，不应再逐条查询详情')
+    }
+    throw new Error(`unexpected args: ${args.join(' ')}`)
+  }
+
+  const output = await fetchMeegleWorkItems(
+    { ...config, fetchDescriptions: false },
+    runner,
+  )
+  assert.equal(output.fetched, 1)
+  assert.equal(output.skipped, 0)
+  assert.deepEqual(output.items[0], {
+    externalId: 'rjcloud:story:7141584505',
+    type: 'requirement',
+    title: '真实需求',
+    description: '来自查询的真实描述',
+    priority: '高',
+    owner: 'Alice',
+    updatedAt: '2026-10-29T00:00:00.000Z',
+  })
+})
+
+test('Meegle CLI 对超长标题、描述和负责人做安全截断', async () => {
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    if (args[0] === 'workitem' && args[1] === 'query') {
+      if (args[args.indexOf('--mql') + 1].includes('`story`')) {
+        return result({
+          list: [{ count: 1, group_infos: [{ group_id: '1' }] }],
+          data: {
+            '1': [
+              {
+                moql_field_list: [
+                  { key: 'name', value: { string_value: '标'.repeat(350) } },
+                  {
+                    key: 'current_status_operator',
+                    value: { user_value_list: [{ name_cn: '负责人'.repeat(40) }] },
+                  },
+                  { key: 'work_item_id', value: { long_value: 42 } },
+                ],
+              },
+            ],
+          },
+        })
+      }
+      return result({ list: [{ count: 0 }], data: {} })
+    }
+    if (args[0] === 'workitem' && args[1] === '+batch-get') {
+      return result({
+        results: [
+          {
+            work_item_id: '42',
+            data: { description: '😀'.repeat(20_000) },
+          },
+        ],
+      })
+    }
+    throw new Error(`unexpected args: ${args.join(' ')}`)
+  }
+
+  const output = await fetchMeegleWorkItems(config, runner)
+  assert.equal(output.items.length, 1)
+  assert.equal(Array.from(output.items[0]?.title ?? '').length, 300)
+  assert.equal((output.items[0]?.description ?? '').length <= 20_000, true)
+  assert.equal(Array.from(output.items[0]?.owner ?? '').length, 100)
+})
+
 test('缺少分页会话时标记为不完整，禁止执行删除对账', async () => {
   const runner: MeegleCommandRunner = async (_command, args) => {
     if (args[0] === 'workitem' && args[1] === 'query') {

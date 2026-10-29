@@ -89,6 +89,32 @@ function scalarText(value: unknown): string {
   return ''
 }
 
+function moqlValueText(value: unknown): string {
+  if (!isRecord(value)) return scalarText(value)
+  if ('string_value' in value) return scalarText(value.string_value)
+  if ('long_value' in value) return scalarText(value.long_value)
+  if ('double_value' in value) return scalarText(value.double_value)
+  if ('bool_value' in value) return scalarText(value.bool_value)
+  const keyLabels = value.key_label_value_list
+  if (Array.isArray(keyLabels)) {
+    return keyLabels
+      .map((entry) => (isRecord(entry) ? scalarText(entry.label ?? entry.key) : scalarText(entry)))
+      .filter(Boolean)
+      .join(',')
+  }
+  const users = value.user_value_list
+  if (Array.isArray(users)) {
+    return users
+      .map((entry) => {
+        if (!isRecord(entry)) return scalarText(entry)
+        return scalarText(entry.name_cn ?? entry.name_en ?? entry.email ?? entry.user_key)
+      })
+      .filter(Boolean)
+      .join(',')
+  }
+  return scalarText(value)
+}
+
 function workItemId(value: unknown): string {
   if (!isRecord(value)) return ''
   const nested = isRecord(value.work_item) ? value.work_item : undefined
@@ -111,6 +137,24 @@ function collectWorkItemRows(value: unknown, rows: Map<string, Record<string, un
     return
   }
   if (!isRecord(value)) return
+
+  const moqlFields = value.moql_field_list
+  if (Array.isArray(moqlFields)) {
+    const normalized: Record<string, unknown> = { ...value }
+    for (const field of moqlFields) {
+      if (!isRecord(field)) continue
+      const key = scalarText(field.key ?? field.field_key ?? field.name)
+      if (!key) continue
+      normalized[key] = moqlValueText(field.value ?? field.field_value)
+    }
+    const id = workItemId(normalized)
+    const title = workItemTitle(normalized)
+    if (id && title) {
+      const existing = rows.get(id)
+      rows.set(id, existing ? { ...existing, ...normalized } : normalized)
+    }
+    return
+  }
 
   const id = workItemId(value)
   if (id && workItemTitle(value)) {
@@ -233,6 +277,7 @@ function buildMql(
     '`work_item_status`',
     '`priority`',
     '`current_status_operator`',
+    '`description`',
     '`updated_at`',
   ].join(', ')
   const conditions = ['`archiving_date` IS NULL']
@@ -389,6 +434,13 @@ function normalizeTimestamp(value: unknown): string {
   return nowIso()
 }
 
+function boundedText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  const sliced = value.slice(0, maxLength)
+  const lastCode = sliced.charCodeAt(sliced.length - 1)
+  return lastCode >= 0xd800 && lastCode <= 0xdbff ? sliced.slice(0, -1) : sliced
+}
+
 function textFromFields(value: unknown, keys: string[]): string {
   if (!isRecord(value)) return ''
   for (const key of keys) {
@@ -493,10 +545,10 @@ function mapWorkItem(
   return {
     externalId: `${projectKey}:${typeKey}:${id}`,
     type,
-    title,
-    description,
+    title: boundedText(title, 300),
+    description: boundedText(description, 20_000),
     priority: normalizePriority(priorityText),
-    owner: owner || defaultOwner,
+    owner: boundedText(owner || defaultOwner, 100),
     updatedAt: normalizeTimestamp(
       raw.updated_at ?? raw.update_time ?? raw.updatedAt ?? raw.modified_at,
     ),

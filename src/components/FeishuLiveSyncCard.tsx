@@ -14,7 +14,6 @@ import {
   WifiOff,
 } from 'lucide-react'
 import { useState } from 'react'
-import { getFeishuAgentUrl } from '../feishuAgent'
 import { useData } from '../store'
 import { StatusBadge } from './ui'
 
@@ -112,7 +111,7 @@ export function FeishuLiveSyncCard() {
           <span className="feishu-live-icon"><Laptop size={17} /></span>
           <div>
             <h2>本机飞书实时同步</h2>
-            <p>页面会驱动当前客户端上的同步代理，从已登录的 Meegle CLI 拉取需求和缺陷并写入平台。</p>
+            <p>同步代理通过平台心跳接收任务，从已登录的 Meegle CLI 拉取需求和缺陷并写入平台。</p>
           </div>
         </div>
         <StatusBadge status={status} label={statusLabel} />
@@ -160,17 +159,21 @@ export function FeishuLiveSyncCard() {
       <div className="feishu-live-note">
         <ShieldCheck size={15} />
         <span>
-          飞书登录态只保存在本机 Meegle CLI。平台密钥由服务器生成并只存哈希，页面会自动下发给本机代理；无需手动获取或复制飞书 Cookie。
+          飞书登录态只保存在本机 Meegle CLI。页面只读取平台中转的脱敏状态，不直接访问本机端口；无需手动获取或复制飞书 Cookie。
         </span>
-        <code>{getFeishuAgentUrl()}</code>
+        <code>平台中转 · 45 秒心跳</code>
       </div>
 
       {!feishuAgent.online && !feishuAgent.checking && (
         <div className="feishu-live-offline">
           <WifiOff size={16} />
           <div>
-            <strong>先在当前电脑启动同步代理</strong>
-            <p>在项目仓库根目录执行下面的命令，保持窗口运行，然后回到页面点“重新检测”。</p>
+            <strong>{feishuAgent.lastSeenAt ? '同步代理暂时离线' : '尚未收到同步代理心跳'}</strong>
+            <p>
+              {feishuAgent.lastSeenAt
+                ? `最近心跳：${formatRunTime(feishuAgent.lastSeenAt)}。请确认 launchd 服务仍在运行，恢复后页面会自动上线。`
+                : '在已登录飞书的电脑上启动代理，保持服务运行后会通过平台心跳自动上线。'}
+            </p>
           </div>
           <code>{command}</code>
           <button className="btn btn-secondary btn-xs" onClick={() => void copy(command, '启动命令已复制')}>
@@ -274,7 +277,7 @@ export function FeishuLiveSyncCard() {
         )}
         {ready && (
           <span className="feishu-live-ready">
-            <CheckCircle2 size={14} /> 页面刷新、重新可见或每 60 秒自动检查更新
+            <CheckCircle2 size={14} /> 每 60 秒检查代理，距上次同步超过 10 分钟自动更新
           </span>
         )}
         {!feishuAgent.online && (

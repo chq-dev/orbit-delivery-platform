@@ -45,15 +45,17 @@ FEISHU_DEFECT_TYPE_KEY=issue
 
 ### 页面驱动的本机飞书同步（推荐）
 
-平台服务器可以访问不到 `project.feishu.cn`，但用户当前电脑通常可以。此模式在不暴露浏览器
-Cookie 的前提下，由页面调用本机回环代理完成实时同步：
+平台服务器可以访问不到 `project.feishu.cn`，但用户当前电脑通常可以。此模式不暴露浏览器
+Cookie，也不要求浏览器访问回环地址；本机代理主动向平台上报心跳并领取同步任务：
 
 ```text
 浏览器页面 http://8.145.45.84:8787
-  └─ http://127.0.0.1:18787 本机同步代理
-       ├─ 持有 meegle auth login 的飞书登录态
-       ├─ 拉取实时 story / issue
-       └─ 使用平台同步密钥写入 /api/integrations/feishu/ingest
+  └─ 同源 API /api/integrations/feishu/agent/status
+       └─ 平台代理状态与命令队列
+            └─ http://127.0.0.1:18787 本机同步代理（主动心跳）
+                 ├─ 持有 meegle auth login 的飞书登录态
+                 ├─ 拉取实时 story / issue
+                 └─ 使用平台同步密钥写入 /api/integrations/feishu/ingest
 ```
 
 在客户端项目目录启动代理并保持运行：
@@ -75,24 +77,31 @@ tail -f /tmp/orbit-feishu-agent.out /tmp/orbit-feishu-agent.err
 `~/Library/LaunchAgents/com.orbit.feishu-agent.plist`。如果更换了仓库目录或 Node 版本，
 重新执行脚本即可。
 
-随后打开平台「需求与缺陷」或「账号中心」页面，在「本机飞书实时同步」卡片中依次点击：
+打开平台「需求与缺陷」或「账号中心」页面，「本机飞书实时同步」卡片会通过同源接口显示代理
+是否在线、Meegle 是否已授权以及最近一次同步结果。代理每 10 秒上报一次心跳，超过 45 秒
+未上报才会显示离线，因此不会再受 Chrome 本地网络权限或跨来源回环地址限制影响。
 
-1. `生成密钥并绑定`：平台生成 32 字节随机密钥，数据库只保存 SHA-256 哈希和尾号，明文只发送给本机代理。
-2. `开始飞书授权`：页面显示设备授权链接和用户码；在飞书完成确认后，页面自动轮询并触发首次同步。
-3. 之后页面初始化、重新可见或每 60 秒会自动检查，距上次成功同步超过约 60 秒时调用本机代理全量拉取并回写平台。
+首次绑定平台同步密钥时，在服务器生成一次性密钥并写入客户端代理配置；之后页面中的
+「开始飞书授权」「立即同步」「轮换密钥」都会进入平台命令队列，由在线代理领取执行：
+
+1. `开始飞书授权`：页面显示设备授权链接和用户码；代理轮询授权结果，成功后自动执行首次全量同步。
+2. 之后页面每 60 秒检查代理状态；页面初始化或重新可见时，若距上次成功同步超过 10 分钟会自动下发全量同步任务。
+3. 浏览器只接触平台状态和任务 ID，不接触飞书登录 Token 或平台同步密钥。
 
 两个凭据的来源不同，均不需要从飞书网页 Cookie 中提取：
 
 - **飞书登录态**：由 `meegle auth login --device-code` 保存在本机 Meegle CLI；页面只驱动授权流程。
-- **平台同步密钥**：平台内部用于保护 ingest 写入接口。默认由页面首次绑定时生成；若服务器设置了
-  `FEISHU_INGEST_TOKEN`，则以环境变量为准，页面不允许轮换，客户端代理需使用相同值启动。
+- **平台同步密钥**：平台内部用于保护 ingest 和代理心跳接口。首次可由平台生成数据库密钥，
+  并一次性写入客户端代理配置；若服务器设置了 `FEISHU_INGEST_TOKEN`，则以环境变量为准，
+  页面不允许轮换，客户端代理需使用相同值启动。
 
-本机代理默认监听 `127.0.0.1:18787`，只允许受信任页面来源跨域访问：
+本机代理默认监听 `127.0.0.1:18787`，页面不再直接调用该地址；它只作为代理健康检查和本机
+诊断端口。代理主动访问平台以下接口：
 
 ```bash
 FEISHU_AGENT_PORT=18787
-FEISHU_AGENT_ALLOWED_ORIGINS=http://8.145.45.84:8787,http://localhost:4173,http://127.0.0.1:4173
-VITE_FEISHU_AGENT_URL=http://127.0.0.1:18787
+FEISHU_AGENT_HEARTBEAT_INTERVAL_MS=10000
+FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
 ```
 
 代理配置默认写入 `~/.config/orbit/feishu-sync.json`（权限 `0600`），不会写入浏览器
@@ -224,6 +233,10 @@ server/
 - `GET /api/integrations/feishu/status`、`POST /api/integrations/feishu/connect`。
 - `POST /api/integrations/feishu/test`、`POST /api/integrations/feishu/sync`。
 - `POST /api/integrations/feishu/ingest`：供 Meegle CLI 外部同步器写入工作项，使用 `FEISHU_INGEST_TOKEN` 鉴权。
+- `GET /api/integrations/feishu/agent/status`：返回代理在线状态、脱敏健康状态和最近命令，不返回任何密钥。
+- `POST /api/integrations/feishu/agent/heartbeat`：代理携带同步密钥上报心跳并领取待执行命令。
+- `POST /api/integrations/feishu/agent/commands`：页面下发登录、同步或密钥轮换命令；相同类型的未完成命令会去重。
+- `POST /api/integrations/feishu/agent/commands/:id/result`：代理携带同步密钥上报命令结果。
 - `GET /api/integrations/feishu/sync-token`：返回平台同步密钥状态和尾号，不返回明文。
 - `POST /api/integrations/feishu/sync-token/bootstrap`：首次生成平台同步密钥，明文仅返回一次。
 - `POST /api/integrations/feishu/sync-token/rotate`：携带当前 Bearer 密钥轮换，旧密钥立即失效。
@@ -236,7 +249,7 @@ server/
 
 飞书项目页面需要登录，服务端不能匿名抓取 HTML。平台支持两条实时同步路径：
 
-- **跨服务器外部同步（推荐）**：在能访问飞书的机器上运行官方 `meegle` CLI，通过 `POST /api/integrations/feishu/ingest` 写入平台。后端无需访问飞书，也不需要配置飞书 Token。
+- **跨服务器外部同步（推荐）**：在能访问飞书的机器上运行官方 `meegle` CLI。页面通过平台状态/命令接口控制本机代理，代理主动心跳并从 `/api/integrations/feishu/ingest` 写入平台。后端无需访问飞书，也不需要配置飞书 Token。
 - **后端直连**：平台服务器本身能访问 `project.feishu.cn` 时，在部署环境注入访问 Token，启动时自动同步。
 
 后端直连配置示例：

@@ -75,6 +75,8 @@ test('新数据库只建表，不包含预置业务数据', () => {
     'feishu_access_tokens',
     'feishu_event_dedup',
     'feishu_sync_credentials',
+    'feishu_agent_state',
+    'feishu_agent_commands',
     'feishu_outbox',
   ]
   for (const table of tables) {
@@ -96,7 +98,7 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 7)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 8)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_access_tokens') as { count: number }
@@ -121,7 +123,7 @@ test('版本 6 数据库升级后会创建飞书同步密钥表', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 7)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 8)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_sync_credentials') as { count: number }

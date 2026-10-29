@@ -53,6 +53,14 @@ interface AgentSyncResult {
 
 const agentHost = process.env.FEISHU_AGENT_HOST?.trim() || '127.0.0.1'
 const agentPort = positiveInteger(process.env.FEISHU_AGENT_PORT, 18_787)
+const heartbeatIntervalMs = positiveInteger(
+  process.env.FEISHU_AGENT_HEARTBEAT_INTERVAL_MS,
+  10_000,
+)
+const loginPollIntervalMs = positiveInteger(
+  process.env.FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS,
+  3_000,
+)
 const meegleCommand = process.env.MEEGLE_BIN?.trim() || 'meegle'
 const meegleHost = process.env.MEEGLE_HOST?.trim() || 'project.feishu.cn'
 const npmCommand = process.env.NPM_BIN?.trim() || 'npm'
@@ -80,6 +88,11 @@ const allowedOrigins = new Set(
 let pendingLogin: PendingLogin | null = null
 let running = false
 let lastRun: LastRun | null = null
+let heartbeatInFlight = false
+let loginPollInFlight = false
+let lastHeartbeatError = ''
+let cachedAuth: Awaited<ReturnType<typeof authStatus>> | null = null
+let cachedAuthAt = 0
 
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
@@ -187,6 +200,39 @@ async function authStatus(): Promise<{
   }
 }
 
+async function currentAuthStatus(
+  force = false,
+): Promise<Awaited<ReturnType<typeof authStatus>>> {
+  if (!force && cachedAuth && Date.now() - cachedAuthAt < 20_000) {
+    return cachedAuth
+  }
+  cachedAuth = await authStatus()
+  cachedAuthAt = Date.now()
+  return cachedAuth
+}
+
+async function currentHealth(): Promise<{
+  ok: true
+  version: number
+  config: ReturnType<typeof publicFeishuAgentConfig>
+  meegle: Awaited<ReturnType<typeof authStatus>>
+  running: boolean
+  lastRun: LastRun | null
+  pendingLogin: LoginChallenge | null
+}> {
+  const config = readConfig()
+  const auth = await currentAuthStatus()
+  return {
+    ok: true,
+    version: 3,
+    config: publicFeishuAgentConfig(config),
+    meegle: auth,
+    running,
+    lastRun,
+    pendingLogin,
+  }
+}
+
 function nonNegativeInteger(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0
@@ -255,6 +301,132 @@ async function runSync(): Promise<AgentSyncResult> {
     return summary
   } finally {
     running = false
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+async function postAgentJson(
+  config: FeishuAgentStoredConfig,
+  path: string,
+  body: unknown,
+  timeout = 30_000,
+): Promise<Response> {
+  return fetch(`${config.platformBaseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${config.syncToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeout),
+  })
+}
+
+async function reportCommandResult(
+  commandId: string,
+  input: { result?: unknown; error?: string },
+): Promise<void> {
+  const config = readConfig()
+  if (!config) return
+  const response = await postAgentJson(
+    config,
+    `/api/integrations/feishu/agent/commands/${encodeURIComponent(commandId)}/result`,
+    input,
+  )
+  if (!response.ok) {
+    throw new Error(`上报代理命令结果失败：${await responseMessage(response)}`)
+  }
+}
+
+async function executeCommand(command: {
+  id: string
+  type: 'login_start' | 'sync' | 'rotate_token'
+}): Promise<void> {
+  try {
+    let result: unknown
+    if (command.type === 'login_start') {
+      result = { challenge: await startLogin() }
+    } else if (command.type === 'sync') {
+      result = await runSync()
+    } else {
+      result = await rotateToken()
+    }
+    await reportCommandResult(command.id, { result })
+    void sendHeartbeat()
+  } catch (error) {
+    const message = errorMessage(error)
+    console.error(`代理命令执行失败（${command.type}）：${message}`)
+    await reportCommandResult(command.id, { error: message }).catch((reportError) => {
+      console.error(`代理命令结果上报失败：${errorMessage(reportError)}`)
+    })
+    void sendHeartbeat()
+  }
+}
+
+async function sendHeartbeat(): Promise<void> {
+  if (heartbeatInFlight) return
+  const config = readConfig()
+  if (!config) return
+  heartbeatInFlight = true
+  try {
+    const response = await postAgentJson(
+      config,
+      '/api/integrations/feishu/agent/heartbeat',
+      { health: await currentHealth() },
+    )
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}：${await responseMessage(response)}`)
+    }
+    if (lastHeartbeatError) {
+      console.log('平台代理心跳已恢复')
+      lastHeartbeatError = ''
+    }
+    const payload = (await response.json().catch(() => null)) as
+      | { commands?: unknown }
+      | null
+    const commands = Array.isArray(payload?.commands) ? payload.commands : []
+    for (const command of commands) {
+      if (!isRecord(command)) continue
+      const id = text(command.id)
+      const type = text(command.type)
+      if (
+        !id ||
+        (type !== 'login_start' && type !== 'sync' && type !== 'rotate_token')
+      ) {
+        continue
+      }
+      void executeCommand({ id, type })
+    }
+  } catch (error) {
+    const message = errorMessage(error)
+    if (message !== lastHeartbeatError) {
+      console.error(`平台代理心跳失败：${message}`)
+      lastHeartbeatError = message
+    }
+  } finally {
+    heartbeatInFlight = false
+  }
+}
+
+async function pollPendingLogin(): Promise<void> {
+  if (!pendingLogin || loginPollInFlight) return
+  loginPollInFlight = true
+  try {
+    const result = await pollLogin()
+    if (!result.authenticated) return
+    cachedAuth = null
+    cachedAuthAt = 0
+    console.log('飞书设备授权完成，开始首次全量同步')
+    await runSync()
+    console.log('首次全量同步完成')
+  } catch (error) {
+    console.error(`飞书授权轮询失败：${errorMessage(error)}`)
+  } finally {
+    loginPollInFlight = false
   }
 }
 
@@ -436,28 +608,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   const path = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).pathname
   if (request.method === 'GET' && (path === '/health' || path === '/status')) {
-    const config = readConfig()
-    const auth = await authStatus()
-    sendJson(response, 200, {
-      ok: true,
-      version: 2,
-      config: publicFeishuAgentConfig(config),
-      meegle: auth,
-      running,
-      lastRun,
-      pendingLogin: pendingLogin
-        ? {
-            userCode: pendingLogin.userCode,
-            verificationUriComplete: pendingLogin.verificationUriComplete,
-            expiresAt: pendingLogin.expiresAt,
-          }
-        : null,
-    })
+    sendJson(response, 200, await currentHealth())
     return
   }
   if (request.method === 'POST' && path === '/configure') {
     const config = validateFeishuAgentConfig(await readBody(request))
     writeConfig(config)
+    cachedAuth = null
+    cachedAuthAt = 0
+    void sendHeartbeat()
     sendJson(response, 200, { ok: true, config: publicFeishuAgentConfig(config) })
     return
   }
@@ -491,9 +650,16 @@ server.listen(agentPort, agentHost, () => {
   console.log(`Orbit 飞书同步代理已启动：http://${agentHost}:${agentPort}`)
   console.log(`配置路径：${configPath}`)
   console.log(`允许的页面来源：${[...allowedOrigins].join(', ')}`)
+  console.log(`平台代理心跳间隔：${heartbeatIntervalMs}ms`)
+  void sendHeartbeat()
 })
 
+const heartbeatTimer = setInterval(() => void sendHeartbeat(), heartbeatIntervalMs)
+const loginPollTimer = setInterval(() => void pollPendingLogin(), loginPollIntervalMs)
+
 function shutdown(): void {
+  clearInterval(heartbeatTimer)
+  clearInterval(loginPollTimer)
   server.close(() => process.exit(0))
 }
 

@@ -232,7 +232,7 @@ async function runOnce(): Promise<SyncSummary> {
     fetched.items.length > 0
 
   if (repoId) {
-    for (const batch of chunks(fetched.items, 200)) {
+    for (const batch of chunks(fetched.items, 20)) {
       const result = await postIngest({
         projectKey: config.projectKey,
         repoId,

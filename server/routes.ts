@@ -19,6 +19,12 @@ import {
 import { listFeishuInbox } from './services/inboxService.js'
 import { ingestFeishuWorkItems } from './services/feishuIngestService.js'
 import {
+  completeFeishuAgentCommand,
+  enqueueFeishuAgentCommand,
+  getFeishuAgentBridgeStatus,
+  recordFeishuAgentHeartbeat,
+} from './services/feishuAgentBridgeService.js'
+import {
   bootstrapFeishuSyncToken,
   getFeishuSyncTokenStatus,
   rotateFeishuSyncToken,
@@ -47,9 +53,21 @@ import {
 export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router {
   const router = Router()
 
+  const assertSyncTokenAuthorized = (request: Request): void => {
+    const tokenStatus = getFeishuSyncTokenStatus(db)
+    assertFeishuIngestAuthorized(
+      { headers: request.headers, ip: request.ip },
+      config.feishuIngestToken,
+      tokenStatus.source === 'database'
+        ? (token) => verifyFeishuSyncToken(db, token)
+        : undefined,
+    )
+  }
+
   router.get('/health', (_request, response) => {
     db.prepare('SELECT 1').get()
     const feishu = getFeishuStatus(db)
+    const agent = getFeishuAgentBridgeStatus(db)
     const workItems = db
       .prepare('SELECT COUNT(*) AS count FROM work_items WHERE archived_at IS NULL')
       .get() as { count: number }
@@ -69,6 +87,10 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
         lastSyncAt: feishu.lastSyncAt,
         lastSyncStatus: feishu.lastSyncStatus,
         workItemCount: workItems.count,
+      },
+      agent: {
+        online: agent.online,
+        lastSeenAt: agent.lastSeenAt,
       },
     })
   })
@@ -137,15 +159,29 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/integrations/feishu/ingest', (request, response) => {
-    const tokenStatus = getFeishuSyncTokenStatus(db)
-    assertFeishuIngestAuthorized(
-      { headers: request.headers, ip: request.ip },
-      config.feishuIngestToken,
-      tokenStatus.source === 'database'
-        ? (token) => verifyFeishuSyncToken(db, token)
-        : undefined,
-    )
+    assertSyncTokenAuthorized(request)
     response.status(201).json(ingestFeishuWorkItems(db, request.body))
+  })
+
+  router.get('/integrations/feishu/agent/status', (_request, response) => {
+    response.json(getFeishuAgentBridgeStatus(db))
+  })
+
+  router.post('/integrations/feishu/agent/heartbeat', (request, response) => {
+    assertSyncTokenAuthorized(request)
+    response.json({
+      ok: true,
+      ...recordFeishuAgentHeartbeat(db, request.body),
+    })
+  })
+
+  router.post('/integrations/feishu/agent/commands', (request, response) => {
+    response.status(202).json(enqueueFeishuAgentCommand(db, request.body?.type))
+  })
+
+  router.post('/integrations/feishu/agent/commands/:id/result', (request, response) => {
+    assertSyncTokenAuthorized(request)
+    response.json(completeFeishuAgentCommand(db, request.params.id, request.body))
   })
 
   router.get('/integrations/feishu/sync-token', (_request, response) => {
