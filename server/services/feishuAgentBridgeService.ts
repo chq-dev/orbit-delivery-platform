@@ -7,7 +7,7 @@ const AGENT_STATE_ID = 'primary'
 const RUNNING_COMMAND_LEASE_MS = 15 * 60_000
 const RECENT_COMMAND_LIMIT = 20
 
-export const FEISHU_AGENT_ONLINE_WINDOW_MS = 45_000
+export const FEISHU_AGENT_ONLINE_WINDOW_MS = 90_000
 
 export type FeishuAgentCommandType = 'login_start' | 'sync' | 'rotate_token'
 export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'

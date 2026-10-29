@@ -15,6 +15,7 @@ export interface FeishuSnapshotItem {
   owner: string
   updatedAt: string
   status?: WorkItemStatus
+  feishuStatus?: string
   repoId?: string
   branch?: string
 }
@@ -118,6 +119,7 @@ function mapItem(
     createdAt: updatedAt,
     source: 'feishu',
     externalId: item.externalId,
+    feishuStatus: item.feishuStatus,
     frontendOnly: true,
   }
 }
@@ -156,6 +158,7 @@ export function parseFeishuSnapshot(payload: unknown): ParsedFeishuSnapshot {
       owner: text(raw.owner) || '飞书同步',
       updatedAt: text(raw.updatedAt) || syncedAt,
       status: normalizeStatus(raw.status),
+      feishuStatus: text(raw.feishuStatus) || undefined,
       repoId: text(raw.repoId) || undefined,
       branch: text(raw.branch) || undefined,
     })

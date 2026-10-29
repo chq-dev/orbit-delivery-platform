@@ -38,7 +38,7 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
     assert.deepEqual(getFeishuAgentBridgeStatus(db), {
       online: false,
       lastSeenAt: undefined,
-      staleAfterSeconds: 45,
+      staleAfterSeconds: 90,
       health: undefined,
       activeCommand: null,
       lastCommand: null,
@@ -64,7 +64,7 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
     )
 
     db.prepare('UPDATE feishu_agent_state SET last_seen_at = ? WHERE id = ?').run(
-      new Date(Date.now() - 60_000).toISOString(),
+      new Date(Date.now() - 120_000).toISOString(),
       'primary',
     )
     assert.equal(getFeishuAgentBridgeStatus(db).online, false)

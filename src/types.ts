@@ -49,6 +49,7 @@ export interface WorkItem {
   createdAt: string
   source?: 'local' | 'feishu'
   externalId?: string
+  feishuStatus?: string
   frontendOnly?: boolean
 }
 

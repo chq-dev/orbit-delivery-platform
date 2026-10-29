@@ -161,7 +161,7 @@ export function FeishuLiveSyncCard() {
         <span>
           飞书登录态只保存在本机 Meegle CLI。页面只读取平台中转的脱敏状态，不直接访问本机端口；无需手动获取或复制飞书 Cookie。
         </span>
-        <code>平台中转 · 45 秒心跳</code>
+        <code>平台中转 · 90 秒心跳</code>
       </div>
 
       {!feishuAgent.online && !feishuAgent.checking && (

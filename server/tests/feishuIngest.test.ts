@@ -146,6 +146,68 @@ test('不同 project key 前缀的同一飞书工作项不会重复写入', () =
   db.close()
 })
 
+test('外部同步映射飞书状态并保留平台交付状态', () => {
+  const { db, repository } = setup()
+  const item = {
+    externalId: 'rjcloud:story:301',
+    type: 'requirement',
+    title: '状态同步需求',
+    description: '状态同步描述',
+    priority: '高',
+    owner: 'Alice',
+    updatedAt: '2026-10-29T01:00:00.000Z',
+    status: '已交付',
+    feishuStatus: '已测试',
+  }
+  ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [item],
+  })
+
+  const first = listWorkItems(db).find((entry) => entry.externalId === item.externalId)
+  assert.equal(first?.status, '已交付')
+  assert.equal(first?.feishuStatus, '已测试')
+
+  ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [{ ...item, status: '进行中', feishuStatus: '测试中' }],
+  })
+  const preserved = listWorkItems(db).find((entry) => entry.externalId === item.externalId)
+  assert.equal(preserved?.status, '已交付')
+  assert.equal(preserved?.feishuStatus, '测试中')
+
+  ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [{ ...item, status: '已关闭', feishuStatus: '已拒绝' }],
+  })
+  const closed = listWorkItems(db).find((entry) => entry.externalId === item.externalId)
+  assert.equal(closed?.status, '已关闭')
+  assert.equal(closed?.feishuStatus, '已拒绝')
+
+  ingestFeishuWorkItems(db, {
+    projectKey: 'rjcloud',
+    repoId: repository.id,
+    items: [
+      {
+        ...item,
+        externalId: 'rjcloud:issue:302',
+        type: 'defect',
+        status: '进行中',
+        feishuStatus: '接受处理',
+      },
+    ],
+  })
+  const inProgress = listWorkItems(db).find(
+    (entry) => entry.externalId === 'rjcloud:issue:302',
+  )
+  assert.equal(inProgress?.status, '进行中')
+  assert.equal(inProgress?.feishuStatus, '接受处理')
+  db.close()
+})
+
 test('完整同步对账会归档飞书已删除项，并在重新出现时恢复', () => {
   const { db, repository } = setup()
   ingestFeishuWorkItems(db, {

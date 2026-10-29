@@ -260,8 +260,88 @@ test('Meegle CLI 解析 moql_field_list 真实响应并映射负责人与优先�
     description: '来自查询的真实描述',
     priority: '高',
     owner: 'Alice',
+    status: '进行中',
+    feishuStatus: '开发中',
     updatedAt: '2026-10-29T00:00:00.000Z',
   })
+})
+
+test('Meegle CLI 解析 key_label_value 形式的缺陷状态', async () => {
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    if (args[0] === 'workitem' && args[1] === 'query') {
+      if (args[args.indexOf('--mql') + 1].includes('`story`')) {
+        return result({ list: [{ count: 0 }], data: {} })
+      }
+      return result({
+        list: [{ count: 1, group_infos: [{ group_id: '1' }] }],
+        data: {
+          '1': [
+            {
+              moql_field_list: [
+                { key: 'work_item_id', value: { long_value: 201 } },
+                { key: 'name', value: { string_value: '真实缺陷' } },
+                {
+                  key: 'work_item_status',
+                  value: { key_label_value: { key: 'RESOLVED', label: '已解决' } },
+                  value_type: 'key_label_value',
+                },
+              ],
+            },
+          ],
+        },
+      })
+    }
+    throw new Error(`unexpected args: ${args.join(' ')}`)
+  }
+
+  const output = await fetchMeegleWorkItems({ ...config, fetchDescriptions: false }, runner)
+  assert.equal(output.items.length, 1)
+  assert.equal(output.items[0]?.status, '已交付')
+  assert.equal(output.items[0]?.feishuStatus, '已解决')
+})
+
+test('Meegle CLI 将评审中与重新打开映射为进行中', async () => {
+  const items = [
+    {
+      work_item_id: 301,
+      name: '评审需求',
+      work_item_status: { key_label_value: { key: 'REVIEW', label: '评审中' } },
+    },
+    {
+      work_item_id: 302,
+      name: '重新打开缺陷',
+      work_item_status: { key_label_value: { key: 'REOPENED', label: '重新打开' } },
+    },
+  ]
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    if (args[0] === 'workitem' && args[1] === 'query') {
+      if (args[args.indexOf('--mql') + 1].includes('`story`')) {
+        return result({
+          list: [{ count: 2, group_infos: [{ group_id: '1' }] }],
+          data: {
+            '1': items.map((item) => ({
+              moql_field_list: [
+                { key: 'work_item_id', value: { long_value: item.work_item_id } },
+                { key: 'name', value: { string_value: item.name } },
+                { key: 'work_item_status', value: item.work_item_status },
+              ],
+            })),
+          },
+        })
+      }
+      return result({ list: [{ count: 0 }], data: {} })
+    }
+    throw new Error(`unexpected args: ${args.join(' ')}`)
+  }
+
+  const output = await fetchMeegleWorkItems({ ...config, fetchDescriptions: false }, runner)
+  assert.deepEqual(
+    output.items.map((item) => ({ status: item.status, feishuStatus: item.feishuStatus })),
+    [
+      { status: '进行中', feishuStatus: '评审中' },
+      { status: '进行中', feishuStatus: '重新打开' },
+    ],
+  )
 })
 
 test('Meegle CLI 对超长标题、描述和负责人做安全截断', async () => {

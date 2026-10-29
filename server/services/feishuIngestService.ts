@@ -3,7 +3,7 @@ import type { AppDatabase } from '../db/database.js'
 import { config } from '../config.js'
 import { notFound, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
-import type { Priority, WorkItemType } from '../domain/types.js'
+import type { Priority, WorkItemStatus, WorkItemType } from '../domain/types.js'
 import { oneOf, optionalText, requiredText } from '../domain/validation.js'
 import {
   reconcileFeishuWorkItems,
@@ -13,6 +13,7 @@ import {
 
 const workItemTypes = ['requirement', 'defect'] as const
 const priorities = ['紧急', '高', '中', '低'] as const
+const workItemStatuses = ['待处理', '进行中', '已交付', '已关闭'] as const
 const INTEGRATION_ID = 'feishu-main'
 
 export interface FeishuIngestInput {
@@ -69,6 +70,11 @@ function normalizeItem(raw: unknown, projectKey: string): SyncedFeishuWorkItem {
     priority: oneOf(raw.priority, '优先级', priorities) as Priority,
     owner: optionalText(raw.owner, '负责人', 100) ?? config.feishuDefaultOwner,
     updatedAt: normalizeTimestamp(raw.updatedAt),
+    status:
+      raw.status === undefined || raw.status === ''
+        ? undefined
+        : (oneOf(raw.status, '工作项状态', workItemStatuses) as WorkItemStatus),
+    feishuStatus: optionalText(raw.feishuStatus, '飞书状态', 100),
   }
 }
 

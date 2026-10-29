@@ -60,6 +60,7 @@ interface SnapshotRow {
   branch: string
   owner: string
   external_id: string
+  feishu_status: string | null
   updated_at: string
 }
 
@@ -70,7 +71,7 @@ export function readFeishuSnapshotFromDatabase(
   const rows = db
     .prepare(
       `SELECT type, title, description, priority, status, repo_id, branch, owner,
-              external_id, updated_at
+              external_id, feishu_status, updated_at
        FROM work_items
        WHERE source = 'feishu' AND external_id IS NOT NULL AND external_id <> ''
          AND archived_at IS NULL
@@ -89,6 +90,7 @@ export function readFeishuSnapshotFromDatabase(
     owner: row.owner,
     updatedAt: Number.isNaN(Date.parse(row.updated_at)) ? fallbackTime : row.updated_at,
     status: row.status,
+    feishuStatus: row.feishu_status ?? undefined,
     repoId: row.repo_id,
     branch: row.branch,
   }))

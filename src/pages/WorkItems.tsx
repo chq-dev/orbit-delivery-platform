@@ -374,7 +374,16 @@ export function WorkItems({
                     </td>
                     <td><StatusBadge status={item.type} /></td>
                     <td><StatusBadge status={item.priority} /></td>
-                    <td><StatusBadge status={item.status} /></td>
+                    <td>
+                      <div className="status-stack">
+                        <StatusBadge status={item.status} />
+                        {item.feishuStatus && (
+                          <small className="feishu-status-hint">
+                            飞书 · {item.feishuStatus}
+                          </small>
+                        )}
+                      </div>
+                    </td>
                     <td>
                       <div className="table-repo-cell">
                         <strong>{repo?.name ?? '未关联'}</strong>
@@ -632,6 +641,12 @@ npm run sync:feishu:snapshot:watch`}
               <StatusBadge status={detailItem.type} />
               <StatusBadge status={detailItem.priority} />
               <StatusBadge status={detailItem.status} />
+              {detailItem.feishuStatus && (
+                <StatusBadge
+                  status={detailItem.feishuStatus}
+                  label={`飞书 · ${detailItem.feishuStatus}`}
+                />
+              )}
             </div>
             <div className="detail-description">
               <span>描述</span>

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import type { Priority, WorkItemType } from '../domain/types.js'
+import type { Priority, WorkItemStatus, WorkItemType } from '../domain/types.js'
 import { nowIso } from '../domain/time.js'
 import type { SyncedFeishuWorkItem } from './workItemService.js'
 
@@ -101,6 +101,10 @@ function moqlValueText(value: unknown): string {
       .map((entry) => (isRecord(entry) ? scalarText(entry.label ?? entry.key) : scalarText(entry)))
       .filter(Boolean)
       .join(',')
+  }
+  const keyLabel = value.key_label_value
+  if (isRecord(keyLabel)) {
+    return scalarText(keyLabel.label ?? keyLabel.key)
   }
   const users = value.user_value_list
   if (Array.isArray(users)) {
@@ -420,6 +424,30 @@ function normalizePriority(value: string): Priority {
   return '中'
 }
 
+function normalizeWorkItemStatus(value: string): WorkItemStatus | undefined {
+  const text = value.trim().toLowerCase()
+  if (!text) return undefined
+  if (/已关闭|关闭$|拒绝|取消|终止|不修复|不解决|closed|rejected|cancelled|canceled/.test(text)) {
+    return '已关闭'
+  }
+  if (
+    /已交付|已测试|已完成|已发布|已上线|验收通过|已解决|resolved|delivered|released|done/.test(text)
+  ) {
+    return '已交付'
+  }
+  if (/规划|需求确认|新$|待|排队|未开始|审核|需要复现|open|pending|todo|backlog/.test(text)) {
+    return '待处理'
+  }
+  if (
+    /进行中|评审|重新打开|设计|开发|测试中|转测试|接受处理|验证|复现中|修复|implement|progress|testing|review|reopen/.test(
+      text,
+    )
+  ) {
+    return '进行中'
+  }
+  return '待处理'
+}
+
 function normalizeTimestamp(value: unknown): string {
   if (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) {
     const numeric = Number(value)
@@ -541,6 +569,7 @@ function mapWorkItem(
     'user_key',
     'created_by',
   ])
+  const feishuStatus = textFromFields(raw, ['work_item_status', 'status', 'state'])
 
   return {
     externalId: `${projectKey}:${typeKey}:${id}`,
@@ -549,6 +578,8 @@ function mapWorkItem(
     description: boundedText(description, 20_000),
     priority: normalizePriority(priorityText),
     owner: boundedText(owner || defaultOwner, 100),
+    status: normalizeWorkItemStatus(feishuStatus),
+    feishuStatus: feishuStatus ? boundedText(feishuStatus, 100) : undefined,
     updatedAt: normalizeTimestamp(
       raw.updated_at ?? raw.update_time ?? raw.updatedAt ?? raw.modified_at,
     ),

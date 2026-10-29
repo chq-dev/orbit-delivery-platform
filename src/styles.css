@@ -974,6 +974,19 @@ p {
   background: #f2f3f7;
 }
 
+.status-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.status-stack .feishu-status-hint {
+  color: #7d8498;
+  font-size: 8px;
+  white-space: nowrap;
+}
+
 .avatar {
   display: inline-grid;
   width: 30px;
