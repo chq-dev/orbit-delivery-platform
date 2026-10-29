@@ -140,6 +140,8 @@ export const api = {
     }),
   createWorkItem: (input: WorkItemInput) =>
     request<WorkItem>('/work-items', { method: 'POST', body: JSON.stringify(input) }),
+  getWorkItem: (id: string) =>
+    request<WorkItem>(`/work-items/${encodeURIComponent(id)}`),
   importWorkItems: (items: WorkItemInput[]) =>
     request<ImportResult<WorkItem>>('/work-items/import', {
       method: 'POST',

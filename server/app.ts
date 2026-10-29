@@ -1,6 +1,7 @@
 import express, { type ErrorRequestHandler } from 'express'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { config } from './config.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
@@ -11,6 +12,25 @@ import { readFeishuSnapshotFromDatabase } from './services/feishuSnapshotService
 export function createApp(db: AppDatabase, vault: CredentialVault) {
   const app = express()
   app.disable('x-powered-by')
+  app.use((request, response, next) => {
+    if (!String(request.headers['accept-encoding'] ?? '').includes('gzip')) {
+      next()
+      return
+    }
+    const originalJson = response.json.bind(response)
+    response.json = ((body: unknown) => {
+      const payload = JSON.stringify(body)
+      if (Buffer.byteLength(payload) < 1024) return originalJson(body)
+      const compressed = gzipSync(payload, { level: 6 })
+      response.setHeader('content-encoding', 'gzip')
+      response.setHeader('content-type', 'application/json; charset=utf-8')
+      response.setHeader('vary', 'accept-encoding')
+      response.setHeader('content-length', String(compressed.length))
+      response.end(request.method === 'HEAD' ? undefined : compressed)
+      return response
+    }) as unknown as typeof response.json
+    next()
+  })
   app.use(
     express.json({
       limit: '2mb',

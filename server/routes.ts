@@ -46,8 +46,9 @@ import {
 } from './services/repositoryService.js'
 import {
   createWorkItem,
+  getWorkItem,
   importWorkItems,
-  listWorkItems,
+  listWorkItemSummaries,
 } from './services/workItemService.js'
 
 export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router {
@@ -99,7 +100,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.json({
       repositories: listRepositories(db),
       accounts: listAccounts(db),
-      workItems: listWorkItems(db),
+      workItems: listWorkItemSummaries(db),
       pipelines: listPipelines(db),
       reports: listTestReports(db),
       feishuInbox: listFeishuInbox(db),
@@ -206,7 +207,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.get('/work-items', (_request, response) => {
-    response.json(listWorkItems(db))
+    response.json(listWorkItemSummaries(db))
   })
 
   router.post('/work-items', (request, response) => {
@@ -220,6 +221,10 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       count: result.items.length,
       skipped: result.skipped,
     })
+  })
+
+  router.get('/work-items/:id', (request, response) => {
+    response.json(getWorkItem(db, request.params.id))
   })
 
   router.get('/pipelines', (_request, response) => {

@@ -20,7 +20,7 @@ import {
   UserRound,
   Workflow,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { DeliveryDialog } from '../components/DeliveryDialog'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
@@ -34,6 +34,8 @@ import type { PageKey, WorkItem, WorkItemStatus, WorkItemType } from '../types'
 
 type TabKey = 'all' | WorkItemType
 type StatusFilter = 'all' | WorkItemStatus
+
+const PAGE_SIZE = 50
 
 export function WorkItems({
   onNavigate,
@@ -50,6 +52,7 @@ export function WorkItems({
     feishuSnapshot,
     feishuAgent,
     syncFeishu,
+    getWorkItemDetail,
   } = useData()
   const [tab, setTab] = useState<TabKey>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -59,10 +62,12 @@ export function WorkItems({
   const [deliveryItemId, setDeliveryItemId] = useState<string>()
   const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [detailItem, setDetailItem] = useState<WorkItem | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [importMode, setImportMode] = useState<WorkItemType>('requirement')
   const [importOpen, setImportOpen] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   const [syncingType, setSyncingType] = useState<WorkItemType | null>(null)
+  const [page, setPage] = useState(1)
 
   const counts = useMemo(
     () => ({
@@ -92,6 +97,38 @@ export function WorkItems({
       }),
     [search, statusFilter, tab, workItems],
   )
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const paged = useMemo(
+    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [filtered, page],
+  )
+
+  useEffect(() => {
+    setPage(1)
+  }, [search, statusFilter, tab])
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount)
+  }, [page, pageCount])
+
+  const openDetail = async (item: WorkItem) => {
+    setDetailItem(item)
+    if (item.description) return
+    setDetailLoading(true)
+    try {
+      const detail = await getWorkItemDetail(item.id)
+      setDetailItem((current) => (current?.id === item.id ? detail : current))
+    } catch (error) {
+      notify(
+        '工作项详情读取失败',
+        error instanceof Error ? error.message : '请稍后重试',
+        'warning',
+      )
+    } finally {
+      setDetailLoading(false)
+    }
+  }
 
   const openCreate = (type: WorkItemType) => {
     setCreateType(type)
@@ -233,8 +270,8 @@ export function WorkItems({
           <span>
             <strong>rjcloud 飞书项目</strong>
             <small>
-              {feishuSnapshot.error && backendFeishuCount > 0
-                ? `前端快照未生成，已从平台加载 ${backendFeishuCount} 条飞书工作项`
+              {backendFeishuCount > 0
+                ? `平台已加载 ${backendFeishuCount} 条飞书工作项`
                 : frontendFeishuSync
                 ? feishuSnapshot.loading
                   ? '正在读取前端同步快照…'
@@ -314,11 +351,11 @@ export function WorkItems({
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => {
+              {paged.map((item) => {
                 const repo = repositories.find((entry) => entry.id === item.repoId)
                 const latestRun = pipelines.find((run) => run.workItemId === item.id)
                 return (
-                  <tr key={item.id} onClick={() => setDetailItem(item)}>
+                  <tr key={item.id} onClick={() => void openDetail(item)}>
                     <td>
                       <div className="work-item-title-cell">
                         <span className={`work-type-icon work-type-icon-${item.type}`}>
@@ -397,11 +434,24 @@ export function WorkItems({
           </div>
         )}
         <div className="table-footer">
-          <span>显示 {filtered.length} / {workItems.length} 个工作项</span>
+          <span>
+            显示 {paged.length} / {filtered.length} 个匹配项，共 {workItems.length} 个工作项
+          </span>
           <div className="pagination">
-            <button disabled>上一页</button>
-            <button className="active">1</button>
-            <button disabled>下一页</button>
+            <button
+              disabled={page <= 1}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
+              上一页
+            </button>
+            <button className="active">{page}</button>
+            <span className="muted-cell">/ {pageCount}</span>
+            <button
+              disabled={page >= pageCount}
+              onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+            >
+              下一页
+            </button>
           </div>
         </div>
       </article>
@@ -585,7 +635,11 @@ npm run sync:feishu:snapshot:watch`}
             </div>
             <div className="detail-description">
               <span>描述</span>
-              <p>{detailItem.description}</p>
+              <p>
+                {detailLoading
+                  ? '正在加载描述…'
+                  : detailItem.description || '暂无描述'}
+              </p>
             </div>
             <div className="detail-grid">
               <div>
@@ -615,7 +669,11 @@ npm run sync:feishu:snapshot:watch`}
             <div className="skill-instruction-panel">
               <div className="skill-instruction-head">
                 <span><Sparkles size={13} /> 本地 Skill 指令 · {codingSkills.length} 个组织级 Skill</span>
-                <button className="btn btn-secondary btn-xs" onClick={copySkillInstruction}>
+                <button
+                  className="btn btn-secondary btn-xs"
+                  onClick={copySkillInstruction}
+                  disabled={detailLoading}
+                >
                   <Copy size={12} /> 复制指令
                 </button>
               </div>

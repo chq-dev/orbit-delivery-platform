@@ -92,6 +92,19 @@ export function listWorkItems(db: AppDatabase): WorkItem[] {
   return rows.map(rowToWorkItem)
 }
 
+export function listWorkItemSummaries(db: AppDatabase): WorkItem[] {
+  const rows = db
+    .prepare(
+      `SELECT id, type, title, '' AS description, priority, status, repo_id, branch, owner,
+              source, external_id, created_at, updated_at
+       FROM work_items
+       WHERE archived_at IS NULL
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .all() as WorkItemRow[]
+  return rows.map(rowToWorkItem)
+}
+
 export function getWorkItem(db: AppDatabase, id: string): WorkItem {
   const row = db
     .prepare(`${selectSql()} WHERE id = ? AND archived_at IS NULL`)

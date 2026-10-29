@@ -121,6 +121,7 @@ interface DataContextValue {
   addAccount: (input: AccountInput) => Promise<Account>
   importAccounts: (inputs: AccountInput[]) => Promise<number>
   addWorkItem: (input: WorkItemInput) => Promise<WorkItem>
+  getWorkItemDetail: (id: string) => Promise<WorkItem>
   importWorkItems: (inputs: WorkItemInput[]) => Promise<number>
   connectFeishu: (input: FeishuConnectInput) => Promise<FeishuIntegrationStatus>
   testFeishu: () => Promise<{ ok: true; projectName?: string }>
@@ -180,6 +181,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const toastSequence = useRef(0)
   const initialLoadStarted = useRef(false)
   const hasLoaded = useRef(false)
+  const hasServerFeishuItems = useRef(false)
   const pipelineStatuses = useRef<Map<string, PipelineRun['status']>>(new Map())
   const feishuAgentHealth = useRef<FeishuClientAgentHealth | null>(null)
   const feishuAgentSyncInFlight = useRef(false)
@@ -227,6 +229,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setRepositories(data.repositories)
       setAccounts(data.accounts)
       setServerWorkItems(data.workItems)
+      hasServerFeishuItems.current = data.workItems.some(
+        (item) => item.source === 'feishu',
+      )
       setPipelines(data.pipelines)
       setReports(data.reports)
       setFeishuInbox(data.feishuInbox)
@@ -268,6 +273,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const refreshFeishuSnapshot = useCallback(
     async (announce = false) => {
+      if (hasServerFeishuItems.current) {
+        setFeishuSnapshot((current) =>
+          current.loading ? { ...current, loading: false } : current,
+        )
+        return 0
+      }
       setFeishuSnapshot((current) => ({ ...current, loading: true, error: undefined }))
       try {
         const result = await fetchFeishuSnapshot(snapshotConfig.url)
@@ -593,8 +604,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (initialLoadStarted.current) return
     initialLoadStarted.current = true
-    void reload(false)
-    void refreshFeishuSnapshot().catch(() => undefined)
+    void (async () => {
+      await reload(false)
+      if (!hasServerFeishuItems.current) {
+        await refreshFeishuSnapshot().catch(() => undefined)
+      }
+    })()
     void refreshFeishuAgent(true)
     void refreshFeishuSyncToken()
   }, [refreshFeishuAgent, refreshFeishuSnapshot, refreshFeishuSyncToken, reload])
@@ -739,6 +754,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
     },
     [notify, reportApiError],
   )
+
+  const getWorkItemDetail = useCallback(async (id: string) => api.getWorkItem(id), [])
 
   const importWorkItems = useCallback(
     async (inputs: WorkItemInput[]) => {
@@ -891,6 +908,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addAccount,
       importAccounts,
       addWorkItem,
+      getWorkItemDetail,
       importWorkItems,
       connectFeishu,
       testFeishu,
@@ -925,6 +943,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       feishuSnapshot,
       feishuSyncToken,
       importAccounts,
+      getWorkItemDetail,
       importWorkItems,
       loading,
       notify,
