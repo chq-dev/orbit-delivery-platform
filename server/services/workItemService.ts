@@ -22,6 +22,7 @@ interface WorkItemRow {
   external_id: string | null
   feishu_status: string | null
   project_line: string | null
+  design_reference: string | null
   created_at: string
   updated_at: string
 }
@@ -36,6 +37,7 @@ export interface WorkItemInput {
   owner: unknown
   source?: unknown
   externalId?: unknown
+  designReference?: unknown
 }
 
 export interface SyncedFeishuWorkItem {
@@ -83,12 +85,14 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     externalId: row.external_id ?? undefined,
     feishuStatus: row.feishu_status ?? undefined,
     projectLine: row.project_line ?? undefined,
+    designReference: row.design_reference ?? undefined,
   }
 }
 
 function selectSql(): string {
   return `SELECT id, type, title, description, priority, status, repo_id, branch, owner,
-                 source, external_id, feishu_status, project_line, created_at, updated_at
+                 source, external_id, feishu_status, project_line, design_reference,
+                 created_at, updated_at
           FROM work_items`
 }
 
@@ -103,7 +107,8 @@ export function listWorkItemSummaries(db: AppDatabase): WorkItem[] {
   const rows = db
     .prepare(
       `SELECT id, type, title, '' AS description, priority, status, repo_id, branch, owner,
-              source, external_id, feishu_status, project_line, created_at, updated_at
+              source, external_id, feishu_status, project_line, design_reference,
+              created_at, updated_at
        FROM work_items
        WHERE archived_at IS NULL
        ORDER BY created_at DESC, id DESC`,
@@ -129,6 +134,7 @@ interface NormalizedWorkItem {
   owner: string
   source: 'local' | 'feishu'
   externalId?: string
+  designReference?: string
 }
 
 function normalizeWorkItemInput(input: WorkItemInput, forcedSource?: 'feishu'): NormalizedWorkItem {
@@ -143,6 +149,7 @@ function normalizeWorkItemInput(input: WorkItemInput, forcedSource?: 'feishu'): 
     owner: requiredText(input.owner, '负责人', { max: 100 }),
     source,
     externalId: optionalText(input.externalId, '外部工作项编号', 200),
+    designReference: optionalText(input.designReference, '设计稿或设计说明', 2_000),
   }
 }
 
@@ -162,8 +169,9 @@ function createInTransaction(
   const id = `${prefix}-${nextSequence(db, sequenceName, initial)}`
   db.prepare(
     `INSERT INTO work_items
-      (id, type, title, description, priority, status, repo_id, branch, owner, source, external_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, '待处理', ?, ?, ?, ?, ?, ?, ?)`,
+      (id, type, title, description, priority, status, repo_id, branch, owner, source,
+       external_id, design_reference, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, '待处理', ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.type,
@@ -175,6 +183,7 @@ function createInTransaction(
     input.owner,
     input.source,
     input.externalId ?? null,
+    input.designReference ?? null,
     now,
     now,
   )

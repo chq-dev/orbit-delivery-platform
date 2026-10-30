@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   external_id TEXT,
   feishu_status TEXT,
   project_line TEXT,
+  design_reference TEXT,
   archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

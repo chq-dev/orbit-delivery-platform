@@ -213,7 +213,7 @@ function runCommand(
   timeout = 60_000,
 ): Promise<CommandResult> {
   return new Promise((resolvePromise) => {
-    execFile(
+    const child = execFile(
       command,
       args,
       {
@@ -232,6 +232,9 @@ function runCommand(
         })
       },
     )
+    // Codex reads piped stdin until EOF before starting a non-interactive run.
+    // Close it immediately so a long-running agent never waits for input.
+    child.stdin?.end()
   })
 }
 

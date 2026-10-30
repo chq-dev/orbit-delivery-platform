@@ -9,6 +9,7 @@ import {
   Clock3,
   CloudDownload,
   Copy,
+  FileText,
   GitBranch,
   KeyRound,
   Plus,
@@ -804,6 +805,20 @@ npm run sync:feishu:snapshot:watch`}
                   : detailItem.description || '暂无描述'}
               </p>
             </div>
+            {detailItem.designReference && (
+              <div className="detail-description">
+                <span><FileText size={13} /> 设计稿 / 设计参考</span>
+                <p>
+                  {/^https?:\/\//i.test(detailItem.designReference) ? (
+                    <a href={detailItem.designReference} target="_blank" rel="noreferrer">
+                      {detailItem.designReference}
+                    </a>
+                  ) : (
+                    detailItem.designReference
+                  )}
+                </p>
+              </div>
+            )}
             <div className="detail-grid">
               <div>
                 <small>关联仓库</small>

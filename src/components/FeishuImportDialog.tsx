@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { platformLinks } from '../appConfig'
 import { useData } from '../store'
 import type { WorkItemType } from '../types'
-import { Modal, StatusBadge } from './ui'
+import { Field, Modal, StatusBadge } from './ui'
 
 export function FeishuImportDialog({
   open,
@@ -25,6 +25,7 @@ export function FeishuImportDialog({
     refreshFeishuInbox,
   } = useData()
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [designReference, setDesignReference] = useState('')
 
   const available = useMemo(
     () => feishuInbox.filter((item) => item.type === mode),
@@ -41,6 +42,10 @@ export function FeishuImportDialog({
     if (!open) return
     void refreshFeishuInbox().catch(() => undefined)
   }, [open, refreshFeishuInbox])
+
+  useEffect(() => {
+    if (!open) setDesignReference('')
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -81,6 +86,7 @@ export function FeishuImportDialog({
             owner: item.owner,
             source: 'feishu' as const,
             externalId: item.externalId,
+            designReference: designReference.trim() || undefined,
           }
         }),
       )
@@ -148,6 +154,17 @@ export function FeishuImportDialog({
           {allSelected ? '取消全选' : '全选'}
         </button>
       </div>
+
+      <Field
+        label="设计稿 / 设计说明（可选）"
+        hint="填写链接、本地路径或设计要点；导入后会作为交付时 Codex 的设计参考"
+      >
+        <input
+          value={designReference}
+          onChange={(event) => setDesignReference(event.target.value)}
+          placeholder="例如：/Users/chenhuaqu/sme/sme-main/docs/req-1082-design.md 或设计说明"
+        />
+      </Field>
 
       <div className="feishu-inbox-list">
         {feishuInboxLoading && available.length === 0 && (

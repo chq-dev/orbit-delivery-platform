@@ -71,6 +71,7 @@ export interface WorkItemInput {
   owner: string
   source?: 'local' | 'feishu'
   externalId?: string
+  designReference?: string
 }
 
 export interface ImportResult<T> {

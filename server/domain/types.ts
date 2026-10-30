@@ -47,6 +47,7 @@ export interface WorkItem {
   externalId?: string
   feishuStatus?: string
   projectLine?: string
+  designReference?: string
 }
 
 export interface PipelineStage {

@@ -31,6 +31,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       ensureColumn(db, 'work_items', 'archived_at', 'TEXT')
       ensureColumn(db, 'work_items', 'feishu_status', 'TEXT')
       ensureColumn(db, 'work_items', 'project_line', 'TEXT')
+      ensureColumn(db, 'work_items', 'design_reference', 'TEXT')
       migrateFeishuAgentCommands(db)
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',

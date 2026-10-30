@@ -36,6 +36,7 @@ test('工作项列表使用轻量摘要，详情保留完整描述', () => {
       priority: '高',
       repoId: repository.id,
       owner: '测试负责人',
+      designReference: '/tmp/req-1082-design.md',
     })
 
     const summaries = listWorkItemSummaries(db)
@@ -45,6 +46,10 @@ test('工作项列表使用轻量摘要，详情保留完整描述', () => {
 
     assert.equal(listWorkItems(db)[0]?.description, description)
     assert.equal(getWorkItem(db, item.id).description, description)
+    assert.equal(getWorkItem(db, item.id).designReference, '/tmp/req-1082-design.md')
+    assert.equal(listWorkItemSummaries(db)[0]?.designReference, '/tmp/req-1082-design.md')
+    const columns = db.pragma('table_info(work_items)') as { name: string }[]
+    assert.ok(columns.some((column) => column.name === 'design_reference'))
   } finally {
     db.close()
   }

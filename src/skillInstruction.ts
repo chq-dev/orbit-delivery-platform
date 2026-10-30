@@ -15,6 +15,10 @@ export function buildLocalSkillInstruction(item: WorkItem, repository?: Reposito
     `Type: ${workItemType}`,
     externalReference,
     `Description: ${item.description}`,
+    item.designReference ? `Design reference: ${item.designReference}` : '',
+    item.designReference
+      ? 'Treat the design reference as the primary design input when it is readable. If it is a local file or directory, read it before writing the design report; do not ignore it or fabricate missing design content.'
+      : '',
     'Domain: wireless router, AC/AP and switch device management (WLAN, VLAN/SVI, DHCP, PoE, firmware upgrade).',
     `Organization skills: ${codingSkillsSource.name} @ ${codingSkillsSource.ref} (${codingSkillsSource.url}).`,
     'Use $rjcloud-local-delivery for RJ Cloud domain rules and local safety. Use $sdd to orchestrate the delivery workflow.',

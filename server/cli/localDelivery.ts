@@ -489,7 +489,7 @@ async function main(): Promise<void> {
       lastMessagePath,
       prompt,
     ],
-    { stdio: 'inherit', encoding: 'utf8' },
+    { stdio: ['ignore', 'inherit', 'inherit'], encoding: 'utf8' },
   )
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`Codex 执行失败，退出码 ${result.status ?? 1}`)

@@ -19,6 +19,7 @@ export function WorkItemDialog({
   const [type, setType] = useState<WorkItemType>(initialType)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  const [designReference, setDesignReference] = useState('')
   const [priority, setPriority] = useState<Priority>('中')
   const [repoId, setRepoId] = useState(repositories[0]?.id ?? '')
   const [owner, setOwner] = useState('')
@@ -29,6 +30,7 @@ export function WorkItemDialog({
     setType(initialType)
     setTitle('')
     setDescription('')
+    setDesignReference('')
     setPriority('中')
     setRepoId(repositories[0]?.id ?? '')
     setOwner('')
@@ -45,6 +47,7 @@ export function WorkItemDialog({
         repoId,
         branch: selectedRepo?.branch ?? 'develop',
         owner: owner.trim(),
+        designReference: designReference.trim() || undefined,
       })
       onCreated?.(item)
       onClose()
@@ -109,6 +112,16 @@ export function WorkItemDialog({
           onChange={(event) => setDescription(event.target.value)}
           placeholder="补充背景、验收标准或复现步骤，帮助自动化引擎理解变更范围..."
           rows={4}
+        />
+      </Field>
+      <Field
+        label={type === 'requirement' ? '设计稿 / 设计说明（可选）' : '设计参考（可选）'}
+        hint="支持文档链接、本地路径或设计要点，交付时作为 Codex 的设计输入"
+      >
+        <input
+          value={designReference}
+          onChange={(event) => setDesignReference(event.target.value)}
+          placeholder="设计稿链接、本地设计文档路径或关键设计约束"
         />
       </Field>
       <div className="field-row field-row-3">
