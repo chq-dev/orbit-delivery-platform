@@ -202,6 +202,15 @@ function publicCommand(row: CommandRow): FeishuAgentCommand {
   }
 }
 
+function deliveryResultStatus(value: unknown): FeishuAgentCommandStatus | undefined {
+  if (!isRecord(value) || !isRecord(value.job)) return undefined
+  return value.job.status === 'running' ||
+    value.job.status === 'succeeded' ||
+    value.job.status === 'failed'
+    ? value.job.status
+    : undefined
+}
+
 function deliveryStatus(value: unknown): FeishuAgentDeliveryStep['status'] {
   return value === 'running' || value === 'success' || value === 'failed' ? value : 'pending'
 }
@@ -442,9 +451,24 @@ export function completeFeishuAgentCommand(
   const error = text(payload.error, 4_000)
   const preserveDeliveryFailure =
     existing.command_type === 'delivery_start' && existing.status === 'failed'
+  const deliveryStatus =
+    existing.command_type === 'delivery_start'
+      ? deliveryResultStatus(payload.result)
+      : undefined
+  const deliveryError =
+    existing.command_type === 'delivery_start' &&
+    isRecord(payload.result) &&
+    isRecord(payload.result.job)
+      ? optionalText(payload.result.job.error)
+      : undefined
   const status: FeishuAgentCommandStatus =
-    error || preserveDeliveryFailure ? 'failed' : 'succeeded'
-  const finalError = error || (preserveDeliveryFailure ? existing.error || '' : '')
+    error || preserveDeliveryFailure || deliveryStatus === 'failed'
+      ? 'failed'
+      : deliveryStatus === 'running'
+        ? 'running'
+        : 'succeeded'
+  const finalError =
+    error || deliveryError || (preserveDeliveryFailure ? existing.error || '' : '')
   const now = nowIso()
   const resultJson =
     payload.result === undefined ? null : JSON.stringify(payload.result).slice(0, 64 * 1024)
@@ -452,7 +476,7 @@ export function completeFeishuAgentCommand(
     `UPDATE feishu_agent_commands
      SET status = ?, result_json = ?, error = ?, updated_at = ?, completed_at = ?
      WHERE id = ?`,
-  ).run(status, resultJson, finalError || null, now, now, id)
+  ).run(status, resultJson, finalError || null, now, status === 'running' ? null : now, id)
   return publicCommand({
     ...existing,
     status,

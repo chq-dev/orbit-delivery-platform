@@ -232,9 +232,11 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
     const claimed = recordFeishuAgentHeartbeat(db, { health })
     assert.equal(claimed.commands[0]?.id, command.id)
     assert.deepEqual(claimed.commands[0]?.payload, command.payload)
-    completeFeishuAgentCommand(db, command.id, {
+    const running = completeFeishuAgentCommand(db, command.id, {
       result: { job: { id: 'delivery-test', status: 'running' } },
     })
+    assert.equal(running.status, 'running')
+    assert.equal(getFeishuAgentBridgeStatus(db).activeCommand?.id, command.id)
 
     const steps = [
       'platform',
