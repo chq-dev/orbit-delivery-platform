@@ -31,6 +31,7 @@ import {
 } from '../services/localDeliveryEvidence.js'
 import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
 import {
+  buildCodexExecArgs,
   fetchJsonWithRetry,
   supportsLocalDeliveryContract,
 } from '../services/localDeliveryAgentService.js'
@@ -601,26 +602,32 @@ async function main(): Promise<void> {
     ...buildMeegleMcpCodexArgs(meegleMcp),
   ]
   const lastMessagePath = join(artifactDir, 'codex-last-message.md')
-  const imageArgs = screenshotPaths.flatMap((path) => ['--image', path])
   const result = spawnSync(
     codexCommand,
-    [
-      'exec',
-      ...mcpArgs,
-      '-C',
-      checkout.checkout,
-      '--skip-git-repo-check',
-      '--sandbox',
-      'workspace-write',
-      '--output-last-message',
-      lastMessagePath,
-      ...imageArgs,
+    buildCodexExecArgs({
+      checkout: checkout.checkout,
       prompt,
-    ],
-    { stdio: ['ignore', 'inherit', 'inherit'], encoding: 'utf8' },
+      lastMessagePath,
+      imagePaths: screenshotPaths,
+      mcpArgs,
+    }),
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    },
   )
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`Codex 执行失败，退出码 ${result.status ?? 1}`)
+  if (result.stdout) process.stdout.write(result.stdout)
+  if (result.stderr) process.stderr.write(result.stderr)
+  if (result.status !== 0) {
+    const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`
+      .trim()
+      .slice(-4_000)
+    throw new Error(
+      `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
+    )
+  }
 
   const evidence = artifactEvidence(artifactDir)
   evidence.changedFiles = deliveryCodeFiles(workTreeFiles(checkout.checkout))

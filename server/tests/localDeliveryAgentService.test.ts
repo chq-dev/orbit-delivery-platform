@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  buildCodexExecArgs,
   buildLocalDeliveryCommand,
+  classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
   describeFetchError,
   fetchJsonWithRetry,
@@ -138,6 +140,35 @@ test('一键交付命令通过 argv 传递并自动授权推送确认', () => {
   assert.equal(localOnly.includes('--push'), false)
   assert.equal(localOnly.includes('--yes'), false)
   assert.equal(localOnly.includes('--close'), false)
+})
+
+test('Codex 参数用 -- 隔离图片参数与提示词，避免提示词被当作图片吞掉', () => {
+  const args = buildCodexExecArgs({
+    checkout: '/Users/example/sme-main',
+    prompt: '实现需求并生成报告',
+    lastMessagePath: '/tmp/codex-last-message.md',
+    imagePaths: ['/tmp/design shot.jpg'],
+    mcpArgs: ['-c', 'mcp_servers.feishu.command=lark-mcp'],
+  })
+  const separator = args.indexOf('--')
+  assert.ok(separator > args.indexOf('--image'))
+  assert.equal(args[separator + 1], '实现需求并生成报告')
+  assert.equal(args.at(-1), '实现需求并生成报告')
+  assert.equal(args.includes('/tmp/design shot.jpg'), true)
+})
+
+test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', () => {
+  assert.equal(
+    classifyLocalDeliveryFailure(
+      'Codex 执行失败，退出码 1\n{"autoCommit": true, "promptFile": "/tmp/prompt.md"}',
+    ),
+    'codex',
+  )
+  assert.equal(
+    classifyLocalDeliveryFailure('Codex 已结束，但没有检测到非 Markdown 代码文件变更'),
+    'evidence',
+  )
+  assert.equal(classifyLocalDeliveryFailure('推送失败：remote rejected'), 'commit')
 })
 
 test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {

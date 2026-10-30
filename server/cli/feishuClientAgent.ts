@@ -32,6 +32,7 @@ import {
 } from '../services/meegleMcpService.js'
 import {
   buildLocalDeliveryCommand,
+  classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
   fetchJsonWithRetry,
   LOCAL_DELIVERY_CONTRACT_VERSION,
@@ -619,31 +620,8 @@ const DELIVERY_STEP_ORDER = [
   'writeback',
 ]
 
-function failureStepKey(message: string): string {
-  if (/契约|deliveryContractVersion/i.test(message)) return 'contract'
-  if (
-    /不支持交付参数|缺少工作项|缺少代码仓库|自动提交|布尔值|未启用自动提交/.test(message)
-  ) {
-    return 'contract'
-  }
-  if (/未提交变更|工作区.*清理|尚未配置客户端代码路径/.test(message)) return 'checkout'
-  if (/没有检测到代码文件变更|报告|执行证据/.test(message)) return 'evidence'
-  if (/HEAD 没有变化|提交|暂存|commit|推送失败/i.test(message)) return 'commit'
-  if (/回写平台|平台未返回|流水线记录/.test(message)) return 'writeback'
-  if (/路径|分支|Git 工作区|工作区根目录/.test(message)) return 'checkout'
-  if (
-    /读取平台|尚未绑定平台|本机代理|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
-      message,
-    )
-  ) {
-    return 'platform'
-  }
-  if (/Codex|CODEX/i.test(message)) return 'codex'
-  return 'codex'
-}
-
 function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
-  let failedKey = failureStepKey(message)
+  let failedKey = classifyLocalDeliveryFailure(message)
   const runningKey = job.steps.find((step) => step.status === 'running')?.key
   if (failedKey === 'codex' && runningKey && runningKey !== 'codex') {
     failedKey = runningKey

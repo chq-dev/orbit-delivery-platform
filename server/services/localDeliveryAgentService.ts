@@ -170,6 +170,14 @@ export interface LocalDeliveryCommandInput {
   branch: string
 }
 
+export interface CodexExecArgsInput {
+  checkout: string
+  prompt: string
+  lastMessagePath: string
+  imagePaths: string[]
+  mcpArgs: string[]
+}
+
 const REQUEST_KEYS = new Set([
   'workItemId',
   'repoId',
@@ -271,4 +279,53 @@ export function buildLocalDeliveryCommand(input: LocalDeliveryCommandInput): str
   else if (input.pushAfterAcceptance) args.push('--push', '--yes')
   if (input.autoClose) args.push('--close')
   return args
+}
+
+export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
+  if (!text(input.checkout)) throw new Error('Codex 工作目录不能为空')
+  if (!text(input.prompt)) throw new Error('Codex 提示词不能为空')
+  if (!text(input.lastMessagePath)) throw new Error('Codex 最后消息文件不能为空')
+  return [
+    'exec',
+    ...input.mcpArgs,
+    '-C',
+    input.checkout,
+    '--skip-git-repo-check',
+    '--sandbox',
+    'workspace-write',
+    '--output-last-message',
+    input.lastMessagePath,
+    ...input.imagePaths.flatMap((path) => ['--image', path]),
+    '--',
+    input.prompt,
+  ]
+}
+
+export function classifyLocalDeliveryFailure(message: string): string {
+  if (/契约|deliveryContractVersion/i.test(message)) return 'contract'
+  if (
+    /不支持交付参数|缺少工作项|缺少代码仓库|自动提交|布尔值|未启用自动提交/.test(message)
+  ) {
+    return 'contract'
+  }
+  if (/未提交变更|工作区.*清理|尚未配置客户端代码路径/.test(message)) return 'checkout'
+  if (/没有检测到.*代码文件变更|缺少 delivery-artifacts|仅生成说明或报告/.test(message)) {
+    return 'evidence'
+  }
+  if (/Codex 执行失败|No prompt provided|Reading prompt from stdin/i.test(message)) {
+    return 'codex'
+  }
+  if (/HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败/.test(message)) {
+    return 'commit'
+  }
+  if (/回写平台|平台未返回|流水线记录/.test(message)) return 'writeback'
+  if (/路径|分支|Git 工作区|工作区根目录/.test(message)) return 'checkout'
+  if (
+    /读取平台|尚未绑定平台|本机代理|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
+      message,
+    )
+  ) {
+    return 'platform'
+  }
+  return 'codex'
 }
