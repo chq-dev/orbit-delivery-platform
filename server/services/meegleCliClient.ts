@@ -6,6 +6,9 @@ import type { SyncedFeishuWorkItem } from './workItemService.js'
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGES = 100
 const COMMAND_TIMEOUT_MS = 60_000
+const DEFAULT_RETRY_ATTEMPTS = 3
+const DEFAULT_RETRY_DELAY_MS = 1_500
+const MAX_RETRY_DELAY_MS = 15_000
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_]+$/
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const DEFAULT_REQUIREMENT_PROJECT_FIELD = 'field_c7834f'
@@ -34,6 +37,8 @@ export interface MeegleSyncConfig {
   defaultOwner: string
   since?: string
   fetchDescriptions?: boolean
+  retryAttempts?: number
+  retryDelayMs?: number
   env?: NodeJS.ProcessEnv
 }
 
@@ -94,6 +99,18 @@ interface QueryPage {
 interface QueryTypeResult {
   rows: Record<string, unknown>[]
   complete: boolean
+}
+
+interface MeegleExecutionResult {
+  result: MeegleCommandResult
+  attempts: number
+}
+
+interface MeegleFailureInfo {
+  code: string
+  message: string
+  retryable: boolean
+  logId: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -267,12 +284,66 @@ function parseJsonOutput(output: string): unknown {
   return undefined
 }
 
-function commandError(result: MeegleCommandResult, args: string[]): MeegleCliError {
-  const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`
+function retryableFailureText(value: string): boolean {
+  return /retriable\s*[=:]\s*true|RPCRequestTimeout|SERVER_CALL_FAILED|request timed out|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up|temporarily unavailable|too many requests/i.test(
+    value,
+  )
+}
+
+function meegleFailureInfo(payload: unknown, fallback = ''): MeegleFailureInfo {
+  const record = isRecord(payload) ? payload : undefined
+  const nested = record && isRecord(record.error) ? record.error : undefined
+  const errorText = record && typeof record.error === 'string' ? record.error.trim() : ''
+  const message = nested
+    ? scalarText(nested.message)
+    : errorText || scalarText(record?.message)
+  const code = scalarText(nested?.code ?? record?.code)
+  const logId = scalarText(record?.meta && isRecord(record.meta) ? record.meta.logid : record?.logid)
+  return {
+    code,
+    message: message || (retryableFailureText(fallback) ? 'RPCRequestTimeout' : fallback),
+    retryable: nested?.retriable === true || retryableFailureText(`${message}\n${fallback}`),
+    logId,
+  }
+}
+
+function retrySuffix(attempts: number): string {
+  return attempts > 1
+    ? `已自动重试 ${attempts - 1} 次，仍未恢复，请稍后再次同步`
+    : '请稍后再次同步'
+}
+
+function errorHandle(attempts: number, logId: string): string {
+  return logId ? `；LogID: ${logId}` : attempts > 1 ? `；尝试 ${attempts} 次` : ''
+}
+
+function commandError(
+  result: MeegleCommandResult,
+  args: string[],
+  attempts: number,
+): MeegleCliError {
+  const raw = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`
+  const payload = parseJsonOutput(raw)
+  const info = meegleFailureInfo(payload, raw)
+  const detail = info.message || boundedText(raw.replace(/\s+/g, ' '), 800)
+  const prefix = info.retryable ? '飞书项目服务暂时不可用' : 'Meegle CLI 执行失败'
+  const code = info.code ? `（${info.code}）` : ''
   return new MeegleCliError(
-    `Meegle CLI 执行失败：${detail}`,
+    `${prefix}${code}：${detail}；${retrySuffix(attempts)}${errorHandle(attempts, info.logId)}`,
     'MEEGLE_COMMAND_FAILED',
-    { args, exitCode: result.exitCode },
+    { args, exitCode: result.exitCode, attempts, response: payload ?? detail },
+  )
+}
+
+function apiError(payload: unknown, args: string[], attempts: number): MeegleCliError {
+  const raw = JSON.stringify(payload) ?? ''
+  const info = meegleFailureInfo(payload, raw)
+  const prefix = info.retryable ? '飞书项目服务暂时不可用' : '飞书项目接口返回错误'
+  const code = info.code ? `（${info.code}）` : ''
+  return new MeegleCliError(
+    `${prefix}${code}：${info.message || '未知错误'}；${retrySuffix(attempts)}${errorHandle(attempts, info.logId)}`,
+    'MEEGLE_API_ERROR',
+    { args, attempts, response: payload },
   )
 }
 
@@ -367,16 +438,50 @@ export function buildMeegleWorkItemMql(
   return `SELECT ${fields.join(', ')} FROM \`${projectKey}\`.\`${typeKey}\` WHERE ${conditions.join(' AND ')} ORDER BY \`updated_at\` DESC LIMIT 50`
 }
 
+function shouldRetryMeegleResult(result: MeegleCommandResult): boolean {
+  if (result.exitCode === 0) {
+    const payload = parseJsonOutput(result.stdout)
+    return Boolean(
+      payload &&
+      isRecord(payload) &&
+      payload.error &&
+      retryableFailureText(`${JSON.stringify(payload)}\n${result.stderr}`),
+    )
+  }
+  return retryableFailureText(`${result.stderr}\n${result.stdout}`)
+}
+
+function retryDelay(config: MeegleSyncConfig, failedAttempt: number): number {
+  const base = Math.min(
+    MAX_RETRY_DELAY_MS,
+    Math.max(0, Math.trunc(config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS)),
+  )
+  return Math.min(MAX_RETRY_DELAY_MS, base * 2 ** Math.max(0, failedAttempt - 1))
+}
+
 async function runMeegle(
   config: MeegleSyncConfig,
   args: string[],
   runner: MeegleCommandRunner,
-): Promise<MeegleCommandResult> {
-  return runner(config.command, [...args, '--format', 'json'], {
+): Promise<MeegleExecutionResult> {
+  const maxAttempts = Math.min(
+    5,
+    Math.max(1, Math.trunc(config.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS)),
+  )
+  const env = {
     ...process.env,
     ...config.env,
     MEEGLE_HOST: normalizeMeegleHost(config.host),
-  })
+  }
+  const commandArgs = [...args, '--format', 'json']
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = await runner(config.command, commandArgs, env)
+    if (attempt === maxAttempts || !shouldRetryMeegleResult(result)) {
+      return { result, attempts: attempt }
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, retryDelay(config, attempt)))
+  }
+  throw new MeegleCliError('Meegle CLI 执行失败', 'MEEGLE_COMMAND_FAILED', { args })
 }
 
 async function runMeegleJson(
@@ -384,8 +489,9 @@ async function runMeegleJson(
   args: string[],
   runner: MeegleCommandRunner,
 ): Promise<unknown> {
-  const result = await runMeegle(config, args, runner)
-  if (result.exitCode !== 0) throw commandError(result, args)
+  const execution = await runMeegle(config, args, runner)
+  const { result } = execution
+  if (result.exitCode !== 0) throw commandError(result, args, execution.attempts)
   const payload = parseJsonOutput(result.stdout)
   if (payload === undefined) {
     throw new MeegleCliError(
@@ -395,11 +501,7 @@ async function runMeegleJson(
     )
   }
   if (isRecord(payload) && payload.error) {
-    throw new MeegleCliError(
-      scalarText(payload.message) || 'Meegle CLI 返回错误',
-      'MEEGLE_API_ERROR',
-      payload,
-    )
+    throw apiError(payload, args, execution.attempts)
   }
   return payload
 }
@@ -408,7 +510,7 @@ export async function assertMeegleAuthenticated(
   config: MeegleSyncConfig,
   runner: MeegleCommandRunner = defaultMeegleCommandRunner,
 ): Promise<void> {
-  const result = await runMeegle(config, ['auth', 'status'], runner)
+  const { result } = await runMeegle(config, ['auth', 'status'], runner)
   const payload = parseJsonOutput(result.stdout) ?? parseJsonOutput(result.stderr)
   if (result.exitCode === 0 && isRecord(payload) && payload.authenticated === true) return
 
@@ -893,7 +995,7 @@ export async function getMeegleAuthStatus(
   config: MeegleSyncConfig,
   runner: MeegleCommandRunner = defaultMeegleCommandRunner,
 ): Promise<{ authenticated: boolean; host: string; reason?: string }> {
-  const result = await runMeegle(config, ['auth', 'status'], runner)
+  const { result } = await runMeegle(config, ['auth', 'status'], runner)
   const payload = parseJsonOutput(result.stdout) ?? parseJsonOutput(result.stderr)
   const authenticated = result.exitCode === 0 && isRecord(payload) && payload.authenticated === true
   return {

@@ -170,6 +170,10 @@ Meegle CLI 同步器或本机代理心跳完成；MCP 返回内容也不能作�
 可通过 `MEEGLE_MCP_ENABLED=false` 关闭注入，或设置 `MEEGLE_MCP_REQUIRED=true` 在不可用时拒绝
 启动 Codex；`MEEGLE_MCP_TSX_BIN`、`MEEGLE_MCP_SCRIPT` 仅在非默认安装路径时需要。
 
+飞书项目偶尔会返回 `RPCRequestTimeout` / `SERVER_CALL_FAILED`（可重试错误）。同步器默认对这类
+错误重试 3 次，页面只展示精简原因和 `LogID`，不再显示整段原始 JSON。可用
+`MEEGLE_RETRY_ATTEMPTS`（1–5）和 `MEEGLE_RETRY_DELAY_MS` 调整重试次数与首次等待时间。
+
 ### 命令行/常驻同步（备选）
 
 如果平台服务器不能直接访问 `project.feishu.cn`，不要在前端直连飞书，也不要把抓包 Token 放到浏览器。请在**能访问飞书的机器**上运行外部同步器：

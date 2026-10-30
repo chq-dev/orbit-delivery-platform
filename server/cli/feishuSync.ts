@@ -86,6 +86,8 @@ function syncConfig(state: SyncState): MeegleSyncConfig {
     defaultOwner: textEnv('FEISHU_DEFAULT_OWNER', '飞书同步'),
     since,
     fetchDescriptions: booleanEnv('FEISHU_SYNC_FETCH_DESCRIPTIONS', true),
+    retryAttempts: positiveIntegerEnv('MEEGLE_RETRY_ATTEMPTS', 3),
+    retryDelayMs: positiveIntegerEnv('MEEGLE_RETRY_DELAY_MS', 1_500),
   }
 }
 

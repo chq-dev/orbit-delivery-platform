@@ -468,7 +468,90 @@ test('增量过滤字段不可用时回退全量查询', async () => {
     runner,
   )
   assert.equal(output.items.length, 1)
+  assert.equal(storyQueries, 2)
   assert.match(output.warnings.join('\n'), /回退全量查询/)
+})
+
+test('飞书项目 RPC 超时会自动重试并完成同步', async () => {
+  let storyQueries = 0
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    if (args[0] === 'auth') return result({ authenticated: true })
+    if (args[0] === 'workitem' && args[1] === 'query') {
+      const mql = args.includes('--mql') ? args[args.indexOf('--mql') + 1] : ''
+      if (mql.includes('`story`')) {
+        storyQueries += 1
+        if (storyQueries === 1) {
+          return {
+            stdout: JSON.stringify({
+              data: null,
+              error: {
+                code: 'SERVER_CALL_FAILED',
+                message: 'error=RPCRequestTimeout,message=The tool request timed out. Please try again.,retriable=true',
+                retriable: true,
+              },
+              meta: { logid: 'retry-logid' },
+            }),
+            stderr: '',
+            exitCode: 1,
+          }
+        }
+        return result({ list: [{ count: 1, data: [{ work_item_id: '1', name: '重试成功需求' }] }] })
+      }
+      return result({ list: [{ count: 0, data: [] }] })
+    }
+    throw new Error(`unexpected args: ${args.join(' ')}`)
+  }
+
+  const output = await fetchMeegleWorkItems(
+    {
+      ...config,
+      fetchDescriptions: false,
+      retryAttempts: 3,
+      retryDelayMs: 0,
+    },
+    runner,
+  )
+  assert.equal(storyQueries, 2)
+  assert.equal(output.items[0]?.title, '重试成功需求')
+  assert.equal(output.complete, true)
+})
+
+test('重试耗尽后返回精简的超时错误与 LogID', async () => {
+  let calls = 0
+  const runner: MeegleCommandRunner = async () => {
+    calls += 1
+    return {
+      stdout: JSON.stringify({
+        data: null,
+        error: {
+          code: 'SERVER_CALL_FAILED',
+          message: 'error=RPCRequestTimeout,message=The tool request timed out. Please try again.,retriable=true',
+          retriable: true,
+        },
+        meta: { logid: 'timeout-logid' },
+      }),
+      stderr: '',
+      exitCode: 1,
+    }
+  }
+
+  await assert.rejects(
+    () => queryMeegleWorkItems(
+      { ...config, retryAttempts: 2, retryDelayMs: 0 },
+      { type: 'requirement', limit: 1 },
+      runner,
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof MeegleCliError)
+      assert.equal(error.code, 'MEEGLE_COMMAND_FAILED')
+      assert.match(error.message, /飞书项目服务暂时不可用/)
+      assert.match(error.message, /已自动重试 1 次/)
+      assert.match(error.message, /LogID: timeout-logid/)
+      assert.equal(error.message.includes('{"data"'), false)
+      return true
+    },
+  )
+  assert.equal(calls, 2)
 })
 
 test('Meegle MCP 查询构造标题、状态、负责人和日期过滤', () => {
