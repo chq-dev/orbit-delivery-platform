@@ -7,6 +7,7 @@ import { parseLocalDeliveryAgentRequest } from './localDeliveryAgentService.js'
 const AGENT_STATE_ID = 'primary'
 const RUNNING_COMMAND_LEASE_MS = 15 * 60_000
 const RECENT_COMMAND_LIMIT = 20
+const MAX_RUNNING_COMMAND_IDS = 50
 
 export const FEISHU_AGENT_ONLINE_WINDOW_MS = 90_000
 
@@ -162,6 +163,18 @@ function repoPathOverrides(value: unknown): Record<string, string> {
   return paths
 }
 
+function runningCommandIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const ids = new Set<string>()
+  for (const item of value) {
+    const id = text(item, 128)
+    if (!id) continue
+    ids.add(id)
+    if (ids.size >= MAX_RUNNING_COMMAND_IDS) break
+  }
+  return [...ids]
+}
+
 function timestamp(value: unknown, fallback: string): string {
   const candidate = text(value, 80)
   return candidate && Number.isFinite(Date.parse(candidate)) ? candidate : fallback
@@ -296,6 +309,16 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
   }
 }
 
+function renewRunningCommands(db: AppDatabase, ids: string[], now: string): void {
+  if (ids.length === 0) return
+  const placeholders = ids.map(() => '?').join(', ')
+  db.prepare(
+    `UPDATE feishu_agent_commands
+     SET claimed_at = ?
+     WHERE status = 'running' AND id IN (${placeholders})`,
+  ).run(now, ...ids)
+}
+
 function claimPendingCommands(db: AppDatabase): FeishuAgentCommand[] {
   return db.transaction(() => {
     const now = nowIso()
@@ -303,7 +326,7 @@ function claimPendingCommands(db: AppDatabase): FeishuAgentCommand[] {
     db.prepare(
       `UPDATE feishu_agent_commands
        SET status = 'pending', claimed_at = NULL, updated_at = ?
-       WHERE status = 'running' AND claimed_at < ?`,
+       WHERE status = 'running' AND (claimed_at IS NULL OR claimed_at < ?)`,
     ).run(now, staleBefore)
 
     const rows = db
@@ -333,9 +356,11 @@ export function recordFeishuAgentHeartbeat(
   lastSeenAt: string
   commands: FeishuAgentCommand[]
 } {
+  const payload = isRecord(input) ? input : {}
   const health = sanitizeFeishuAgentHealth(
-    isRecord(input) && 'health' in input ? input.health : input,
+    'health' in payload ? payload.health : input,
   )
+  const activeCommandIds = runningCommandIds(payload.runningCommandIds)
   const now = nowIso()
   db.prepare(
     `INSERT INTO feishu_agent_state (id, health_json, last_seen_at, created_at, updated_at)
@@ -345,6 +370,7 @@ export function recordFeishuAgentHeartbeat(
        last_seen_at = excluded.last_seen_at,
        updated_at = excluded.updated_at`,
   ).run(AGENT_STATE_ID, JSON.stringify(health), now, now, now)
+  renewRunningCommands(db, activeCommandIds, now)
   return {
     lastSeenAt: now,
     commands: claimPendingCommands(db),
@@ -456,7 +482,12 @@ export function updateFeishuAgentCommandProgress(
   if (!job) throw unprocessable('交付进度缺少有效任务')
 
   const now = nowIso()
-  const status: FeishuAgentCommandStatus = job.status === 'failed' ? 'failed' : existing.status
+  const status: FeishuAgentCommandStatus =
+    job.status === 'failed'
+      ? 'failed'
+      : job.status === 'succeeded'
+        ? 'succeeded'
+        : existing.status
   const error = job.status === 'failed' ? job.error || '本机交付执行失败' : existing.error
   const resultJson = JSON.stringify({ job }).slice(0, 64 * 1024)
   db.prepare(

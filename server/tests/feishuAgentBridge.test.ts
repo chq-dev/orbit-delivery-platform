@@ -142,6 +142,50 @@ test('代理命令去重、领取和完成结果可被页面查询', () => {
   }
 })
 
+test('长命令心跳续租后不会被重复领取，停止续租后才允许重新领取', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    const command = enqueueFeishuAgentCommand(db, 'sync')
+    const claimed = recordFeishuAgentHeartbeat(db, { health })
+    assert.equal(claimed.commands[0]?.id, command.id)
+
+    const staleAt = new Date(Date.now() - 16 * 60_000).toISOString()
+    const expireLease = () => {
+      db.prepare(
+        'UPDATE feishu_agent_commands SET claimed_at = ?, updated_at = ? WHERE id = ?',
+      ).run(staleAt, staleAt, command.id)
+    }
+
+    expireLease()
+    const renewed = recordFeishuAgentHeartbeat(db, {
+      health,
+      runningCommandIds: [command.id, command.id, '  '],
+    })
+    assert.deepEqual(renewed.commands, [])
+    const row = db
+      .prepare('SELECT status, claimed_at FROM feishu_agent_commands WHERE id = ?')
+      .get(command.id) as { status: string; claimed_at: string }
+    assert.equal(row.status, 'running')
+    assert.ok(Date.parse(row.claimed_at) > Date.now() - 60_000)
+
+    expireLease()
+    const stillRenewed = recordFeishuAgentHeartbeat(db, {
+      health,
+      runningCommandIds: [command.id],
+    })
+    assert.deepEqual(stillRenewed.commands, [])
+    assert.equal(getFeishuAgentBridgeStatus(db).activeCommand?.id, command.id)
+
+    expireLease()
+    const reclaimed = recordFeishuAgentHeartbeat(db, { health })
+    assert.equal(reclaimed.commands.length, 1)
+    assert.equal(reclaimed.commands[0]?.id, command.id)
+    assert.equal(reclaimed.commands[0]?.status, 'running')
+  } finally {
+    db.close()
+  }
+})
+
 test('拒绝未知代理命令且代理状态表随数据库升级创建', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
@@ -224,6 +268,40 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
       (updated.result as { job: { steps: unknown[] } }).job.steps.length,
       7,
     )
+  } finally {
+    db.close()
+  }
+})
+
+test('交付进度成功时会将运行中的命令收口为成功', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    const command = enqueueFeishuAgentCommand(db, 'delivery_start', {
+      workItemId: 'REQ-1083',
+      repoId: 'repo-1',
+      autoCommit: true,
+      pushAfterAcceptance: false,
+      autoClose: false,
+    })
+    const claimed = recordFeishuAgentHeartbeat(db, { health })
+    assert.equal(claimed.commands[0]?.id, command.id)
+
+    const updated = updateFeishuAgentCommandProgress(db, command.id, {
+      job: {
+        id: 'delivery-progress-only',
+        commandId: command.id,
+        status: 'succeeded',
+        stage: '本机交付完成',
+        workItemId: 'REQ-1083',
+        repoId: 'repo-1',
+        steps: [],
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        result: { commit: 'abcdef1234567' },
+      },
+    })
+    assert.equal(updated.status, 'succeeded')
+    assert.equal(getFeishuAgentBridgeStatus(db).activeCommand, null)
   } finally {
     db.close()
   }

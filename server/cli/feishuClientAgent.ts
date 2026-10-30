@@ -163,6 +163,7 @@ let lastHeartbeatError = ''
 let lastDeliveryProgressError = ''
 let deliveryProgressInFlight = false
 let deliveryProgressQueued = false
+const activeCommandIds = new Set<string>()
 let cachedAuth: Awaited<ReturnType<typeof authStatus>> | null = null
 let cachedAuthAt = 0
 let cachedMcpAuth: ReturnType<typeof inspectFeishuMcpAuth> | null = null
@@ -874,7 +875,17 @@ async function executeCommand(command: {
       console.error(`代理命令结果上报失败：${errorMessage(reportError)}`)
     })
     void sendHeartbeat()
+  } finally {
+    activeCommandIds.delete(command.id)
   }
+}
+
+function runningCommandIds(): string[] {
+  const ids = new Set(activeCommandIds)
+  if (deliveryJob?.status === 'running' && deliveryJob.commandId) {
+    ids.add(deliveryJob.commandId)
+  }
+  return [...ids]
 }
 
 async function sendHeartbeat(): Promise<void> {
@@ -886,7 +897,7 @@ async function sendHeartbeat(): Promise<void> {
     const response = await postAgentJson(
       config,
       '/api/integrations/feishu/agent/heartbeat',
-      { health: await currentHealth() },
+      { health: await currentHealth(), runningCommandIds: runningCommandIds() },
     )
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}：${await responseMessage(response)}`)
@@ -912,6 +923,12 @@ async function sendHeartbeat(): Promise<void> {
       ) {
         continue
       }
+      if (deliveryJob?.commandId === id) {
+        scheduleDeliveryProgress(deliveryJob)
+        continue
+      }
+      if (activeCommandIds.has(id)) continue
+      activeCommandIds.add(id)
       void executeCommand({ id, type, payload: command.payload })
     }
   } catch (error) {
