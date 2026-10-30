@@ -231,11 +231,14 @@ export async function waitForLocalDelivery(
   commandId: string,
   onUpdate: (job: LocalDeliveryJob) => void,
   timeoutMs = 45 * 60_000,
+  signal?: AbortSignal,
 ): Promise<LocalDeliveryJob> {
   const deadline = Date.now() + timeoutMs
   let consecutiveErrors = 0
+  throwIfAborted(signal)
   while (Date.now() < deadline) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1_500))
+    await delay(1_500, signal)
+    throwIfAborted(signal)
     let status: FeishuAgentBridgeStatus
     try {
       status = await request<FeishuAgentBridgeStatus>('/integrations/feishu/agent/status')
@@ -245,6 +248,7 @@ export async function waitForLocalDelivery(
       if (consecutiveErrors < 5) continue
       throw error
     }
+    throwIfAborted(signal)
 
     const command = status.commands.find((entry) => entry.id === commandId)
     const job = jobFromCommand(command) ?? jobFromHealth(status, commandId)
@@ -262,6 +266,34 @@ export async function waitForLocalDelivery(
     }
   }
   throw new Error('本机交付执行超时，请检查客户端代理与 Codex 日志')
+}
+
+function abortError(): Error {
+  const error = new Error('已停止等待本机交付状态')
+  error.name = 'AbortError'
+  return error
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError()
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(abortError())
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 export function pipelineFromDeliveryResult(result: unknown): PipelineRun | undefined {

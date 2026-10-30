@@ -265,6 +265,7 @@ export function DeliveryDialog({
   const [deliveryJob, setDeliveryJob] = useState<LocalDeliveryJob | null>(null)
   const [deliveryError, setDeliveryError] = useState('')
   const progressRef = useRef<HTMLDivElement | null>(null)
+  const waitAbortRef = useRef<AbortController | null>(null)
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
   const progressVisible = Boolean(deliveryJob || deliveryError)
@@ -377,6 +378,18 @@ export function DeliveryDialog({
   }, [open])
 
   useEffect(() => {
+    if (open) return
+    waitAbortRef.current?.abort()
+  }, [open])
+
+  useEffect(
+    () => () => {
+      waitAbortRef.current?.abort()
+    },
+    [],
+  )
+
+  useEffect(() => {
     if (!open || !progressVisible) return
     const frame = window.requestAnimationFrame(() => {
       progressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -483,6 +496,8 @@ export function DeliveryDialog({
       )
       return
     }
+    const controller = new AbortController()
+    waitAbortRef.current = controller
     setLaunching(true)
     setDeliveryError('')
     try {
@@ -514,7 +529,12 @@ export function DeliveryDialog({
         `${workItemId} · ${selectedRepo.name} · ${selectedRepo.branch}`,
         'info',
       )
-      const completed = await waitForLocalDelivery(started.id, setDeliveryJob)
+      const completed = await waitForLocalDelivery(
+        started.id,
+        setDeliveryJob,
+        45 * 60_000,
+        controller.signal,
+      )
       setDeliveryJob(completed)
       await reload(true)
       await refreshWorkItems(true).catch(() => undefined)
@@ -532,6 +552,14 @@ export function DeliveryDialog({
       onClose()
       onStarted(run)
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        notify(
+          '已停止等待',
+          '本机交付仍会在客户端后台继续执行，可稍后在流水线中查看结果',
+          'info',
+        )
+        return
+      }
       const message = error instanceof Error ? error.message : '本机交付执行失败'
       setDeliveryJob((current) => {
         if (!current || current.status === 'failed') return current
@@ -543,6 +571,7 @@ export function DeliveryDialog({
         setLocalAgent({ ...state, checking: false }),
       )
     } finally {
+      if (waitAbortRef.current === controller) waitAbortRef.current = null
       setLaunching(false)
     }
   }
@@ -573,8 +602,12 @@ export function DeliveryDialog({
                     : '点击后由本机代理在配置路径直接执行 Codex，只有真实代码变更才会创建提交'}
           </span>
           <div className="modal-footer-actions">
-            <button className="btn btn-secondary" onClick={onClose}>
-              {launching ? '后台执行' : '取消'}
+            <button
+              className="btn btn-secondary"
+              onClick={onClose}
+              title={launching ? '停止页面轮询，本机交付会在后台继续执行' : undefined}
+            >
+              {launching ? '停止等待' : '取消'}
             </button>
             <button
               className="btn btn-primary"
