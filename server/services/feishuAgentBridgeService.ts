@@ -51,6 +51,7 @@ export interface FeishuAgentHealth {
     platformBaseUrl?: string
     projectKey: string
     repoId?: string
+    repoPaths: Record<string, string>
   }
   meegle: {
     available: boolean
@@ -150,6 +151,17 @@ function nonNegativeInteger(value: unknown): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0
 }
 
+function repoPathOverrides(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {}
+  const paths: Record<string, string> = {}
+  for (const [key, rawPath] of Object.entries(value)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(key)) continue
+    const localPath = optionalText(rawPath, 1_000)
+    if (localPath) paths[key] = localPath
+  }
+  return paths
+}
+
 function timestamp(value: unknown, fallback: string): string {
   const candidate = text(value, 80)
   return candidate && Number.isFinite(Date.parse(candidate)) ? candidate : fallback
@@ -240,6 +252,7 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
       platformBaseUrl: optionalText(config.platformBaseUrl, 500),
       projectKey: optionalText(config.projectKey, 200) ?? 'rjcloud',
       repoId: optionalText(config.repoId, 200),
+      repoPaths: repoPathOverrides(config.repoPaths),
     },
     meegle: {
       available: boolean(meegle.available),

@@ -39,6 +39,7 @@ export interface LocalDeliveryAgentReadiness {
   meegleAuthenticated: boolean
   codexAvailable: boolean
   platformBaseUrl?: string
+  repoPaths: Record<string, string>
   error?: string
 }
 
@@ -206,6 +207,7 @@ export async function probeLocalDeliveryAgent(): Promise<LocalDeliveryAgentReadi
       meegleAuthenticated: Boolean(health?.meegle?.authenticated),
       codexAvailable: Boolean(health?.codex?.available),
       platformBaseUrl: health?.config?.platformBaseUrl,
+      repoPaths: health?.config?.repoPaths ?? {},
       error: !platformReady
         ? '平台服务端仍是旧版本，请部署新服务端后重试'
         : status.online
@@ -219,6 +221,7 @@ export async function probeLocalDeliveryAgent(): Promise<LocalDeliveryAgentReadi
       configured: false,
       meegleAuthenticated: false,
       codexAvailable: false,
+      repoPaths: {},
       error: error instanceof Error ? error.message : '无法读取平台代理状态',
     }
   }

@@ -209,6 +209,7 @@ export interface FeishuClientAgentConfigStatus {
   platformBaseUrl?: string
   projectKey: string
   repoId?: string
+  repoPaths?: Record<string, string>
 }
 
 export interface FeishuClientAgentHealth {

@@ -11,10 +11,11 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import {
   parseFeishuAgentConfig,
+  parseFeishuAgentRepoPaths,
   publicFeishuAgentConfig,
   validateFeishuAgentConfig,
   type FeishuAgentStoredConfig,
@@ -200,7 +201,31 @@ function parseJson(textValue: string): unknown {
 function readConfig(): FeishuAgentStoredConfig | null {
   if (!existsSync(configPath)) return null
   try {
-    return parseFeishuAgentConfig(JSON.parse(readFileSync(configPath, 'utf8')))
+    const config = parseFeishuAgentConfig(JSON.parse(readFileSync(configPath, 'utf8')))
+    if (!config) return null
+    const rawRepoPaths = process.env.FEISHU_AGENT_REPO_PATHS?.trim()
+    if (!rawRepoPaths) return config
+    let environmentRepoPaths: unknown
+    try {
+      environmentRepoPaths = JSON.parse(rawRepoPaths)
+    } catch {
+      console.error('FEISHU_AGENT_REPO_PATHS 必须是 JSON 对象，已忽略该环境变量')
+      return config
+    }
+    try {
+      return {
+        ...config,
+        repoPaths: {
+          ...config.repoPaths,
+          ...parseFeishuAgentRepoPaths(environmentRepoPaths, true),
+        },
+      }
+    } catch (error) {
+      console.error(
+        `FEISHU_AGENT_REPO_PATHS 无效，已忽略该环境变量：${errorMessage(error)}`,
+      )
+      return config
+    }
   } catch {
     return null
   }
@@ -513,7 +538,9 @@ async function validateClientCheckout(
   setStep(job, 'checkout', 'running', '正在校验绝对路径、Git 根目录与目标分支')
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
   if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
-    throw new Error(`客户端代码路径不存在或不是目录：${localPath}`)
+    throw new Error(
+      `当前执行客户端 ${hostname()} 上不存在代码目录：${localPath}；请确认该路径属于当前客户端，或在 repoPaths 中配置本机路径`,
+    )
   }
   const checkout = realpathSync(localPath)
   const root = await runCommand(
@@ -669,7 +696,7 @@ async function executeLocalDelivery(
     job.stage = '读取平台工作项与仓库配置'
     const bootstrap = await fetchDeliveryBootstrap(job, config)
     setStep(job, 'platform', 'success', '已读取工作项与仓库配置')
-    const target = resolveLocalDeliveryTarget(bootstrap, request)
+    const target = resolveLocalDeliveryTarget(bootstrap, request, config.repoPaths)
     job.localPath = target.localPath
     job.branch = target.branch
     await validateClientCheckout(job, target.localPath, target.branch)

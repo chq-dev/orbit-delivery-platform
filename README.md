@@ -138,7 +138,8 @@ tail -f /tmp/orbit-feishu-agent.out /tmp/orbit-feishu-agent.err
   页面不允许轮换，客户端代理需使用相同值启动。
 
 本机代理默认监听 `127.0.0.1:18787`。飞书同步、密钥轮换和客户端本地交付都通过平台命令队列
-执行；代理只接受工作项、仓库和布尔选项，本地路径与分支始终从平台仓库配置读取。代理主动访问
+执行；代理只接受工作项、仓库和布尔选项，分支从平台仓库配置读取，本地路径优先使用当前客户端
+的仓库路径映射、未配置时回退到平台仓库路径。代理主动访问
 平台并领取命令，同时回传七步执行进度：
 
 ```bash
@@ -151,6 +152,24 @@ FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
 `localStorage` 或源码。页面提供“轮换密钥”操作，旧密钥在轮换后立即失效。首次生成密钥采用
 先到先得（TOFU）模型；生产环境建议由管理员在服务器设置 `FEISHU_INGEST_TOKEN`，并确保平台已
 启用登录认证与 HTTPS。
+
+如果不同客户端上同一仓库的绝对路径不同，不要让平台路径代表所有机器。可在对应客户端的代理
+配置 `~/.config/orbit/feishu-sync.json` 中增加 `repoPaths`：
+
+```json
+{
+  "platformBaseUrl": "http://8.145.45.84:8787",
+  "syncToken": "由平台生成后一次性写入",
+  "projectKey": "rjcloud",
+  "repoPaths": {
+    "repo-1": "/Users/shinya/Documents/workspace/SME/basic-component-cloud"
+  }
+}
+```
+
+也可以用 `FEISHU_AGENT_REPO_PATHS='{"repo-1":"/absolute/path"}'` 覆盖，适合写入 launchd
+环境。平台仓库配置仍是默认值；`repoPaths` 只影响当前代理所在客户端，并会作为当前客户端实际
+采用路径显示在一键交付弹窗中。
 
 ### 飞书 MCP（Codex 文档/Wiki 接入）
 

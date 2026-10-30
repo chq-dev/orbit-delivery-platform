@@ -22,6 +22,10 @@ const health = {
     platformBaseUrl: 'http://8.145.45.84:8787',
     projectKey: 'rjcloud',
     repoId: 'repo-1',
+    repoPaths: {
+      'repo-1': '/Users/shinya/Documents/workspace/SME/basic-component-cloud',
+      'bad key': '/tmp/ignored',
+    },
     syncToken: 'must-not-be-stored-in-public-state',
   },
   meegle: {
@@ -82,6 +86,9 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
     const status = getFeishuAgentBridgeStatus(db)
     assert.equal(status.online, true)
     assert.equal(status.health?.config.repoId, 'repo-1')
+    assert.deepEqual(status.health?.config.repoPaths, {
+      'repo-1': '/Users/shinya/Documents/workspace/SME/basic-component-cloud',
+    })
     assert.equal(
       JSON.stringify(status).includes('must-not-be-stored-in-public-state'),
       false,

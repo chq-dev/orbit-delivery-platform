@@ -72,8 +72,28 @@ test('一键交付路径和分支只从平台仓库配置解析', () => {
         },
         request,
       ),
-    /尚未配置客户端代码路径/,
+    /尚未配置当前客户端的代码路径/,
   )
+})
+
+test('本机代理的仓库路径映射优先于平台共享路径', () => {
+  const target = resolveLocalDeliveryTarget(
+    {
+      repositories: [
+        {
+          id: 'repo-1',
+          name: 'sme-main',
+          localPath: '/Users/shinya/Documents/workspace/SME/basic-component-cloud',
+          branch: 'dev-harvey',
+        },
+      ],
+      workItems: [{ id: 'REQ-1082', repoId: 'repo-1' }],
+    },
+    request,
+    { 'repo-1': '/Users/chenhuaqu/sme/sme-main' },
+  )
+  assert.equal(target.localPath, '/Users/chenhuaqu/sme/sme-main')
+  assert.equal(target.branch, 'dev-harvey')
 })
 
 test('一键交付命令通过 argv 传递并自动授权推送确认', () => {

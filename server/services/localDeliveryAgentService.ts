@@ -225,15 +225,18 @@ export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAge
 export function resolveLocalDeliveryTarget(
   bootstrap: LocalDeliveryBootstrap,
   request: LocalDeliveryAgentRequest,
+  repoPaths: Record<string, string> = {},
 ): LocalDeliveryTarget {
   const workItem = bootstrap.workItems.find((entry) => entry.id === request.workItemId)
   if (!workItem) throw new Error(`平台中不存在工作项 ${request.workItemId}`)
   const repository = bootstrap.repositories.find((entry) => entry.id === request.repoId)
   if (!repository) throw new Error(`平台中不存在代码仓库 ${request.repoId}`)
 
-  const localPath = text(repository.localPath)
+  const localPath = text(repoPaths[repository.id]) || text(repository.localPath)
   if (!localPath) {
-    throw new Error('该仓库尚未配置客户端代码路径，请先到“代码仓库”填写本机绝对路径')
+    throw new Error(
+      '该仓库尚未配置当前客户端的代码路径；请在平台仓库设置或本机代理 repoPaths 中配置绝对路径',
+    )
   }
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
   const branch = text(repository.branch) || text(workItem.branch)

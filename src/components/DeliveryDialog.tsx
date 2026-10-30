@@ -277,6 +277,7 @@ export function DeliveryDialog({
     configured: false,
     meegleAuthenticated: false,
     codexAvailable: false,
+    repoPaths: {},
   })
 
   const availableItems = useMemo(
@@ -285,6 +286,8 @@ export function DeliveryDialog({
   )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
+  const localRepoPath = localAgent.repoPaths[repoId]
+  const effectiveLocalPath = localRepoPath || selectedRepo?.localPath
   const savedScreenshotCount = selectedItem?.requirementScreenshotCount ?? 0
   const effectiveScreenshotCount =
     screenshots.length > 0 ? screenshots.length : savedScreenshotCount
@@ -363,6 +366,7 @@ export function DeliveryDialog({
       configured: false,
       meegleAuthenticated: false,
       codexAvailable: false,
+      repoPaths: {},
     })
     void probeLocalDeliveryAgent().then((state) => {
       if (!cancelled) setLocalAgent({ ...state, checking: false })
@@ -451,8 +455,16 @@ export function DeliveryDialog({
       notify('缺少需求交付上下文', requirementContextIssue, 'warning')
       return
     }
-    if (!selectedRepo?.localPath) {
-      notify('缺少客户端代码路径', '请先到代码仓库配置当前客户端的绝对路径', 'warning')
+    if (!selectedRepo) {
+      notify('未选择代码仓库', '请先选择一个目标代码仓库', 'warning')
+      return
+    }
+    if (!effectiveLocalPath) {
+      notify(
+        '缺少客户端代码路径',
+        '请先到代码仓库配置绝对路径，或在本机代理 repoPaths 中配置当前客户端的路径',
+        'warning',
+      )
       return
     }
     if (!localAgent.online) {
@@ -806,14 +818,16 @@ export function DeliveryDialog({
           <Field
             label="客户端代码路径"
             hint={
-              selectedRepo?.localPath
-                ? '一键执行时由本机代理读取平台仓库配置并校验该绝对路径'
-                : '未配置客户端路径，无法一键执行；请先到代码仓库填写'
+              localRepoPath
+                ? '当前本机代理已为这个仓库配置专属路径，优先于平台共享路径'
+                : effectiveLocalPath
+                  ? '使用平台仓库路径；如当前客户端路径不同，请为本机代理配置 repoPaths'
+                  : '未配置客户端路径，无法一键执行；请先到代码仓库填写'
             }
           >
             <div className="input-with-icon readonly-input">
               <FolderGit2 size={15} />
-              <span>{selectedRepo?.localPath || '未配置'}</span>
+              <span>{effectiveLocalPath || '未配置'}</span>
             </div>
           </Field>
 
