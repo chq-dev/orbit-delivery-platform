@@ -520,6 +520,18 @@ function localDeliveryEnvironment(): NodeJS.ProcessEnv {
 }
 
 function commandFailureMessage(result: CommandResult): string {
+  const lines = `${result.stderr}\n${result.stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+  const errorIndex = lines.findIndex((line) => line.startsWith('LOCAL_DELIVERY_ERROR:'))
+  if (errorIndex >= 0) {
+    return lines
+      .slice(errorIndex)
+      .join('\n')
+      .slice('LOCAL_DELIVERY_ERROR:'.length)
+      .trim()
+      .slice(0, 4_000)
+  }
   const raw = result.stderr.trim() || result.stdout.trim()
   const message = raw
     .split(/\r?\n/)
@@ -547,6 +559,7 @@ function failureStepKey(message: string): string {
   ) {
     return 'contract'
   }
+  if (/未提交变更|工作区.*清理|尚未配置客户端代码路径/.test(message)) return 'checkout'
   if (/没有检测到代码文件变更|报告|执行证据/.test(message)) return 'evidence'
   if (/HEAD 没有变化|提交|暂存|commit|推送失败/i.test(message)) return 'commit'
   if (/回写平台|平台未返回|流水线记录/.test(message)) return 'writeback'

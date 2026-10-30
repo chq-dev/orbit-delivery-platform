@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -51,11 +51,25 @@ CREATE TABLE IF NOT EXISTS work_items (
   feishu_status TEXT,
   project_line TEXT,
   design_reference TEXT,
+  requirement_breakdown TEXT,
   archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (source, external_id)
 );
+
+CREATE TABLE IF NOT EXISTS work_item_attachments (
+  id TEXT PRIMARY KEY,
+  work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  data_base64 TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_item_attachments_item
+  ON work_item_attachments(work_item_id, created_at);
 
 CREATE TABLE IF NOT EXISTS pipelines (
   id TEXT PRIMARY KEY,

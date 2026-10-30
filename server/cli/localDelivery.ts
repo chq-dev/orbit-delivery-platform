@@ -13,15 +13,29 @@ import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
 import { buildLocalSkillInstruction } from '../../src/skillInstruction'
+import { requirementDeliveryContextIssue } from '../../src/deliveryContext'
+import {
+  deliveryCodeFiles,
+  deliveryCommitMessage,
+  normalizeDeliveryPath,
+} from '../services/localDeliveryEvidence.js'
+import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
 import {
   fetchJsonWithRetry,
   supportsLocalDeliveryContract,
 } from '../services/localDeliveryAgentService.js'
-import type { Repository, WorkItem } from '../../src/types'
+import type { Repository, WorkItem, WorkItemScreenshot } from '../../src/types'
 
 interface BootstrapData {
   repositories: Repository[]
   workItems: WorkItem[]
+}
+
+interface WorkItemDeliveryContextData {
+  workItem: WorkItem
+  requirementBreakdown?: string
+  designReference?: string
+  screenshots: WorkItemScreenshot[]
 }
 
 interface LocalDeliveryArgs {
@@ -78,7 +92,7 @@ Options:
   --path <dir>         Client checkout path (default: repository localPath)
   --branch <name>      Expected branch (default: repository branch)
   --run                Start Codex in the client checkout after generating the prompt
-  --no-commit          Tell Codex not to create a local commit
+  --no-commit          Leave validated changes uncommitted for human review
   --push               Push the resulting commit after Codex succeeds (requires confirmation)
   --close              Mark a local defect closed after delivery is recorded
   --yes                Skip the --push confirmation
@@ -185,6 +199,20 @@ async function fetchBootstrap(api: string): Promise<BootstrapData> {
   )
 }
 
+async function fetchDeliveryContext(
+  api: string,
+  workItemId: string,
+): Promise<WorkItemDeliveryContextData> {
+  return fetchJsonWithRetry<WorkItemDeliveryContextData>(
+    `${api}/api/work-items/${encodeURIComponent(workItemId)}/delivery-context`,
+    {
+      label: '读取需求拆解、设计稿与截图',
+      attempts: 2,
+      timeoutMs: 20_000,
+    },
+  )
+}
+
 function artifactEvidence(artifactDir: string): DeliveryEvidence {
   const hasContent = (path: string): boolean => {
     try {
@@ -207,17 +235,47 @@ function artifactEvidence(artifactDir: string): DeliveryEvidence {
   }
 }
 
-function changedCodeFiles(checkout: string, previousHead: string, finalHead: string, noCommit: boolean): string[] {
-  const result = noCommit
-    ? git(checkout, ['status', '--porcelain', '--untracked-files=all'])
-    : git(checkout, ['diff', '--name-only', `${previousHead}..${finalHead}`])
-  if (result.status !== 0) {
-    throw new Error(`读取代码变更失败：${result.stderr || result.stdout || `退出码 ${result.status}`}`)
+function workTreeFiles(checkout: string): string[] {
+  const tracked = requireGit(
+    checkout,
+    ['diff', 'HEAD', '--name-only', '-z'],
+    '读取工作区变更',
+  )
+  const untracked = requireGit(
+    checkout,
+    ['ls-files', '--others', '--exclude-standard', '-z'],
+    '读取未跟踪文件',
+  )
+  return [...new Set(
+    `${tracked}\0${untracked}`
+      .split('\0')
+      .map(normalizeDeliveryPath)
+      .filter(Boolean),
+  )]
+}
+
+function assertCleanDeliveryWorktree(checkout: string): void {
+  const pending = workTreeFiles(checkout).filter(
+    (file) => !file.startsWith('delivery-artifacts/'),
+  )
+  if (pending.length === 0) return
+  throw new Error(
+    `客户端工作区存在未提交变更，请先提交或清理后再执行交付：${pending.slice(0, 8).join(', ')}`,
+  )
+}
+
+function commitDeliveredChanges(checkout: string, item: WorkItem): string {
+  const add = git(checkout, ['add', '--all'])
+  if (add.status !== 0) {
+    throw new Error(`暂存交付变更失败：${add.stderr || add.stdout || `退出码 ${add.status}`}`)
   }
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => noCommit ? line.slice(3).trim() : line.trim())
-    .filter((file) => file && !file.startsWith('delivery-artifacts/'))
+  const staged = requireGit(checkout, ['diff', '--cached', '--name-only'], '读取暂存变更')
+  if (!staged) throw new Error('没有可提交的交付变更')
+  const commit = git(checkout, ['commit', '-m', deliveryCommitMessage(item.id, item.title)])
+  if (commit.status !== 0) {
+    throw new Error(`创建本地交付提交失败：${commit.stderr || commit.stdout || `退出码 ${commit.status}`}`)
+  }
+  return requireGit(checkout, ['rev-parse', 'HEAD'], '读取交付提交')
 }
 
 function readReportFile(path: string, title: string): DeliveryReportInput | undefined {
@@ -378,10 +436,18 @@ function buildPrompt(
   localPath: string,
   branch: string,
   runDescription: string,
-  autoCommit: boolean,
+  screenshotPaths: string[],
 ): string {
   return [
-    buildLocalSkillInstruction(item, { ...repository, localPath }),
+    buildLocalSkillInstruction(
+      item,
+      { ...repository, localPath },
+      {
+        requirementBreakdown: item.requirementBreakdown,
+        designReference: item.designReference,
+        screenshotPaths,
+      },
+    ),
     '',
     '## Client execution contract',
     `Execute only in this client checkout: ${localPath}`,
@@ -390,10 +456,8 @@ function buildPrompt(
     runDescription,
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
-    autoCommit
-      ? `Create a local commit whose subject starts with "${item.id}: " only after the design and integration reports exist and the narrowest useful validation has run.`
-      : 'Do not create a Git commit. Leave validated changes in the working tree for human review.',
-    'Do not push. The local delivery runner performs the optional push after Codex exits successfully.',
+    'Do not create, amend, or stage any Git commit. The local delivery runner inspects the worktree, commits validated changes when enabled, and performs the optional push after Codex exits.',
+    `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
   ].join('\n')
 }
@@ -423,8 +487,17 @@ async function main(): Promise<void> {
   if (args.push && args.noCommit) throw new Error('--push 不能与 --no-commit 同时使用')
 
   const bootstrap = await fetchBootstrap(args.api)
-  const item = bootstrap.workItems.find((entry) => entry.id === args.workItem)
-  if (!item) throw new Error(`平台中不存在工作项 ${args.workItem}`)
+  const context = await fetchDeliveryContext(args.api, args.workItem)
+  const item = context.workItem
+  if (!item || item.id !== args.workItem) throw new Error(`平台中不存在工作项 ${args.workItem}`)
+  if (item.type === 'requirement') {
+    const contextIssue = requirementDeliveryContextIssue({
+      requirementBreakdown: context.requirementBreakdown,
+      designReference: context.designReference,
+      screenshotCount: context.screenshots.length,
+    })
+    if (contextIssue) throw new Error(contextIssue)
+  }
   const repositoryId = args.repo || item.repoId
   const repository = bootstrap.repositories.find((entry) => entry.id === repositoryId)
   if (!repository) throw new Error(`平台中不存在仓库 ${repositoryId}`)
@@ -437,17 +510,23 @@ async function main(): Promise<void> {
 
   const artifactDir = join(checkout.checkout, 'delivery-artifacts', item.id)
   mkdirSync(artifactDir, { recursive: true })
+  const screenshotPaths = materializeDeliveryScreenshots(artifactDir, context.screenshots)
+  const deliveryItem: WorkItem = {
+    ...item,
+    requirementBreakdown: context.requirementBreakdown ?? item.requirementBreakdown,
+    designReference: context.designReference ?? item.designReference,
+  }
   const promptPath = join(artifactDir, 'codex-prompt.md')
   const runDescription = args.run
     ? 'Run the required code changes now; the launcher will not ask for the prompt again.'
     : 'This is a prepared prompt. Do not edit code until a runner starts Codex with this prompt.'
   const prompt = buildPrompt(
-    item,
+    deliveryItem,
     repository,
     checkout.checkout,
     branch,
     runDescription,
-    !args.noCommit,
+    screenshotPaths,
   )
   writeFileSync(promptPath, `${prompt}\n`, 'utf8')
 
@@ -461,6 +540,7 @@ async function main(): Promise<void> {
     dirty: checkout.dirty,
     remote: checkout.remote || null,
     promptFile: promptPath,
+    screenshotFiles: screenshotPaths,
     run: args.run,
     push: args.push,
     autoCommit: !args.noCommit,
@@ -473,9 +553,12 @@ async function main(): Promise<void> {
     return
   }
 
+  assertCleanDeliveryWorktree(checkout.checkout)
+
   const codexCommand = resolveCodexBinary()
   if (!codexCommand) throw new Error(codexBinaryError())
   const lastMessagePath = join(artifactDir, 'codex-last-message.md')
+  const imageArgs = screenshotPaths.flatMap((path) => ['--image', path])
   const result = spawnSync(
     codexCommand,
     [
@@ -487,6 +570,7 @@ async function main(): Promise<void> {
       'workspace-write',
       '--output-last-message',
       lastMessagePath,
+      ...imageArgs,
       prompt,
     ],
     { stdio: ['ignore', 'inherit', 'inherit'], encoding: 'utf8' },
@@ -494,21 +578,20 @@ async function main(): Promise<void> {
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`Codex 执行失败，退出码 ${result.status ?? 1}`)
 
-  const finalHead = requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取交付提交')
-  if (!args.noCommit && finalHead === checkout.head) {
-    throw new Error('Codex 已结束，但本地 HEAD 没有变化；未找到交付提交，已停止推送')
+  const evidence = artifactEvidence(artifactDir)
+  evidence.changedFiles = deliveryCodeFiles(workTreeFiles(checkout.checkout))
+  if (evidence.changedFiles.length === 0) {
+    throw new Error(
+      'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
+    )
+  }
+  if (!args.noCommit && (!evidence.designReport || !evidence.integrationReport)) {
+    throw new Error('缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交')
   }
 
-  const evidence = artifactEvidence(artifactDir)
-  evidence.changedFiles = changedCodeFiles(
-    checkout.checkout,
-    checkout.head,
-    finalHead,
-    args.noCommit,
-  )
-  if (evidence.changedFiles.length === 0) {
-    throw new Error('Codex 已结束，但没有检测到代码文件变更；已停止推送与平台回写')
-  }
+  const finalHead = args.noCommit
+    ? requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取本地提交')
+    : commitDeliveredChanges(checkout.checkout, deliveryItem)
 
   const stageResults = deliveryStageResults(evidence, !args.noCommit)
   const reports = deliveryReports(artifactDir)
@@ -527,7 +610,7 @@ async function main(): Promise<void> {
     platformPipeline = await recordPlatformDelivery(
       args.api,
       args,
-      item,
+      deliveryItem,
       repository,
       checkout.checkout,
       finalHead,
@@ -561,11 +644,13 @@ async function main(): Promise<void> {
     stageResults,
     platformPipeline,
     promptFile: promptPath,
+    screenshotFiles: screenshotPaths,
     lastMessageFile: lastMessagePath,
   }, null, 2))
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error))
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(`LOCAL_DELIVERY_ERROR: ${message}`)
   process.exitCode = 1
 })

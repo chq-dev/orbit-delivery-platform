@@ -48,6 +48,15 @@ export interface WorkItem {
   feishuStatus?: string
   projectLine?: string
   designReference?: string
+  requirementBreakdown?: string
+  requirementScreenshotCount?: number
+}
+
+export interface WorkItemScreenshot {
+  name: string
+  mimeType: string
+  sizeBytes: number
+  dataUrl: string
 }
 
 export interface PipelineStage {

@@ -37,7 +37,10 @@ import {
   listPipelines,
 } from './services/pipelineService.js'
 import { recordLocalDelivery } from './services/localDeliveryService.js'
-import { LOCAL_DELIVERY_CONTRACT_VERSION } from './services/localDeliveryAgentService.js'
+import {
+  LOCAL_DELIVERY_CONTRACT_VERSION,
+  parseLocalDeliveryAgentRequest,
+} from './services/localDeliveryAgentService.js'
 import { getTestReport, listTestReports, reportAsMarkdown } from './services/reportService.js'
 import {
   createRepository,
@@ -46,9 +49,12 @@ import {
 } from './services/repositoryService.js'
 import {
   createWorkItem,
+  assertRequirementDeliveryContextReady,
+  getWorkItemDeliveryContext,
   getWorkItem,
   importWorkItems,
   listWorkItemSummaries,
+  saveWorkItemDeliveryContext,
 } from './services/workItemService.js'
 
 export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router {
@@ -180,6 +186,10 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/integrations/feishu/agent/commands', (request, response) => {
+    if (request.body?.type === 'delivery_start') {
+      const payload = parseLocalDeliveryAgentRequest(request.body?.payload)
+      assertRequirementDeliveryContextReady(db, payload.workItemId)
+    }
     response
       .status(202)
       .json(enqueueFeishuAgentCommand(db, request.body?.type, request.body?.payload))
@@ -231,6 +241,16 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       count: result.items.length,
       skipped: result.skipped,
     })
+  })
+
+  router.get('/work-items/:id/delivery-context', (request, response) => {
+    response.json(getWorkItemDeliveryContext(db, request.params.id))
+  })
+
+  router.put('/work-items/:id/delivery-context', (request, response) => {
+    response.json(
+      saveWorkItemDeliveryContext(db, request.params.id, request.body ?? {}),
+    )
   })
 
   router.get('/work-items/:id', (request, response) => {

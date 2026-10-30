@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path'
 
-export const LOCAL_DELIVERY_CONTRACT_VERSION = 2
+export const LOCAL_DELIVERY_CONTRACT_VERSION = 3
 
 export type LocalDeliveryAgentStepStatus = 'pending' | 'running' | 'success' | 'failed'
 

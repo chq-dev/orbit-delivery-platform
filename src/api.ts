@@ -12,7 +12,9 @@ import type {
   TestReport,
   WorkItem,
   WorkItemType,
+  WorkItemScreenshot,
 } from './types'
+import type { DeliveryScreenshotUpload } from './deliveryContext'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -72,6 +74,20 @@ export interface WorkItemInput {
   source?: 'local' | 'feishu'
   externalId?: string
   designReference?: string
+  requirementBreakdown?: string
+}
+
+export interface WorkItemDeliveryContextInput {
+  requirementBreakdown?: string
+  designReference?: string
+  screenshots?: DeliveryScreenshotUpload[]
+}
+
+export interface WorkItemDeliveryContext {
+  workItem: WorkItem
+  requirementBreakdown?: string
+  designReference?: string
+  screenshots: WorkItemScreenshot[]
 }
 
 export interface ImportResult<T> {
@@ -138,6 +154,15 @@ export const api = {
     request<WorkItem>('/work-items', { method: 'POST', body: JSON.stringify(input) }),
   getWorkItem: (id: string) =>
     request<WorkItem>(`/work-items/${encodeURIComponent(id)}`),
+  getWorkItemDeliveryContext: (id: string) =>
+    request<WorkItemDeliveryContext>(
+      `/work-items/${encodeURIComponent(id)}/delivery-context`,
+    ),
+  saveWorkItemDeliveryContext: (id: string, input: WorkItemDeliveryContextInput) =>
+    request<WorkItemDeliveryContext>(
+      `/work-items/${encodeURIComponent(id)}/delivery-context`,
+      { method: 'PUT', body: JSON.stringify(input) },
+    ),
   importWorkItems: (items: WorkItemInput[]) =>
     request<ImportResult<WorkItem>>('/work-items/import', {
       method: 'POST',

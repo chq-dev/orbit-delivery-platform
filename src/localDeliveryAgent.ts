@@ -198,7 +198,7 @@ export async function probeLocalDeliveryAgent(): Promise<LocalDeliveryAgentReadi
       request<{ deliveryContractVersion?: number }>('/health'),
     ])
     const health: FeishuClientAgentHealth | undefined = status.health
-    const platformReady = Number(platform.deliveryContractVersion) >= 2
+    const platformReady = Number(platform.deliveryContractVersion) >= 3
     return {
       online: status.online,
       platformReady,

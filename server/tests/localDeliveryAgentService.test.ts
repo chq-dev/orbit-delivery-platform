@@ -126,7 +126,8 @@ test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {
   assert.equal(supportsLocalDeliveryContract(null), false)
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 0 }), false)
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 1 }), false)
-  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: '2' }), true)
+  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: '2' }), false)
+  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 3 }), true)
 })
 
 test('本机交付步骤会记录运行、成功、失败与日志', () => {

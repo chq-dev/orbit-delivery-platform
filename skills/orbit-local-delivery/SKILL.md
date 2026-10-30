@@ -23,8 +23,15 @@ and `branch` from the repository configuration, and executes the same runner
 below. The browser never calls `http://127.0.0.1`, so HTTP deployments are not
 blocked by Chrome Private Network Access.
 
-The request only contains the work-item ID, repository ID and commit/push/close
-booleans. The agent reports seven step states through
+The delivery command only contains the work-item ID, repository ID and
+commit/push/close booleans. Requirement context (breakdown, design reference and
+screenshots) is saved separately through
+`PUT /api/work-items/:id/delivery-context` and re-read by the runner from
+`GET /api/work-items/:id/delivery-context`. For requirement items at least one of
+the following is mandatory: a requirement breakdown of 20+ characters, a design
+reference, or 1-3 screenshots (max 500KB each, 1.2MB total). Defects are exempt.
+The runner writes screenshots under `delivery-artifacts/<work-item>/requirement-assets/`
+and passes every image to `codex exec --image`. The agent reports seven step states through
 `POST /api/integrations/feishu/agent/commands/:id/progress`: platform, contract,
 checkout, Codex, evidence, commit/push and platform write-back. Inspect the failed
 step and its log instead of treating `fetch failed` as a Codex error. Platform
@@ -62,11 +69,14 @@ local defect as closed and reuses the platform's Feishu close outbox.
   design, implementation, verification and review chain.
 - Read the nearest `AGENTS.md` before editing `web/` or `lua/`.
 - Produce real design, integration and test reports. Never fabricate results.
-- The runner fails when Codex changes no code or creates no local commit. Build,
+- Codex must not create, stage, amend, or push Git commits; the runner owns commit
+  creation after Codex exits. The runner fails when Codex changes no non-Markdown
+  source file, even if design or report documents were generated. Build,
   device-upgrade and test stages stay `pending` unless `build-report.md`/`build.log`,
   `upgrade-report.md`/`upgrade.log`, and `test-report.md` actually exist.
 - The server rejects `POST /api/pipelines` and `/advance`; only
   `POST /api/pipelines/local` may record a client result.
-- Commit only after validation. Do not push unless the runner was invoked with
-  `--push` and the user authorized the external write.
+- The runner commits only after validating real source changes and the design and
+  integration reports. Do not push unless the runner was invoked with `--push`
+  and the user authorized the external write.
 - Keep credentials and Feishu/Git tokens out of prompts, logs and reports.

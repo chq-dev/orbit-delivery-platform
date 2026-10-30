@@ -7,13 +7,25 @@ import {
   FolderGit2,
   GitBranch,
   GitMerge,
+  ImagePlus,
+  Link2,
   Search,
   ShieldCheck,
   Sparkles,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { api } from '../api'
+import {
+  MAX_DELIVERY_SCREENSHOTS,
+  MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
+  REQUIREMENT_BREAKDOWN_MIN_LENGTH,
+  isDeliveryScreenshotMimeType,
+  requirementDeliveryContextIssue,
+  type DeliveryScreenshotUpload,
+} from '../deliveryContext'
 import {
   createPendingLocalDeliveryJob,
   markLocalDeliveryStartFailed,
@@ -23,6 +35,7 @@ import {
   waitForLocalDelivery,
   type LocalDeliveryAgentReadiness,
 } from '../localDeliveryAgent'
+import { prepareScreenshot } from '../screenshotCompression'
 import { useData } from '../store'
 import type { LocalDeliveryJob, PipelineRun, WorkItem } from '../types'
 import { searchWorkItems } from '../workItemSearch'
@@ -243,10 +256,17 @@ export function DeliveryDialog({
   const [autoCommit, setAutoCommit] = useState(true)
   const [pushAfterAcceptance, setPushAfterAcceptance] = useState(true)
   const [autoClose, setAutoClose] = useState(true)
+  const [requirementBreakdown, setRequirementBreakdown] = useState('')
+  const [designReference, setDesignReference] = useState('')
+  const [screenshots, setScreenshots] = useState<DeliveryScreenshotUpload[]>([])
+  const [screenshotError, setScreenshotError] = useState('')
+  const [compressingScreenshots, setCompressingScreenshots] = useState(false)
   const [launching, setLaunching] = useState(false)
   const [deliveryJob, setDeliveryJob] = useState<LocalDeliveryJob | null>(null)
   const [deliveryError, setDeliveryError] = useState('')
   const progressRef = useRef<HTMLDivElement | null>(null)
+  const screenshotInputRef = useRef<HTMLInputElement | null>(null)
+  const requirementContextDirtyRef = useRef(false)
   const progressVisible = Boolean(deliveryJob || deliveryError)
   const [localAgent, setLocalAgent] = useState<
     LocalDeliveryAgentReadiness & { checking: boolean }
@@ -265,6 +285,17 @@ export function DeliveryDialog({
   )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
+  const savedScreenshotCount = selectedItem?.requirementScreenshotCount ?? 0
+  const effectiveScreenshotCount =
+    screenshots.length > 0 ? screenshots.length : savedScreenshotCount
+  const requirementContextIssue =
+    selectedItem?.type === 'requirement'
+      ? requirementDeliveryContextIssue({
+          requirementBreakdown,
+          designReference,
+          screenshotCount: effectiveScreenshotCount,
+        })
+      : undefined
   const deliveryStages = useMemo(
     () =>
       (deliveryJob?.steps ?? []).map((step) => ({
@@ -286,11 +317,41 @@ export function DeliveryDialog({
     setAutoCommit(true)
     setPushAfterAcceptance(true)
     setAutoClose(true)
+    setRequirementBreakdown(preferred?.requirementBreakdown ?? '')
+    setDesignReference(preferred?.designReference ?? '')
+    setScreenshots([])
+    setScreenshotError('')
+    setCompressingScreenshots(false)
+    requirementContextDirtyRef.current = false
     setDeliveryJob(null)
     setDeliveryError('')
     // Selection should only reset when the dialog opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialWorkItemId])
+
+  useEffect(() => {
+    if (!open || !workItemId || selectedItem?.type !== 'requirement') return
+    let cancelled = false
+    void api
+      .getWorkItemDeliveryContext(workItemId)
+      .then((context) => {
+        if (cancelled || requirementContextDirtyRef.current) return
+        setRequirementBreakdown(context.requirementBreakdown ?? '')
+        setDesignReference(context.designReference ?? '')
+        setScreenshots(
+          context.screenshots.flatMap((screenshot) =>
+            isDeliveryScreenshotMimeType(screenshot.mimeType)
+              ? [{ ...screenshot, mimeType: screenshot.mimeType }]
+              : [],
+          ),
+        )
+        setScreenshotError('')
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [open, workItemId, selectedItem?.type])
 
   useEffect(() => {
     if (!open) return
@@ -321,6 +382,11 @@ export function DeliveryDialog({
 
   const handleItemChange = (item: WorkItem | undefined) => {
     setWorkItemId(item?.id ?? '')
+    setRequirementBreakdown(item?.requirementBreakdown ?? '')
+    setDesignReference(item?.designReference ?? '')
+    setScreenshots([])
+    setScreenshotError('')
+    requirementContextDirtyRef.current = false
     setDeliveryJob(null)
     setDeliveryError('')
     if (item) handleRepoChange(item.repoId)
@@ -332,8 +398,59 @@ export function DeliveryDialog({
     setDeliveryError('')
   }
 
+  const addScreenshotFiles = async (files: File[]) => {
+    if (selectedItem?.type !== 'requirement' || files.length === 0) return
+    const available = MAX_DELIVERY_SCREENSHOTS - screenshots.length
+    if (available <= 0) {
+      notify('截图数量已达上限', `每条需求最多上传 ${MAX_DELIVERY_SCREENSHOTS} 张截图`, 'warning')
+      return
+    }
+    if (files.length > available) {
+      notify(
+        '部分截图未添加',
+        `最多保留 ${MAX_DELIVERY_SCREENSHOTS} 张截图，本次仅处理前 ${available} 张`,
+        'warning',
+      )
+    }
+
+    setCompressingScreenshots(true)
+    setScreenshotError('')
+    requirementContextDirtyRef.current = true
+    const accepted: DeliveryScreenshotUpload[] = []
+    const errors: string[] = []
+    let totalBytes = screenshots.reduce((total, screenshot) => total + screenshot.sizeBytes, 0)
+    for (const file of files.slice(0, available)) {
+      try {
+        const prepared = await prepareScreenshot(file)
+        if (totalBytes + prepared.sizeBytes > MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES) {
+          errors.push(
+            `截图合计不能超过 ${Math.floor(MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES / 1024)}KB，请删除部分截图后重试`,
+          )
+          continue
+        }
+        accepted.push(prepared)
+        totalBytes += prepared.sizeBytes
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : '截图处理失败')
+      }
+    }
+    if (accepted.length > 0) {
+      setScreenshots((current) => [...current, ...accepted].slice(0, MAX_DELIVERY_SCREENSHOTS))
+    }
+    if (errors.length > 0) {
+      const message = errors[0]
+      setScreenshotError(message)
+      notify('截图处理失败', message, 'warning')
+    }
+    setCompressingScreenshots(false)
+  }
+
   const launch = async () => {
     if (launching) return
+    if (selectedItem?.type === 'requirement' && requirementContextIssue) {
+      notify('缺少需求交付上下文', requirementContextIssue, 'warning')
+      return
+    }
     if (!selectedRepo?.localPath) {
       notify('缺少客户端代码路径', '请先到代码仓库配置当前客户端的绝对路径', 'warning')
       return
@@ -356,15 +473,22 @@ export function DeliveryDialog({
     }
     setLaunching(true)
     setDeliveryError('')
-    const pending = createPendingLocalDeliveryJob({
-      workItemId,
-      repoId,
-      autoCommit,
-      pushAfterAcceptance,
-      autoClose,
-    })
-    setDeliveryJob(pending)
     try {
+      if (selectedItem?.type === 'requirement') {
+        await api.saveWorkItemDeliveryContext(workItemId, {
+          requirementBreakdown: requirementBreakdown.trim(),
+          designReference: designReference.trim(),
+          ...(screenshots.length > 0 ? { screenshots } : {}),
+        })
+      }
+      const pending = createPendingLocalDeliveryJob({
+        workItemId,
+        repoId,
+        autoCommit,
+        pushAfterAcceptance,
+        autoClose,
+      })
+      setDeliveryJob(pending)
       const started = await startLocalDelivery({
         workItemId,
         repoId,
@@ -397,11 +521,10 @@ export function DeliveryDialog({
       onStarted(run)
     } catch (error) {
       const message = error instanceof Error ? error.message : '本机交付执行失败'
-      setDeliveryJob((current) =>
-        current?.status === 'failed'
-          ? current
-          : markLocalDeliveryStartFailed(current ?? pending, message),
-      )
+      setDeliveryJob((current) => {
+        if (!current || current.status === 'failed') return current
+        return markLocalDeliveryStartFailed(current, message)
+      })
       setDeliveryError(message)
       notify('本机交付失败', message, 'warning')
       void probeLocalDeliveryAgent().then((state) =>
@@ -425,6 +548,8 @@ export function DeliveryDialog({
             <ShieldCheck size={15} />{' '}
             {localAgent.checking
               ? '正在检测当前客户端的本机交付代理'
+              : requirementContextIssue
+                ? requirementContextIssue
               : !localAgent.platformReady
                 ? localAgent.error || '平台服务端未升级，当前无法下发本机交付'
               : !localAgent.online
@@ -445,6 +570,8 @@ export function DeliveryDialog({
               disabled={
                 !workItemId ||
                 !repoId ||
+                Boolean(requirementContextIssue) ||
+                compressingScreenshots ||
                 launching ||
                 localAgent.checking ||
                 !localAgent.online ||
@@ -513,6 +640,144 @@ export function DeliveryDialog({
               onChange={handleItemChange}
             />
           </div>
+
+          {selectedItem?.type === 'requirement' && (
+            <section
+              className={`requirement-context ${requirementContextIssue ? 'incomplete' : 'ready'}`}
+            >
+              <div className="requirement-context-head">
+                <div>
+                  <span className="eyebrow">
+                    <FileText size={13} /> REQUIREMENT INPUT
+                  </span>
+                  <strong>需求交付上下文</strong>
+                  <small>需求拆解、设计稿、设计截图三选一，Codex 会在编码前先读取</small>
+                </div>
+                <span className={`requirement-context-state ${requirementContextIssue ? 'missing' : 'ready'}`}>
+                  {requirementContextIssue ? '待补充' : '已就绪'}
+                </span>
+              </div>
+
+              <div className="field">
+                <span className="field-label">
+                  需求拆解
+                  <small>
+                    {requirementBreakdown.trim().length} / 至少 {REQUIREMENT_BREAKDOWN_MIN_LENGTH} 字
+                  </small>
+                </span>
+                <textarea
+                  value={requirementBreakdown}
+                  onChange={(event) => {
+                    requirementContextDirtyRef.current = true
+                    setRequirementBreakdown(event.target.value)
+                  }}
+                  placeholder="填写目标、范围、验收标准、影响模块；例如：新增第三方设备私有指标采集，覆盖列表展示与详情抽屉，兼容旧设备数据，并提供单元测试。"
+                  rows={4}
+                />
+              </div>
+
+              <div className="field">
+                <span className="field-label">
+                  设计稿链接或本地路径
+                  <small>支持飞书/Figma 链接或客户端绝对路径</small>
+                </span>
+                <div className="input-with-icon">
+                  <Link2 size={15} />
+                  <input
+                    value={designReference}
+                    onChange={(event) => {
+                      requirementContextDirtyRef.current = true
+                      setDesignReference(event.target.value)
+                    }}
+                    placeholder="https://… 或 /Users/…/design.md"
+                  />
+                </div>
+              </div>
+
+              <div className="field screenshot-field">
+                <span className="field-label">
+                  设计截图
+                  <small>
+                    {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 张 · 单张自动压缩到 500KB 内
+                  </small>
+                </span>
+                <div
+                  className={`screenshot-uploader ${compressingScreenshots ? 'busy' : ''}`}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    void addScreenshotFiles(
+                      Array.from(event.dataTransfer.files).filter((file) =>
+                        file.type.startsWith('image/'),
+                      ),
+                    )
+                  }}
+                  onPaste={(event) => {
+                    const files = Array.from(event.clipboardData.files).filter((file) =>
+                      file.type.startsWith('image/'),
+                    )
+                    if (files.length === 0) return
+                    event.preventDefault()
+                    void addScreenshotFiles(files)
+                  }}
+                >
+                  <input
+                    ref={screenshotInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    multiple
+                    hidden
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? [])
+                      event.target.value = ''
+                      void addScreenshotFiles(files)
+                    }}
+                  />
+                  {screenshots.map((screenshot, index) => (
+                    <div className="screenshot-thumb" key={`${screenshot.name}-${index}`}>
+                      <img src={screenshot.dataUrl} alt={screenshot.name} />
+                      <button
+                        type="button"
+                        aria-label={`删除截图 ${screenshot.name}`}
+                        onClick={() => {
+                          requirementContextDirtyRef.current = true
+                          setScreenshots((current) => current.filter((_, itemIndex) => itemIndex !== index))
+                        }}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                      <span title={screenshot.name}>{screenshot.name}</span>
+                    </div>
+                  ))}
+                  {screenshots.length < MAX_DELIVERY_SCREENSHOTS && (
+                    <button
+                      type="button"
+                      className="screenshot-add"
+                      disabled={compressingScreenshots}
+                      onClick={() => screenshotInputRef.current?.click()}
+                    >
+                      <ImagePlus size={20} />
+                      <span>{compressingScreenshots ? '压缩中…' : '添加截图'}</span>
+                      <small>点击 / 拖拽 / 粘贴</small>
+                    </button>
+                  )}
+                </div>
+                {savedScreenshotCount > 0 && screenshots.length === 0 && (
+                  <small className="screenshot-saved-note">
+                    已保存 {savedScreenshotCount} 张截图，正在读取预览或将在执行时继续使用
+                  </small>
+                )}
+                {screenshotError && <div className="form-error">{screenshotError}</div>}
+              </div>
+
+              {requirementContextIssue && (
+                <div className="form-error requirement-context-error">
+                  <AlertTriangle size={14} />
+                  <span>{requirementContextIssue}</span>
+                </div>
+              )}
+            </section>
+          )}
           <div className="field-row">
             <Field label="目标代码仓库" required>
               <select value={repoId} onChange={(event) => handleRepoChange(event.target.value)}>

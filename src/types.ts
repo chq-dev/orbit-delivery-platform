@@ -35,6 +35,13 @@ export type WorkItemType = 'requirement' | 'defect'
 export type WorkItemStatus = '待处理' | '进行中' | '已交付' | '已关闭'
 export type Priority = '紧急' | '高' | '中' | '低'
 
+export interface WorkItemScreenshot {
+  name: string
+  mimeType: string
+  sizeBytes: number
+  dataUrl: string
+}
+
 export interface WorkItem {
   id: string
   type: WorkItemType
@@ -52,6 +59,8 @@ export interface WorkItem {
   feishuStatus?: string
   projectLine?: string
   designReference?: string
+  requirementBreakdown?: string
+  requirementScreenshotCount?: number
   frontendOnly?: boolean
 }
 
