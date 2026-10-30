@@ -21,6 +21,15 @@ import {
 } from '../services/feishuAgentConfig.js'
 import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
 import {
+  inspectFeishuMcpAuth,
+  resolveFeishuMcpRuntime,
+  type FeishuMcpPublicStatus,
+} from '../services/feishuMcpService.js'
+import {
+  resolveMeegleMcpRuntime,
+  type MeegleMcpPublicStatus,
+} from '../services/meegleMcpService.js'
+import {
   buildLocalDeliveryCommand,
   createLocalDeliveryAgentSteps,
   fetchJsonWithRetry,
@@ -156,6 +165,9 @@ let deliveryProgressInFlight = false
 let deliveryProgressQueued = false
 let cachedAuth: Awaited<ReturnType<typeof authStatus>> | null = null
 let cachedAuthAt = 0
+let cachedMcpAuth: ReturnType<typeof inspectFeishuMcpAuth> | null = null
+let cachedMcpAuthAt = 0
+let cachedMcpAuthKey = ''
 
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
@@ -277,6 +289,28 @@ async function currentAuthStatus(
   return cachedAuth
 }
 
+async function currentFeishuMcpStatus(force = false): Promise<FeishuMcpPublicStatus> {
+  const resolution = resolveFeishuMcpRuntime()
+  if (!resolution.status.available) return resolution.status
+  const key = `${resolution.command ?? ''}\u0000${resolution.configPath ?? ''}`
+  if (!force && cachedMcpAuth && cachedMcpAuthKey === key && Date.now() - cachedMcpAuthAt < 60_000) {
+    return {
+      ...resolution.status,
+      authenticated: cachedMcpAuth.authenticated,
+      reason: cachedMcpAuth.reason,
+    }
+  }
+  const auth = inspectFeishuMcpAuth(resolution)
+  cachedMcpAuth = auth
+  cachedMcpAuthAt = Date.now()
+  cachedMcpAuthKey = key
+  return {
+    ...resolution.status,
+    authenticated: auth.authenticated,
+    reason: auth.reason,
+  }
+}
+
 async function currentHealth(): Promise<{
   ok: true
   version: number
@@ -286,6 +320,8 @@ async function currentHealth(): Promise<{
   lastRun: LastRun | null
   pendingLogin: LoginChallenge | null
   delivery: LocalDeliveryJob | null
+  feishuMcp: FeishuMcpPublicStatus
+  meegleMcp: MeegleMcpPublicStatus
   codex: {
     available: boolean
     path?: string
@@ -293,16 +329,20 @@ async function currentHealth(): Promise<{
 }> {
   const config = readConfig()
   const auth = await currentAuthStatus()
+  const feishuMcp = await currentFeishuMcpStatus()
+  const meegleMcp = resolveMeegleMcpRuntime()
   const codexBinary = resolveCodexBinary()
   return {
     ok: true,
-    version: 6,
+    version: 8,
     config: publicFeishuAgentConfig(config),
     meegle: auth,
     running,
     lastRun,
     pendingLogin,
     delivery: deliveryJob ? deliveryJobSummary(deliveryJob) : null,
+    feishuMcp,
+    meegleMcp: meegleMcp.status,
     codex: {
       available: Boolean(codexBinary),
       path: codexBinary,

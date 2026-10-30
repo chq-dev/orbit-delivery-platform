@@ -111,6 +111,65 @@ FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
 先到先得（TOFU）模型，因为当前平台没有用户登录体系；生产环境建议由管理员在服务器设置
 `FEISHU_INGEST_TOKEN`，或仅在受信网络内开放首次绑定。
 
+### 飞书 MCP（Codex 文档/Wiki 接入）
+
+本机代理会在启动 `codex exec` 时自动把飞书官方 OpenAPI MCP
+`@larksuiteoapi/lark-mcp` 注入为 Codex 的 `feishu` MCP server。这样交付过程中的 Codex
+可以直接读取需求里关联的飞书文档、Wiki、消息和日历等信息，而不需要把 App Secret 暴露给浏览器。
+
+先准备官方 MCP 配置（配置文件包含 App Secret，不要提交到仓库）：
+
+```json
+{
+  "appId": "cli_xxx",
+  "appSecret": "replace-with-app-secret",
+  "domain": "https://open.feishu.cn",
+  "tools": ["preset.default"],
+  "toolNameCase": "snake",
+  "language": "zh",
+  "tokenMode": "auto",
+  "mode": "stdio"
+}
+```
+
+默认读取 `~/.lark-mcp/config.json`，也可通过 `FEISHU_MCP_CONFIG_PATH` 指向其他位置。
+首次使用需要完成 OAuth 登录（飞书应用需配置回调地址 `http://localhost:3000/callback`）：
+
+```bash
+npm install
+npm run mcp:feishu:status
+npm run mcp:feishu:login
+npm run mcp:feishu:status
+```
+
+`npm run mcp:feishu:status` 只输出脱敏状态。代理和本地交付脚本会自动使用配置，不需要手工修改
+`~/.codex/config.toml`；如果配置了 `FEISHU_MCP_REQUIRED=true`，MCP 不可用时会拒绝启动 Codex，
+避免在缺少文档上下文的情况下静默继续。`FEISHU_MCP_ENABLED=false` 可临时关闭注入。
+
+飞书 MCP 负责飞书 OpenAPI 能力，**不替代** Meegle 工作项同步：需求和缺陷仍由 Meegle CLI
+或平台绑定同步，MCP 返回的文档和截图只是实现输入，不能作为代码、测试或验收成功的证据。
+
+### Meegle MCP（Codex 实时需求/缺陷查询）
+
+飞书项目（Meegle）的工作项不属于飞书官方 `lark-mcp` 的 OpenAPI 工具集。本仓库额外提供
+一个只读 Meegle MCP，封装本机已登录的 `meegle` CLI，供 Codex 在平台上下文不完整时实时查询
+需求和缺陷：
+
+```bash
+npm run mcp:meegle:status
+npm run mcp:meegle
+```
+
+`mcp:meegle:status` 会检查 `tsx`、MCP 脚本、`meegle` CLI 和本机登录态，只输出脱敏结果。
+代理与本地交付脚本可用时自动把该服务注入为 Codex 的 `meegle` MCP server，工具包括
+`meegle_list_work_items`、`meegle_get_work_item`、`meegle_search_projects` 和
+`meegle_auth_status`；支持标题模糊搜索、状态、负责人和更新时间过滤，不暴露写操作或 Token。
+
+该 MCP 解决的是“按需读取实时飞书项目数据”，不会替代平台数据库中的需求/缺陷列表。列表同步仍由
+Meegle CLI 同步器或本机代理心跳完成；MCP 返回内容也不能作为代码、测试或验收成功的证据。
+可通过 `MEEGLE_MCP_ENABLED=false` 关闭注入，或设置 `MEEGLE_MCP_REQUIRED=true` 在不可用时拒绝
+启动 Codex；`MEEGLE_MCP_TSX_BIN`、`MEEGLE_MCP_SCRIPT` 仅在非默认安装路径时需要。
+
 ### 命令行/常驻同步（备选）
 
 如果平台服务器不能直接访问 `project.feishu.cn`，不要在前端直连飞书，也不要把抓包 Token 放到浏览器。请在**能访问飞书的机器**上运行外部同步器：
@@ -217,6 +276,8 @@ npm run typecheck:server
 - **代码仓库**：录入 Git 地址、默认分支、本地代码路径、语言与认证账号，支持分支和本地路径修改、仓库健康状态和最近交付查看。
 - **平台账号**：统一管理 Git、飞书、编译系统、设备端账号；支持手动绑定与 CSV/TXT 批量导入。
 - **飞书项目接入**：支持后端直连、官方 Meegle CLI 跨服务器外部同步和页面绑定；同步结果直接更新需求与缺陷列表，支持定时刷新、事件回调和缺陷关闭状态回写。
+- **飞书 MCP**：本机代理在 Codex 启动时注入官方 `lark-mcp`，可按需读取飞书文档/Wiki/IM；配置、登录态和无 Secret 泄漏的状态展示均可在页面看到。
+- **Meegle MCP**：本机代理注入只读 Meegle MCP，Codex 可按标题、状态、负责人和日期实时查询项目需求/缺陷，不向浏览器暴露登录 Token。
 - **需求与缺陷**：创建工作项、关联仓库和分支、查看详情；缺陷测试通过后自动关闭。
 - **一键交付**：自动生成开发设计报告与集成报告，在配置的本地路径创建真实 Git 提交，测试验收通过后推送目标分支，并完成编译、设备升级和报告归档。
 - **实时流水线**：九阶段状态机、执行进度、阶段日志、运行信息、设计/集成/测试报告查看入口和测试结果摘要。
@@ -356,7 +417,14 @@ Codex 退出后由 runner 检查非 Markdown 代码变更、设计报告和集�
 - 需求到交付：`grill-with-req`、`spec-design`、`task-breakdown`、`task-implement`、`verification-evidence`、`code-review`
 - 架构知识：`design-to-l1`、`design-to-l2`
 
-工作项详情生成的指令会同时引用 `$rjcloud-local-delivery` 的领域安全规则和 `$sdd` 的阶段技能链。新安装的 Skill 从下一轮 Codex 对话开始进入可发现列表。
+SME 官方说明以《天枢 Forge｜工程 Skill 使用手册》（2026-10-29 基线）为准：
+`https://ruijie.feishu.cn/wiki/Z6yYwTkJfiteT0k5vKHcbtPFnad`。正式阶段链为
+`clarify-requirements → tech-design + case-design → implementation + Web/Lua 专项 → integration-test → e2e-test → aicr-workflow → aicr-commit/aicr-pr`；
+SME 本地入口包含 `i18n-playwright-mcp-screenshot`、`performance-optimization`、
+`rule-management-lua`、`sensitive-keyword-management`、`switch-lua-debug-deploy`。
+工作项详情生成的指令会同时包含官方阶段链与当前本地已安装链；未安装的 Skill 只能按阶段契约手工执行，不能声称为已调用。`$sdd` 仅作为本地可选编排器，不再作为 SME 权威流程。
+
+新安装的 Skill 从下一轮 Codex 对话开始进入可发现列表。
 
 技能源保留在 `~/.coding-skills/source`，后续更新命令：
 

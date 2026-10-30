@@ -27,7 +27,7 @@ import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
-import { codingSkills } from '../codingSkills'
+import { codingSkills, smeDeliveryStageChain } from '../codingSkills'
 import { buildFeishuSyncInstruction } from '../feishuSyncInstruction'
 import {
   DEFAULT_PAGE_SIZE,
@@ -850,7 +850,7 @@ npm run sync:feishu:snapshot:watch`}
             </Field>
             <div className="skill-instruction-panel">
               <div className="skill-instruction-head">
-                <span><Sparkles size={13} /> 本地 Skill 指令 · {codingSkills.length} 个组织级 Skill</span>
+                <span><Sparkles size={13} /> 本地 Skill 指令 · {codingSkills.length} 个已安装 Skill</span>
                 <button
                   className="btn btn-secondary btn-xs"
                   onClick={copySkillInstruction}
@@ -866,14 +866,17 @@ npm run sync:feishu:snapshot:watch`}
                 )}
               </code>
               <div className="skill-chain">
-                <span className="skill-chain-label">SDD 链</span>
+                <span className="skill-chain-label">本地已安装链</span>
                 {codingSkills.map((skill) => (
                   <span className="skill-chip" key={skill.id} title={skill.stage}>
                     ${skill.id}
                   </span>
                 ))}
               </div>
-              <p>已接入 coding-skills 的 SDD 技能链；粘贴到 Codex 即可完成澄清、设计、编码、验证与评审，不打开外部页面。</p>
+              <p>
+                SME 正式阶段链：{smeDeliveryStageChain.map((entry) => entry.entry).join(' → ')}。
+                未安装的组织级 Skill 由 Codex 按阶段契约手工执行，不会声称已调用。
+              </p>
             </div>
           </div>
         )}

@@ -70,6 +70,21 @@ export interface FeishuAgentHealth {
     verificationUriComplete: string
     expiresAt: number
   } | null
+  feishuMcp?: {
+    enabled: boolean
+    configured: boolean
+    available: boolean
+    authenticated: boolean
+    command?: string
+    reason?: string
+  }
+  meegleMcp?: {
+    enabled: boolean
+    configured: boolean
+    available: boolean
+    command?: string
+    reason?: string
+  }
   codex?: {
     available: boolean
     path?: string
@@ -214,6 +229,8 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
   const meegle = isRecord(value.meegle) ? value.meegle : {}
   const pendingLogin = isRecord(value.pendingLogin) ? value.pendingLogin : null
   const codex = isRecord(value.codex) ? value.codex : {}
+  const feishuMcp = isRecord(value.feishuMcp) ? value.feishuMcp : {}
+  const meegleMcp = isRecord(value.meegleMcp) ? value.meegleMcp : {}
 
   return {
     ok: true,
@@ -243,6 +260,21 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
             expiresAt: nonNegativeInteger(pendingLogin.expiresAt),
           }
         : null,
+    feishuMcp: {
+      enabled: boolean(feishuMcp.enabled),
+      configured: boolean(feishuMcp.configured),
+      available: boolean(feishuMcp.available),
+      authenticated: boolean(feishuMcp.authenticated),
+      command: optionalText(feishuMcp.command, 1_000),
+      reason: optionalText(feishuMcp.reason),
+    },
+    meegleMcp: {
+      enabled: boolean(meegleMcp.enabled),
+      configured: boolean(meegleMcp.configured),
+      available: boolean(meegleMcp.available),
+      command: optionalText(meegleMcp.command, 1_000),
+      reason: optionalText(meegleMcp.reason),
+    },
     codex: {
       available: boolean(codex.available),
       path: optionalText(codex.path, 1_000),

@@ -10,6 +10,12 @@
     "start:server": "tsx server/index.ts",
     "deliver:local": "tsx server/cli/localDelivery.ts",
     "feishu:agent": "tsx server/cli/feishuClientAgent.ts",
+    "mcp:feishu": "tsx server/cli/feishuMcp.ts start",
+    "mcp:feishu:status": "tsx server/cli/feishuMcp.ts status",
+    "mcp:feishu:login": "tsx server/cli/feishuMcp.ts login",
+    "mcp:feishu:logout": "tsx server/cli/feishuMcp.ts logout",
+    "mcp:meegle": "tsx server/cli/meegleMcp.ts start",
+    "mcp:meegle:status": "tsx server/cli/meegleMcp.ts status",
     "sync:feishu": "tsx server/cli/feishuSync.ts",
     "sync:feishu:watch": "tsx server/cli/feishuSync.ts --watch",
     "sync:feishu:snapshot": "tsx server/cli/feishuSync.ts --snapshot-only",
@@ -22,12 +28,14 @@
     "preview:web": "vite preview"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
@@ -40,5 +48,8 @@
     "tsx": "^4.23.15",
     "typescript": "~5.7.2",
     "vite": "^6.0.5"
+  },
+  "optionalDependencies": {
+    "@larksuiteoapi/lark-mcp": "^0.5.1"
   }
 }

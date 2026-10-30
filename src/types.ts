@@ -227,6 +227,21 @@ export interface FeishuClientAgentHealth {
     verificationUriComplete: string
     expiresAt: number
   } | null
+  feishuMcp?: {
+    enabled: boolean
+    configured: boolean
+    available: boolean
+    authenticated: boolean
+    command?: string
+    reason?: string
+  }
+  meegleMcp?: {
+    enabled: boolean
+    configured: boolean
+    available: boolean
+    command?: string
+    reason?: string
+  }
   delivery?: LocalDeliveryJob | null
   codex?: {
     available: boolean

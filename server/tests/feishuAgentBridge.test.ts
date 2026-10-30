@@ -30,6 +30,21 @@ const health = {
     host: 'project.feishu.cn',
     accessToken: 'must-not-be-stored-in-public-state',
   },
+  feishuMcp: {
+    enabled: true,
+    configured: true,
+    available: true,
+    authenticated: false,
+    command: '/usr/local/bin/lark-mcp',
+    appSecret: 'must-not-be-stored-in-public-state',
+  },
+  meegleMcp: {
+    enabled: true,
+    configured: true,
+    available: true,
+    command: '/usr/local/bin/tsx',
+    accessToken: 'must-not-be-stored-in-public-state',
+  },
   running: false,
   lastRun: null,
   pendingLogin: null,
@@ -56,6 +71,11 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
     )
     assert.equal(sanitized.config.configured, true)
     assert.equal(sanitized.meegle.authenticated, true)
+    assert.equal(sanitized.feishuMcp?.configured, true)
+    assert.equal(sanitized.feishuMcp?.available, true)
+    assert.equal(sanitized.feishuMcp?.authenticated, false)
+    assert.equal(sanitized.meegleMcp?.configured, true)
+    assert.equal(sanitized.meegleMcp?.available, true)
 
     const heartbeat = recordFeishuAgentHeartbeat(db, { health })
     assert.ok(heartbeat.lastSeenAt)

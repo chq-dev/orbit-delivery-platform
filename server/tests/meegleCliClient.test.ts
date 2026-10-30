@@ -2,8 +2,12 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   assertMeegleAuthenticated,
+  buildMeegleWorkItemMql,
   fetchMeegleWorkItems,
+  getMeegleAuthStatus,
+  getMeegleWorkItem,
   MeegleCliError,
+  queryMeegleWorkItems,
   type MeegleCommandResult,
   type MeegleCommandRunner,
   type MeegleSyncConfig,
@@ -465,4 +469,102 @@ test('增量过滤字段不可用时回退全量查询', async () => {
   )
   assert.equal(output.items.length, 1)
   assert.match(output.warnings.join('\n'), /回退全量查询/)
+})
+
+test('Meegle MCP 查询构造标题、状态、负责人和日期过滤', () => {
+  const mql = buildMeegleWorkItemMql('rjcloud', 'story', 'field_c7834f', {
+    search: "家用 O'Reilly_100%",
+    status: '规划中',
+    owner: '黄冰洋',
+    since: '2026-10-01',
+  })
+  assert.match(mql, /FROM `rjcloud`\.`story`/)
+  assert.match(mql, /`archiving_date` IS NULL/)
+  assert.match(mql, /`updated_at` >= '2026-10-01'/)
+  assert.match(mql, /`name` LIKE '%家用 O\\'Reilly\\_100\\%%'/)
+  assert.match(mql, /`work_item_status` = '规划中'/)
+  assert.match(mql, /`current_status_operator` = '黄冰洋'/)
+  assert.match(mql, /LIMIT 50$/)
+})
+
+test('Meegle MCP 按需查询实时工作项并返回详情链接', async () => {
+  const calls: string[][] = []
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    calls.push(args)
+    const mql = args.includes('--mql') ? args[args.indexOf('--mql') + 1] : ''
+    if (mql.includes('`story`')) {
+      return result({
+        session_id: 'session-1',
+        list: [{ count: 1, group_infos: [{ group_id: '1' }] }],
+        data: {
+          '1': [{
+            moql_field_list: [
+              { key: 'work_item_id', value: { long_value: 7141333577 } },
+              { key: 'name', value: { string_value: '家用路由器需求' } },
+              { key: 'work_item_status', value: { key_label_value_list: [{ label: '规划中' }] } },
+              { key: 'current_status_operator', value: { user_value_list: [{ name_cn: '黄冰洋' }] } },
+              { key: 'description', value: { string_value: '实时描述' } },
+              { key: 'updated_at', value: { string_value: '2026-10-30' } },
+            ],
+          }],
+        },
+      })
+    }
+    return result({ list: [{ count: 0, data: [] }] })
+  }
+
+  const output = await queryMeegleWorkItems(
+    config,
+    { type: 'requirement', search: '家用', status: '规划中', owner: '黄冰洋', limit: 10 },
+    runner,
+  )
+  assert.equal(output.total, 1)
+  assert.equal(output.fetched, 1)
+  assert.equal(output.items.length, 1)
+  assert.deepEqual(
+    {
+      workItemId: output.items[0]?.workItemId,
+      title: output.items[0]?.title,
+      status: output.items[0]?.feishuStatus,
+      owner: output.items[0]?.owner,
+      url: output.items[0]?.url,
+    },
+    {
+      workItemId: '7141333577',
+      title: '家用路由器需求',
+      status: '规划中',
+      owner: '黄冰洋',
+      url: 'https://project.feishu.cn/rjcloud/story/detail/7141333577',
+    },
+  )
+  assert.equal(calls.some((args) => args.includes('--mql')), true)
+})
+
+test('Meegle MCP 按 ID 读取实时详情且不返回 Token', async () => {
+  const runner: MeegleCommandRunner = async (_command, args) => {
+    assert.deepEqual(args, [
+      'workitem',
+      'get',
+      '--project-key',
+      'rjcloud',
+      '--work-item-id',
+      '7141333577',
+      '--format',
+      'json',
+    ])
+    return result({
+      work_item_attribute: { work_item_id: '7141333577', work_item_name: '实时需求' },
+      work_item_fields: [{ key: 'description', value: '实时详情' }],
+    })
+  }
+  const payload = await getMeegleWorkItem(config, '7141333577', runner)
+  assert.match(JSON.stringify(payload), /实时详情/)
+  assert.equal(JSON.stringify(payload).includes('access_token'), false)
+})
+
+test('Meegle MCP 登录状态只返回脱敏结果', async () => {
+  const status = await getMeegleAuthStatus(config, async () =>
+    result({ authenticated: true, access_token: 'must-not-leak' }),
+  )
+  assert.deepEqual(status, { authenticated: true, host: 'project.feishu.cn' })
 })

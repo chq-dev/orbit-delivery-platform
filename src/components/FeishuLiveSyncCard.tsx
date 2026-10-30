@@ -46,6 +46,8 @@ export function FeishuLiveSyncCard() {
   const health = feishuAgent.health
   const agentConfigured = Boolean(health?.config.configured)
   const meegleAuthenticated = Boolean(health?.meegle.authenticated)
+  const feishuMcp = health?.feishuMcp
+  const meegleMcp = health?.meegleMcp
   const ready = feishuAgent.online && agentConfigured && meegleAuthenticated
   const command = 'npm run feishu:agent'
   const lastRun = health?.lastRun
@@ -135,6 +137,34 @@ export function FeishuLiveSyncCard() {
           </strong>
         </span>
         <span>
+          <small>飞书 MCP</small>
+          <strong className={feishuMcp?.available ? 'is-ok' : 'is-warn'} title={feishuMcp?.reason}>
+            {!feishuMcp?.enabled
+              ? '已禁用'
+              : !feishuMcp.configured
+                ? '未配置'
+                : !feishuMcp.available
+                  ? '缺少 lark-mcp'
+                  : feishuMcp.authenticated
+                    ? '已授权'
+                    : '已配置'}
+          </strong>
+        </span>
+        <span>
+          <small>Meegle MCP</small>
+          <strong className={meegleMcp?.available ? 'is-ok' : 'is-warn'} title={meegleMcp?.reason}>
+            {!meegleMcp?.enabled
+              ? '已禁用'
+              : !meegleMcp.configured
+                ? '未配置'
+                : !meegleMcp.available
+                  ? '缺少 CLI'
+                  : meegleAuthenticated
+                    ? '已就绪'
+                    : '已配置'}
+          </strong>
+        </span>
+        <span>
           <small>平台同步密钥</small>
           <strong className={feishuSyncToken.configured ? 'is-ok' : 'is-warn'}>
             {feishuSyncToken.configured
@@ -159,7 +189,7 @@ export function FeishuLiveSyncCard() {
       <div className="feishu-live-note">
         <ShieldCheck size={15} />
         <span>
-          飞书登录态只保存在本机 Meegle CLI。页面只读取平台中转的脱敏状态，不直接访问本机端口；无需手动获取或复制飞书 Cookie。
+          飞书登录态只保存在本机。Meegle MCP 提供实时需求/缺陷查询，飞书 MCP 提供文档/Wiki/IM 能力；页面只读取平台中转的脱敏状态。
         </span>
         <code>平台中转 · 90 秒心跳</code>
       </div>

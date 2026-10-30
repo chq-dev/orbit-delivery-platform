@@ -45,6 +45,33 @@ export interface MeegleFetchResult {
   complete: boolean
 }
 
+export interface MeegleWorkItemFilter {
+  search?: string
+  status?: string
+  owner?: string
+  since?: string
+}
+
+export interface MeegleWorkItemQuery extends MeegleWorkItemFilter {
+  type?: 'requirement' | 'defect' | 'all'
+  limit?: number
+}
+
+export interface MeegleQueriedWorkItem extends SyncedFeishuWorkItem {
+  projectKey: string
+  typeKey: string
+  workItemId: string
+  url: string
+}
+
+export interface MeegleWorkItemQueryResult {
+  items: MeegleQueriedWorkItem[]
+  fetched: number
+  total: number
+  complete: boolean
+  warnings: string[]
+}
+
 export class MeegleCliError extends Error {
   readonly code: string
   readonly details?: unknown
@@ -297,6 +324,47 @@ function buildMql(
   if (since) conditions.push(`\`updated_at\` >= '${since}'`)
   const where = ` WHERE ${conditions.join(' AND ')}`
   return `SELECT ${fields.join(', ')} FROM \`${projectKey}\`.\`${typeKey}\`${where} ORDER BY \`updated_at\` DESC`
+}
+
+function mqlString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
+function mqlLike(value: string): string {
+  return mqlString(value).replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
+export function buildMeegleWorkItemMql(
+  projectKey: string,
+  typeKey: string,
+  projectField: string,
+  filter: MeegleWorkItemFilter = {},
+): string {
+  const fields = [
+    '`work_item_id`',
+    '`name`',
+    '`work_item_status`',
+    '`priority`',
+    '`current_status_operator`',
+    '`description`',
+    '`updated_at`',
+  ]
+  if (projectField) fields.push(`\`${projectField}\``)
+  const conditions = ['`archiving_date` IS NULL']
+  const since = filter.since?.trim()
+  if (since) {
+    if (!DATE_PATTERN.test(since)) {
+      throw new MeegleCliError('起始日期必须使用 YYYY-MM-DD 格式', 'MEEGLE_INVALID_CONFIG')
+    }
+    conditions.push(`\`updated_at\` >= '${since}'`)
+  }
+  const search = filter.search?.trim().slice(0, 200)
+  if (search) conditions.push(`\`name\` LIKE '%${mqlLike(search)}%'`)
+  const status = filter.status?.trim().slice(0, 200)
+  if (status) conditions.push(`\`work_item_status\` = '${mqlString(status)}'`)
+  const owner = filter.owner?.trim().slice(0, 200)
+  if (owner) conditions.push(`\`current_status_operator\` = '${mqlString(owner)}'`)
+  return `SELECT ${fields.join(', ')} FROM \`${projectKey}\`.\`${typeKey}\` WHERE ${conditions.join(' AND ')} ORDER BY \`updated_at\` DESC LIMIT 50`
 }
 
 async function runMeegle(
@@ -674,6 +742,167 @@ export async function fetchMeegleWorkItems(
   }
 
   return { items, fetched, skipped: fetched - items.length, warnings, complete }
+}
+
+interface MeegleMcpQueryPage {
+  rows: Record<string, unknown>[]
+  total: number
+  complete: boolean
+  warnings: string[]
+}
+
+async function queryMcpPages(
+  config: MeegleSyncConfig,
+  typeKey: string,
+  projectField: string,
+  filter: MeegleWorkItemFilter,
+  limit: number,
+  runner: MeegleCommandRunner,
+): Promise<MeegleMcpQueryPage> {
+  const mql = buildMeegleWorkItemMql(config.projectKey, typeKey, projectField, filter)
+  const first = parseQueryPage(
+    await runMeegleJson(
+      config,
+      ['workitem', 'query', '--project-key', config.projectKey, '--mql', mql],
+      runner,
+    ),
+  )
+  const rows = new Map<string, Record<string, unknown>>()
+  for (const row of first.rows) {
+    const id = workItemId(row)
+    if (id) rows.set(id, row)
+  }
+  const warnings: string[] = []
+  const pageCount = Math.min(MAX_PAGES, Math.max(1, Math.ceil(limit / DEFAULT_PAGE_SIZE)))
+  const total = first.count ?? first.rows.length
+  let complete = true
+  if (total > first.rows.length && pageCount > 1) {
+    if (!first.sessionId) {
+      complete = false
+      warnings.push(`${typeKey} 查询结果不完整：缺少 session_id，无法继续分页`)
+    } else {
+      for (let pageNum = 2; pageNum <= pageCount && rows.size < Math.min(limit, total); pageNum += 1) {
+        const payload = await runMeegleJson(
+          config,
+          [
+            'workitem',
+            'query',
+            '--project-key',
+            config.projectKey,
+            '--session-id',
+            first.sessionId,
+            '--group-pagination-list',
+            JSON.stringify([{ group_id: first.groupId, page_num: pageNum }]),
+          ],
+          runner,
+        )
+        const page = parseQueryPage(payload)
+        for (const row of page.rows) {
+          const id = workItemId(row)
+          if (id) rows.set(id, row)
+        }
+      }
+    }
+  }
+  return { rows: [...rows.values()], total, complete, warnings }
+}
+
+export async function queryMeegleWorkItems(
+  config: MeegleSyncConfig,
+  query: MeegleWorkItemQuery = {},
+  runner: MeegleCommandRunner = defaultMeegleCommandRunner,
+): Promise<MeegleWorkItemQueryResult> {
+  validateConfig(config)
+  const limit = Math.min(100, Math.max(1, Math.trunc(query.limit ?? DEFAULT_PAGE_SIZE)))
+  const requestedType = query.type ?? 'all'
+  const types = requestedType === 'all'
+    ? (['requirement', 'defect'] as const)
+    : ([requestedType] as const)
+  const warnings: string[] = []
+  let fetched = 0
+  let total = 0
+  let complete = true
+  const items: MeegleQueriedWorkItem[] = []
+
+  for (const type of types) {
+    const typeKey = type === 'requirement' ? config.requirementTypeKey : config.defectTypeKey
+    const projectField = type === 'requirement'
+      ? config.requirementProjectField ?? DEFAULT_REQUIREMENT_PROJECT_FIELD
+      : config.defectProjectField ?? DEFAULT_DEFECT_PROJECT_FIELD
+    const page = await queryMcpPages(config, typeKey, projectField, query, limit, runner)
+    fetched += page.rows.length
+    total += page.total
+    complete = complete && page.complete
+    warnings.push(...page.warnings)
+    for (const row of page.rows) {
+      const item = mapWorkItem(
+        row,
+        type,
+        config.projectKey,
+        typeKey,
+        projectField,
+        config.defaultOwner,
+      )
+      const id = workItemId(row)
+      if (!item || !id) continue
+      items.push({
+        ...item,
+        projectKey: config.projectKey,
+        typeKey,
+        workItemId: id,
+        url: `https://project.feishu.cn/${config.projectKey}/${typeKey}/detail/${id}`,
+      })
+    }
+  }
+
+  items.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+  return { items: items.slice(0, limit), fetched, total, complete, warnings }
+}
+
+export async function getMeegleWorkItem(
+  config: MeegleSyncConfig,
+  workItemIdValue: string,
+  runner: MeegleCommandRunner = defaultMeegleCommandRunner,
+): Promise<unknown> {
+  validateConfig(config)
+  const id = workItemIdValue.trim()
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    throw new MeegleCliError('工作项 ID 格式不正确', 'MEEGLE_INVALID_CONFIG')
+  }
+  return runMeegleJson(
+    config,
+    ['workitem', 'get', '--project-key', config.projectKey, '--work-item-id', id],
+    runner,
+  )
+}
+
+export async function searchMeegleProjects(
+  config: MeegleSyncConfig,
+  projectKey?: string,
+  runner: MeegleCommandRunner = defaultMeegleCommandRunner,
+): Promise<unknown> {
+  const key = projectKey?.trim()
+  return runMeegleJson(
+    config,
+    ['project', 'search', ...(key ? ['--project-key', key] : [])],
+    runner,
+  )
+}
+
+export async function getMeegleAuthStatus(
+  config: MeegleSyncConfig,
+  runner: MeegleCommandRunner = defaultMeegleCommandRunner,
+): Promise<{ authenticated: boolean; host: string; reason?: string }> {
+  const result = await runMeegle(config, ['auth', 'status'], runner)
+  const payload = parseJsonOutput(result.stdout) ?? parseJsonOutput(result.stderr)
+  const authenticated = result.exitCode === 0 && isRecord(payload) && payload.authenticated === true
+  return {
+    authenticated,
+    host: normalizeMeegleHost(config.host),
+    ...(authenticated || !isRecord(payload) || !scalarText(payload.reason)
+      ? {}
+      : { reason: scalarText(payload.reason) }),
+  }
 }
 
 export const defaultMeegleCommandRunner: MeegleCommandRunner = (command, args, env) =>

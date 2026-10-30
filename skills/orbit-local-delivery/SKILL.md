@@ -65,8 +65,29 @@ local defect as closed and reuses the platform's Feishu close outbox.
 
 ## Required behavior
 
-- Use `$rjcloud-local-delivery` for the RJ Cloud domain workflow and `$sdd` for the
-  design, implementation, verification and review chain.
+- Use `$rjcloud-local-delivery` for RJ Cloud domain and local safety. Follow the
+  official SME stage chain from the 天枢 Forge manual
+  (https://ruijie.feishu.cn/wiki/Z6yYwTkJfiteT0k5vKHcbtPFnad, baseline 2026-10-29):
+  `clarify-requirements → tech-design + case-design → implementation + Web/Lua
+  specialties → integration-test → e2e-test → aicr-workflow → aicr-commit/aicr-pr`.
+  `$sdd` is only an optional local orchestrator when installed; the stage chain above
+  is authoritative.
+- Select SME Web specialties from `developer`, `frontend-*`, module federation,
+  `echarts`, `menu-module-registration`, `platform-ifdef`, `i18n-usage`,
+  `theme-management` and `timezone-format`. Use `lua-module-dev` for LuCI four-layer
+  work. SME local entries are `i18n-playwright-mcp-screenshot`,
+  `performance-optimization`, `rule-management-lua`,
+  `sensitive-keyword-management` and `switch-lua-debug-deploy`.
+- If a named organization skill is unavailable in this Codex session, follow its
+  stage contract manually and do not claim the skill ran. Design references and
+  screenshots are inputs, never acceptance evidence.
+- When the Codex session exposes the `feishu` MCP server, use it to read linked
+  Feishu documents, Wiki pages, screenshots or messages needed by the work item.
+  Meegle work items remain platform-provided and authoritative. MCP output is
+  supporting input, not evidence that code, tests or delivery succeeded.
+- When the `meegle` MCP server is available, use it for live requirement or defect
+  detail lookup when the platform context is incomplete. Do not treat MCP reads as
+  acceptance evidence, and do not use write operations without explicit approval.
 - Read the nearest `AGENTS.md` before editing `web/` or `lua/`.
 - Produce real design, integration and test reports. Never fabricate results.
 - Codex must not create, stage, amend, or push Git commits; the runner owns commit

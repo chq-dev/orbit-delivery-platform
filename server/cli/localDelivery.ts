@@ -12,6 +12,16 @@ import { isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
+import {
+  buildFeishuMcpCodexArgs,
+  feishuMcpRequired,
+  resolveFeishuMcpRuntime,
+} from '../services/feishuMcpService.js'
+import {
+  buildMeegleMcpCodexArgs,
+  meegleMcpRequired,
+  resolveMeegleMcpRuntime,
+} from '../services/meegleMcpService.js'
 import { buildLocalSkillInstruction } from '../../src/skillInstruction'
 import { requirementDeliveryContextIssue } from '../../src/deliveryContext'
 import {
@@ -459,6 +469,8 @@ function buildPrompt(
     'Do not create, amend, or stage any Git commit. The local delivery runner inspects the worktree, commits validated changes when enabled, and performs the optional push after Codex exits.',
     `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
+    'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages when the task needs them.',
+    'If the Codex session exposes a Meegle MCP server named "meegle", use it to query live requirement or defect details. The platform-provided work item remains authoritative for scope. MCP output is supporting input, not acceptance evidence; run the required checks before claiming success.',
   ].join('\n')
 }
 
@@ -529,6 +541,8 @@ async function main(): Promise<void> {
     screenshotPaths,
   )
   writeFileSync(promptPath, `${prompt}\n`, 'utf8')
+  const feishuMcp = resolveFeishuMcpRuntime()
+  const meegleMcp = resolveMeegleMcpRuntime()
 
   console.log(JSON.stringify({
     workItem: item.id,
@@ -545,6 +559,8 @@ async function main(): Promise<void> {
     push: args.push,
     autoCommit: !args.noCommit,
     close: args.close,
+    feishuMcp: feishuMcp.status,
+    meegleMcp: meegleMcp.status,
   }, null, 2))
 
   if (!args.run) {
@@ -557,12 +573,29 @@ async function main(): Promise<void> {
 
   const codexCommand = resolveCodexBinary()
   if (!codexCommand) throw new Error(codexBinaryError())
+  if (feishuMcpRequired() && !feishuMcp.status.available) {
+    throw new Error(`FEISHU_MCP_REQUIRED=true，但飞书 MCP 不可用：${feishuMcp.status.reason ?? '未知原因'}`)
+  }
+  if (feishuMcp.status.configured && !feishuMcp.status.available) {
+    console.warn(`提示：飞书 MCP 已配置但不可用：${feishuMcp.status.reason ?? '未知原因'}`)
+  }
+  if (meegleMcpRequired() && !meegleMcp.status.available) {
+    throw new Error(`MEEGLE_MCP_REQUIRED=true，但 Meegle MCP 不可用：${meegleMcp.status.reason ?? '未知原因'}`)
+  }
+  if (meegleMcp.status.configured && !meegleMcp.status.available) {
+    console.warn(`提示：Meegle MCP 已配置但不可用：${meegleMcp.status.reason ?? '未知原因'}`)
+  }
+  const mcpArgs = [
+    ...buildFeishuMcpCodexArgs(feishuMcp),
+    ...buildMeegleMcpCodexArgs(meegleMcp),
+  ]
   const lastMessagePath = join(artifactDir, 'codex-last-message.md')
   const imageArgs = screenshotPaths.flatMap((path) => ['--image', path])
   const result = spawnSync(
     codexCommand,
     [
       'exec',
+      ...mcpArgs,
       '-C',
       checkout.checkout,
       '--skip-git-repo-check',

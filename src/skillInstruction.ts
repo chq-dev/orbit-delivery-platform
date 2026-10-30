@@ -1,4 +1,10 @@
-import { codingSkills, codingSkillsSource } from './codingSkills'
+import {
+  codingSkills,
+  codingSkillsSource,
+  organizationSkillManual,
+  smeDeliveryStageChain,
+  smeSkillSpecialties,
+} from './codingSkills'
 import type { Repository, WorkItem } from './types'
 
 export interface LocalSkillDeliveryContext {
@@ -45,9 +51,19 @@ export function buildLocalSkillInstruction(
       ? 'The design screenshots are attached to this Codex run. Inspect every screenshot before planning or editing, and trace the implemented UI/behavior back to the visible requirements.'
       : '',
     'Domain: wireless router, AC/AP and switch device management (WLAN, VLAN/SVI, DHCP, PoE, firmware upgrade).',
+    `SME skill manual: ${organizationSkillManual.name} (${organizationSkillManual.url}); baseline ${organizationSkillManual.baseline}.`,
+    `Authoritative SME stage chain: ${smeDeliveryStageChain.map((entry) => `${entry.stage}=${entry.entry}`).join(' → ')}.`,
+    `Stage handoffs: ${smeDeliveryStageChain.map((entry) => `${entry.stage}=${entry.artifact}`).join('; ')}.`,
+    'Use the stage entry that matches this work item. Do not skip the requirement card, design/case, implementation self-check, integration evidence, independent E2E evidence, or AICR review.',
+    'If a named organization skill is unavailable in the current Codex session, follow that stage contract manually and never claim the skill ran.',
+    `SME Web specialties (select only what the task needs): ${smeSkillSpecialties.web.join(', ')}.`,
+    `SME Lua specialty: ${smeSkillSpecialties.lua.join(', ')}. SME local entries: ${smeSkillSpecialties.local.join(', ')}.`,
+    'Design references and screenshots are implementation inputs, never acceptance evidence. Acceptance requires executed tests or other observed evidence.',
+    'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages needed for the requirement. Meegle work items remain platform-provided and authoritative; MCP output is supporting input, not acceptance evidence.',
+    'If the Codex session exposes a Meegle MCP server named "meegle", use it for live requirement or defect detail lookup when the platform context is incomplete. The platform-provided work item remains authoritative for delivery scope; Meegle MCP output is not acceptance evidence.',
     `Organization skills: ${codingSkillsSource.name} @ ${codingSkillsSource.ref} (${codingSkillsSource.url}).`,
-    'Use $rjcloud-local-delivery for RJ Cloud domain rules and local safety. Use $sdd to orchestrate the delivery workflow.',
-    `Follow the installed skill chain: ${codingSkills
+    'Use $rjcloud-local-delivery for RJ Cloud domain rules and local safety. $sdd is only an optional local orchestrator; the SME stage chain above is authoritative.',
+    `Currently installed local skill chain: ${codingSkills
       .filter((skill) => !['sdd', 'design-to-l1', 'design-to-l2'].includes(skill.id))
       .map((skill) => `$${skill.id}`)
       .join(' → ')}.`,
