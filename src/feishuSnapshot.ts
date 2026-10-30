@@ -14,7 +14,7 @@ export {
 } from './feishuSnapshotCore'
 
 const CACHE_KEY = 'orbit.feishuSnapshot.v2'
-const DEFAULT_SNAPSHOT_URL = '/feishu-work-items.json'
+const DEFAULT_SNAPSHOT_URL = '/api/feishu/snapshot'
 const DEFAULT_REFRESH_MS = 60_000
 const MIN_REFRESH_MS = 15_000
 
@@ -39,6 +39,7 @@ export async function fetchFeishuSnapshot(url: string): Promise<ParsedFeishuSnap
   const separator = url.includes('?') ? '&' : '?'
   const response = await fetch(`${url}${separator}_t=${Date.now()}`, {
     cache: 'no-store',
+    credentials: 'same-origin',
     headers: { accept: 'application/json' },
     signal: AbortSignal.timeout(15_000),
   })

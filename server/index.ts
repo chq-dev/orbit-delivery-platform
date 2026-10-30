@@ -1,4 +1,7 @@
 import { existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { createServer as createHttpServer, type Server } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { resolve } from 'node:path'
 import { createApp } from './app.js'
 import { config } from './config.js'
@@ -32,12 +35,40 @@ if (config.feishuAutoSync) {
   }
 }
 
-const server = app.listen(config.port, () => {
+const server: Server = config.httpsEnabled
+  ? createHttpsServer(
+      {
+        key: readFileSync(config.httpsKeyPath),
+        cert: readFileSync(config.httpsCertPath),
+        ...(config.httpsCaPath ? { ca: readFileSync(config.httpsCaPath) } : {}),
+      },
+      app,
+    )
+  : createHttpServer(app)
+
+let redirectServer: Server | undefined
+if (config.httpsEnabled && config.httpRedirectPort > 0) {
+  redirectServer = createHttpServer((request, response) => {
+    const host = request.headers.host?.replace(/:\d+$/, '') || 'localhost'
+    const port = config.port === 443 ? '' : `:${config.port}`
+    response.writeHead(308, { location: `https://${host}${port}${request.url ?? '/'}` })
+    response.end()
+  })
+  redirectServer.listen(config.httpRedirectPort, () => {
+    console.log(`HTTP 跳转已启动：http://localhost:${config.httpRedirectPort}`)
+  })
+}
+
+server.listen(config.port, () => {
   const webHint = existsSync(resolve(process.cwd(), 'dist', 'index.html'))
     ? '，同时托管 dist 静态页面'
     : ''
-  console.log(`Orbit API 已启动：http://localhost:${config.port}${webHint}`)
+  const protocol = config.httpsEnabled ? 'https' : 'http'
+  console.log(`Orbit API 已启动：${protocol}://localhost:${config.port}${webHint}`)
   console.log(`数据库：${config.dbPath}`)
+  if (!config.httpsEnabled) {
+    console.warn('HTTPS 未启用；生产环境请配置证书或由受信反向代理终止 TLS')
+  }
 })
 
 const pipelineTimer = setInterval(() => {
@@ -61,6 +92,7 @@ const feishuSyncTimer = setInterval(() => {
 function shutdown() {
   clearInterval(pipelineTimer)
   clearInterval(feishuSyncTimer)
+  redirectServer?.close()
   server.close(() => {
     db.close()
     process.exit(0)

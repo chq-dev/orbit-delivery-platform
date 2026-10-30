@@ -190,6 +190,14 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
     })
     const { port } = server.address() as AddressInfo
     const base = `http://127.0.0.1:${port}`
+    const registered = await fetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'delivery.context', password: 'Delivery123' }),
+    })
+    assert.equal(registered.status, 200)
+    const cookie = registered.headers.get('set-cookie')?.split(';')[0] ?? ''
+    assert.ok(cookie)
     const payload = {
       workItemId: requirement.id,
       repoId: repository.id,
@@ -200,7 +208,7 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
 
     const rejected = await fetch(`${base}/api/integrations/feishu/agent/commands`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie },
       body: JSON.stringify({ type: 'delivery_start', payload }),
     })
     assert.equal(rejected.status, 422)
@@ -210,7 +218,7 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
       `${base}/api/work-items/${encodeURIComponent(requirement.id)}/delivery-context`,
       {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', cookie },
         body: JSON.stringify({
           requirementBreakdown: '目标：完成需求；范围：前端与后端；验收：单测和构建通过。',
         }),
@@ -220,7 +228,7 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
 
     const accepted = await fetch(`${base}/api/integrations/feishu/agent/commands`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie },
       body: JSON.stringify({ type: 'delivery_start', payload }),
     })
     assert.equal(accepted.status, 202)

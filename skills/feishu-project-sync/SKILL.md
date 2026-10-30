@@ -57,7 +57,7 @@ Run from the Orbit repository root. Required remote-platform values:
 export FEISHU_PROJECT_KEY=rjcloud
 export FEISHU_REQUIREMENT_TYPE_KEY=story
 export FEISHU_DEFECT_TYPE_KEY=issue
-export PLATFORM_BASE_URL=http://8.145.45.84:8787
+export PLATFORM_BASE_URL=https://8.145.45.84:8787
 export PLATFORM_SYNC_TOKEN='<same value as server FEISHU_INGEST_TOKEN>'
 ```
 
@@ -102,7 +102,7 @@ The same loopback-free rule applies to Feishu synchronization and `客户端本�
 delivery. The browser enqueues a `delivery_start` command on the same-origin
 platform API; the agent claims it by heartbeat, runs the configured client
 checkout, and reports progress for the seven delivery steps. This avoids Chrome
-Private Network Access blocking HTTP pages from calling `http://127.0.0.1`; see
+Private Network Access restrictions on pages calling a loopback address; see
 `$orbit-local-delivery`.
 
 The two credentials have different sources:

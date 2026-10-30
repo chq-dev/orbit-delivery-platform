@@ -20,8 +20,8 @@ In the delivery dialog choose `客户端本地` and click `一键本机执行`. 
 `delivery_start` command to the same-origin platform API. The local agent claims
 that command on its next heartbeat, fetches `/api/bootstrap`, resolves `localPath`
 and `branch` from the repository configuration, and executes the same runner
-below. The browser never calls `http://127.0.0.1`, so HTTP deployments are not
-blocked by Chrome Private Network Access.
+below. The browser never calls the local agent loopback address directly, so
+Chrome Private Network Access restrictions do not apply.
 
 The delivery command only contains the work-item ID, repository ID and
 commit/push/close booleans. Requirement context (breakdown, design reference and
@@ -48,7 +48,7 @@ From the Orbit project root:
 
 ```bash
 npm run deliver:local -- \
-  --api http://8.145.45.84:8787 \
+  --api https://8.145.45.84:8787 \
   --work-item REQ-1137 \
   --repo repo-1 \
   --path /Users/chenhuaqu/sme/sme-main \

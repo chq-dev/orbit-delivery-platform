@@ -92,7 +92,7 @@ function syncConfig(state: SyncState): MeegleSyncConfig {
 }
 
 function platformBaseUrl(): string {
-  return textEnv('PLATFORM_BASE_URL', 'http://127.0.0.1:8787').replace(/\/$/, '')
+  return textEnv('PLATFORM_BASE_URL', 'https://127.0.0.1:8787').replace(/\/$/, '')
 }
 
 function snapshotFilePath(): string {

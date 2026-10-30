@@ -96,6 +96,12 @@ export interface ImportResult<T> {
   skipped: number
 }
 
+export interface AuthSessionData {
+  authenticated: boolean
+  user?: import('./types').AuthUser
+  expiresAt?: string
+}
+
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -111,6 +117,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: 'same-origin',
     headers: {
       ...(init?.body ? { 'content-type': 'application/json' } : {}),
       ...init?.headers,
@@ -118,6 +125,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/auth/')) {
+      window.dispatchEvent(new Event('orbit:unauthorized'))
+    }
     const payload = (await response.json().catch(() => null)) as
       | { error?: { code?: string; message?: string } }
       | null
@@ -132,6 +142,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getSession: () => request<AuthSessionData>('/auth/session'),
+  login: (input: { username: string; password: string }) =>
+    request<AuthSessionData>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  register: (input: { username: string; password: string }) =>
+    request<AuthSessionData>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  logout: () => request<{ ok: true }>('/auth/logout', { method: 'POST' }),
   bootstrap: () =>
     request<BootstrapData>('/bootstrap?includeWorkItems=0&includeFeishuInbox=0'),
   listWorkItems: () => request<WorkItem[]>('/work-items'),

@@ -1,10 +1,30 @@
-export const SCHEMA_VERSION = 13
+export const SCHEMA_VERSION = 14
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
   name TEXT PRIMARY KEY,
   value INTEGER NOT NULL CHECK (value >= 0)
 );
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  username_normalized TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,

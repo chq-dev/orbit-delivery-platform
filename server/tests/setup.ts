@@ -1,0 +1,5 @@
+process.env.NODE_ENV = 'test'
+process.env.HTTPS_ENABLED = 'false'
+process.env.REQUIRE_HTTPS = 'false'
+process.env.TRUST_PROXY = 'false'
+process.env.AUTH_COOKIE_SECURE = 'false'

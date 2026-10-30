@@ -702,7 +702,7 @@ npm run sync:feishu:watch`}
 meegle config set host project.feishu.cn
 meegle auth login --device-code
 
-export PLATFORM_BASE_URL=http://8.145.45.84:8787
+export PLATFORM_BASE_URL=https://8.145.45.84:8787
 export PLATFORM_SYNC_TOKEN=<页面生成后仅展示一次，或服务器 FEISHU_INGEST_TOKEN>
 export FEISHU_PROJECT_KEY=rjcloud
 
@@ -729,11 +729,14 @@ FEISHU_DEFECT_TYPE_KEY=issue`}
               </div>
             </div>
           </Field>
-          <Field label="方案 E：纯前端快照（仅展示，不会触发飞书同步）">
+          <Field label="方案 E：导出快照文件（不会直接刷新页面）">
             <div className="credential-note">
               <CloudDownload size={16} />
               <div>
-                <p>在已授权的同步机生成同源 JSON，前端每 60 秒直接读取并刷新列表：</p>
+                <p>
+                  在已授权的同步机生成 JSON 备份；页面只读取登录保护的平台 API，
+                  需先通过方案 A/C 将数据写入平台数据库后才会显示：
+                </p>
                 <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
                   {`meegle auth login --device-code
 export FEISHU_SNAPSHOT_PATH=./data/feishu-work-items.json

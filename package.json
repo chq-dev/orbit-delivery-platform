@@ -21,8 +21,9 @@
     "sync:feishu:snapshot": "tsx server/cli/feishuSync.ts --snapshot-only",
     "sync:feishu:snapshot:watch": "tsx server/cli/feishuSync.ts --snapshot-only --watch",
     "snapshot:from-db": "tsx server/cli/exportFeishuSnapshot.ts",
+    "tls:generate": "bash scripts/generate-dev-cert.sh",
     "typecheck:server": "tsc -p tsconfig.server.json",
-    "test:server": "node --import tsx --test server/tests/*.test.ts",
+    "test:server": "node --import tsx --import ./server/tests/setup.ts --test server/tests/*.test.ts",
     "build": "tsc -b && npm run typecheck:server && vite build",
     "preview": "npm run build && npm run start:server",
     "preview:web": "vite preview"

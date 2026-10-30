@@ -6,12 +6,35 @@ import { config } from './config.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
 import { createApiRouter } from './routes.js'
+import { parseSessionCookie } from './security/sessionCookie.js'
 import type { CredentialVault } from './security/vault.js'
+import { userForSessionToken } from './services/authService.js'
 import { readFeishuSnapshotFromDatabase } from './services/feishuSnapshotService.js'
 
 export function createApp(db: AppDatabase, vault: CredentialVault) {
   const app = express()
   app.disable('x-powered-by')
+  app.set('trust proxy', config.trustProxy)
+  app.use((request, response, next) => {
+    response.setHeader('x-content-type-options', 'nosniff')
+    response.setHeader('x-frame-options', 'DENY')
+    response.setHeader('referrer-policy', 'same-origin')
+    if (request.secure) {
+      response.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains')
+    }
+    if (config.requireHttps && !request.secure) {
+      const host = request.headers.host
+      if (host) {
+        response.redirect(308, `https://${host}${request.originalUrl}`)
+        return
+      }
+      response.status(426).json({
+        error: { code: 'HTTPS_REQUIRED', message: '当前平台只接受 HTTPS 请求' },
+      })
+      return
+    }
+    next()
+  })
   app.use((request, response, next) => {
     if (!String(request.headers['accept-encoding'] ?? '').includes('gzip')) {
       next()
@@ -45,8 +68,15 @@ export function createApp(db: AppDatabase, vault: CredentialVault) {
   })
   app.use('/api', createApiRouter(db, vault))
 
-  app.get('/feishu-work-items.json', (_request, response, next) => {
+  app.get('/feishu-work-items.json', (request, response, next) => {
     try {
+      const token = parseSessionCookie(request.headers.cookie)
+      if (!userForSessionToken(db, token)) {
+        response.status(401).json({
+          error: { code: 'AUTH_REQUIRED', message: '请先登录后再访问飞书快照' },
+        })
+        return
+      }
       const snapshot = readFeishuSnapshotFromDatabase(db, config.feishuProjectKey)
       if (!snapshot) {
         next()

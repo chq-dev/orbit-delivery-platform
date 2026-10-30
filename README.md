@@ -14,19 +14,33 @@
 
 ```bash
 npm install
+npm run tls:generate
 npm run dev
 ```
 
 `npm run dev` 会同时启动：
 
-- 前端：`http://localhost:4173`
-- 后端 API：`http://localhost:8787`
+- 前端：`https://localhost:4173`
+- 后端 API：`https://localhost:8787`
 - SQLite 数据库：`./data/orbit.db`（首次启动自动建表；配置飞书访问凭证后启动即同步真实工作项）
+
+`npm run tls:generate` 会在 `.gitignore` 覆盖的 `data/tls/` 下生成本地自签名证书。浏览器首次访问
+需要信任该证书；正式部署请替换为受信证书，或由 Nginx/Caddy 等反向代理终止 TLS，并设置
+`TRUST_PROXY=true`。如果暂未生成证书且未显式设置 `HTTPS_ENABLED=true`，本地服务才会回退到 HTTP。
 
 可通过 `.env` 或环境变量覆盖配置，参考 `.env.example`：
 
 ```bash
 PORT=8787
+HTTPS_ENABLED=true
+HTTPS_KEY_PATH=./data/tls/orbit-key.pem
+HTTPS_CERT_PATH=./data/tls/orbit-cert.pem
+HTTP_REDIRECT_PORT=8788
+REQUIRE_HTTPS=true
+TRUST_PROXY=false
+AUTH_REGISTRATION_ENABLED=true
+AUTH_SESSION_DAYS=7
+AUTH_COOKIE_SECURE=true
 DB_PATH=./data/orbit.db
 VAULT_KEY=replace-with-at-least-32-random-characters
 PIPELINE_STEP_MS=1800
@@ -43,14 +57,41 @@ FEISHU_DEFECT_TYPE_KEY=issue
 
 `VAULT_KEY` 用于 AES-256-GCM 加密平台账号密码，生产环境必须显式配置且妥善保管；更换密钥后旧凭据将无法解密。
 
+### 登录认证与 HTTPS
+
+平台没有预置默认账号。首次打开页面时通过「注册」创建用户，注册成功后自动登录；后续使用用户名
+和密码登录。密码使用 Node.js 内置 `scrypt` 进行随机盐、单向哈希后保存，数据库中没有明文密码，
+平台也无法还原原始密码。登录会话使用随机 256-bit Token，数据库仅保存 SHA-256 摘要，浏览器通过
+`HttpOnly`、`SameSite=Lax` Cookie 携带；HTTPS 部署时自动增加 `Secure`，默认有效期 7 天。
+
+- `POST /api/auth/register`：注册并创建会话；用户名大小写不敏感。
+- `POST /api/auth/login`、`POST /api/auth/logout`：登录与退出。
+- `GET /api/auth/session`：查询当前会话。
+- 除健康检查、登录注册和飞书回调外，所有业务 API 都要求登录；飞书同步器、本机代理和本地交付
+  仅能使用平台同步 Token 访问白名单接口，普通业务接口不接受该 Token。
+- `AUTH_REGISTRATION_ENABLED=false` 可关闭新用户注册；`AUTH_SESSION_DAYS` 调整会话有效期。
+
+HTTPS 可直接由 Node.js 提供，也可由反向代理提供：
+
+```bash
+# Node.js 直接启用 TLS（端口 8787；配置 HTTP_REDIRECT_PORT=8788 后 HTTP 自动 308 跳转）
+npm run tls:generate
+HTTPS_ENABLED=true REQUIRE_HTTPS=true npm run start:server
+
+# 反向代理终止 TLS 时，后端可保持 HTTP，但必须由代理写入 X-Forwarded-Proto=https
+TRUST_PROXY=true REQUIRE_HTTPS=true npm run start:server
+```
+
+生产环境不要关闭 `REQUIRE_HTTPS`。账号密码和会话 Cookie 只应通过 HTTPS 传输。
+
 ### 页面驱动的本机飞书同步（推荐）
 
 平台服务器可以访问不到 `project.feishu.cn`，但用户当前电脑通常可以。此模式不暴露浏览器
 Cookie；飞书同步和本机交付任务都通过平台命令队列由代理主动领取。浏览器只访问页面同源 API，
-不会直接请求客户端的回环地址，因此 HTTP 部署环境也不会被 Chrome 的 Private Network Access 拦截：
+不会直接请求客户端的回环地址，因此页面不会被 Chrome 的 Private Network Access 拦截：
 
 ```text
-浏览器页面 http://8.145.45.84:8787
+浏览器页面 https://8.145.45.84:8787
   └─ 同源 API /api/integrations/feishu/agent/status
        └─ 平台代理状态与命令队列
             └─ http://127.0.0.1:18787 本机同步代理（主动心跳）
@@ -108,8 +149,8 @@ FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
 
 代理配置默认写入 `~/.config/orbit/feishu-sync.json`（权限 `0600`），不会写入浏览器
 `localStorage` 或源码。页面提供“轮换密钥”操作，旧密钥在轮换后立即失效。首次生成密钥采用
-先到先得（TOFU）模型，因为当前平台没有用户登录体系；生产环境建议由管理员在服务器设置
-`FEISHU_INGEST_TOKEN`，或仅在受信网络内开放首次绑定。
+先到先得（TOFU）模型；生产环境建议由管理员在服务器设置 `FEISHU_INGEST_TOKEN`，并确保平台已
+启用登录认证与 HTTPS。
 
 ### 飞书 MCP（Codex 文档/Wiki 接入）
 
@@ -186,7 +227,7 @@ meegle auth login --device-code
 
 # 2. 配置平台地址和同步凭证
 export FEISHU_PROJECT_KEY=rjcloud
-export PLATFORM_BASE_URL=http://8.145.45.84:8787
+export PLATFORM_BASE_URL=https://8.145.45.84:8787
 export PLATFORM_SYNC_TOKEN='与服务器 FEISHU_INGEST_TOKEN 相同的值'
 
 # 3. 拉取真实需求/缺陷并写入平台；watch 模式可常驻轮询
@@ -213,7 +254,7 @@ FEISHU_INGEST_TOKEN=<自行生成的强随机字符串>
 可用健康接口确认配置是否真正生效：
 
 ```bash
-curl -sS http://8.145.45.84:8787/api/health
+curl -sS https://8.145.45.84:8787/api/health
 ```
 
 外部同步成功后应看到 `feishu.ingestTokenConfigured=true`、`feishu.mode="cli"`、
@@ -221,21 +262,23 @@ curl -sS http://8.145.45.84:8787/api/health
 后续 watch 轮询才能做到无需人工操作；飞书不允许匿名读取，因此无法通过纯前端代码
 或写死源码彻底消除首次授权。
 
-### 只读快照降级（非实时）
+### 快照导出与只读接口（非实时）
 
 浏览器不能直接读取 `project.feishu.cn/goapi`：未登录会跳转登录页，已登录时接口也没有
 允许平台域名读取的 CORS 响应头。因此不要把 Chrome Cookie、抓包 Token 或 Plugin
-Secret 放进前端。列表采用“授权同步机生成快照、浏览器只读轮询”的方式：
+Secret 放进前端。正常列表由授权同步器写入平台数据库，浏览器通过登录保护的 API 读取；
+JSON 快照仅用于导出与离线检查：
 
 1. 能访问飞书的机器执行一次 `meegle auth login --device-code`。
 2. 按需设置 `FEISHU_SNAPSHOT_PATH`，默认写入 `data/feishu-work-items.json`。
 3. 运行 `npm run sync:feishu:snapshot:watch`，同步器会原子写入
    `data/feishu-work-items.json`，格式包含 `syncedAt` 和去重后的真实工作项。
-4. Vite 开发服务器会把该文件映射为 `/feishu-work-items.json`，生产构建会将其输出到
-   `dist/feishu-work-items.json`；前端默认每 60 秒读取并合并到“需求与缺陷”列表。
+4. 该文件仅用于导出、备份和离线检查，不会自动进入页面。页面默认每 60 秒读取
+   登录保护的 `/api/feishu/snapshot`，数据来源是平台数据库；要让页面出现新数据，仍需运行
+   完整同步（`npm run sync:feishu`）或页面驱动的本机代理。
 
-跨服务器部署时，把 `FEISHU_SNAPSHOT_PATH` 指向 Web 静态目录，或把生成的 JSON 同步到
-该目录。也可以通过 `VITE_FEISHU_SNAPSHOT_URL` 指向任意允许 CORS 的只读快照地址。
+跨服务器部署时不再需要把 JSON 同步到 Web 静态目录；请让同步器把数据写入平台数据库。
+如确有独立只读服务，也可以通过 `VITE_FEISHU_SNAPSHOT_URL` 指向允许 CORS 的受保护快照地址。
 前端仅消费 `externalId`、标题、描述、优先级、负责人、飞书状态、项目线和更新时间，
 不会接触飞书凭证。项目线默认读取需求字段 `field_c7834f` 和缺陷字段 `field_e1d325`，
 可通过 `FEISHU_REQUIREMENT_PROJECT_FIELD`、`FEISHU_DEFECT_PROJECT_FIELD` 覆盖。工作项列表
@@ -245,9 +288,15 @@ Secret 放进前端。列表采用“授权同步机生成快照、浏览器只�
 7 天内生成的快照会覆盖同一条后端飞书记录的标题、状态、负责人和项目线，同时保留平台侧
 交付状态与仓库关联；超过 7 天的旧快照仍回退到服务端数据，避免旧快照复活已删除项。
 
-如果当前数据库已经包含真实飞书工作项，可先用 `npm run snapshot:from-db` 生成一次
-`data/feishu-work-items.json`，再启动页面即可由前端直接读取；后续用 Meegle watch
-覆盖同一文件即可持续更新。快照文件和数据库都在 `.gitignore` 中，不会提交真实项目数据。
+如果当前数据库已经包含真实飞书工作项，可用 `npm run snapshot:from-db` 导出一次
+`data/feishu-work-items.json` 作为备份。页面默认通过登录保护的 `/api/feishu/snapshot` 读取，
+不会把快照写入公开的 `dist` 静态资源；快照文件和数据库都在 `.gitignore` 中，不会提交真实项目数据。
+
+使用本地自签名证书运行同步器或本机代理时，Node.js 需要信任开发证书：
+
+```bash
+NODE_EXTRA_CA_CERTS=./data/tls/orbit-cert.pem npm run sync:feishu
+```
 
 首次部署时可选择后端直连飞书，或在另一台能访问飞书的机器上运行外部同步器。两者都会把真实需求和缺陷写入「需求与缺陷」列表；外部同步模式由同步器按 `FEISHU_SYNC_INTERVAL_MS` 轮询。数据库路径仍建议挂载持久卷，避免重新部署后丢失本地状态：
 
@@ -282,6 +331,8 @@ npm run typecheck:server
 - **飞书项目接入**：支持后端直连、官方 Meegle CLI 跨服务器外部同步和页面绑定；同步结果直接更新需求与缺陷列表，支持定时刷新、事件回调和缺陷关闭状态回写。
 - **飞书 MCP**：本机代理在 Codex 启动时注入官方 `lark-mcp`，可按需读取飞书文档/Wiki/IM；配置、登录态和无 Secret 泄漏的状态展示均可在页面看到。
 - **Meegle MCP**：本机代理注入只读 Meegle MCP，Codex 可按标题、状态、负责人和日期实时查询项目需求/缺陷，不向浏览器暴露登录 Token。
+- **登录认证**：支持注册、登录和退出；密码使用 scrypt 加盐单向哈希，会话使用 HttpOnly Cookie，业务 API 默认要求认证。
+- **HTTPS**：支持 Node.js 直接 TLS、HTTP 自动跳转、反向代理信任和 HSTS；生产环境可强制拒绝明文请求。
 - **需求与缺陷**：创建工作项、关联仓库和分支、查看详情；缺陷测试通过后自动关闭。
 - **一键交付**：自动生成开发设计报告与集成报告，在配置的本地路径创建真实 Git 提交，测试验收通过后推送目标分支，并完成编译、设备升级和报告归档。
 - **实时流水线**：九阶段状态机、执行进度、阶段日志、运行信息、设计/集成/测试报告查看入口和测试结果摘要。
@@ -394,7 +445,7 @@ Use $rjcloud-local-delivery to deliver REQ-1082 locally.
 
 ```bash
 npm run deliver:local -- \
-  --api http://8.145.45.84:8787 \
+  --api https://8.145.45.84:8787 \
   --work-item REQ-1137 \
   --repo repo-1 \
   --path /Users/chenhuaqu/sme/sme-main \

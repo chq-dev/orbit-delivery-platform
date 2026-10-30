@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { AuthProvider, useAuth } from './auth'
 import { Layout } from './components/Layout'
 import { ToastStack } from './components/ui'
 import { Accounts } from './pages/Accounts'
@@ -7,6 +8,7 @@ import { Pipelines } from './pages/Pipelines'
 import { Reports } from './pages/Reports'
 import { Repositories } from './pages/Repositories'
 import { WorkItems } from './pages/WorkItems'
+import { LoginPage } from './pages/Login'
 import { DataProvider } from './store'
 import type { PageKey } from './types'
 
@@ -58,6 +60,24 @@ function AppContent() {
 }
 
 export default function App() {
+  return (
+    <AuthProvider>
+      <AuthenticatedApp />
+    </AuthProvider>
+  )
+}
+
+function AuthenticatedApp() {
+  const { user, loading } = useAuth()
+  if (loading) {
+    return (
+      <div className="auth-loading">
+        <span className="auth-loading-orbit" />
+        <strong>正在验证登录状态</strong>
+      </div>
+    )
+  }
+  if (!user) return <LoginPage />
   return (
     <DataProvider>
       <AppContent />

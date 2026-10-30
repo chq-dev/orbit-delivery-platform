@@ -6,6 +6,12 @@ export type PageKey =
   | 'pipelines'
   | 'reports'
 
+export interface AuthUser {
+  id: string
+  username: string
+  createdAt: string
+}
+
 export type PlatformKey = 'git' | 'feishu' | 'build' | 'device'
 
 export interface Repository {

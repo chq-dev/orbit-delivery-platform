@@ -56,12 +56,22 @@ test('bootstrap 默认兼容完整数据，传 includeWorkItems=0 时跳过工�
       server?.once('error', reject)
     })
     const { port } = server.address() as AddressInfo
+    const base = `http://127.0.0.1:${port}`
     const health = (await fetch(`http://127.0.0.1:${port}/api/health`).then((response) =>
       response.json(),
     )) as { deliveryContractVersion?: number }
     assert.equal(health.deliveryContractVersion, 3)
+    const registered = await fetch(`${base}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'bootstrap.user', password: 'Bootstrap123' }),
+    })
+    assert.equal(registered.status, 200)
+    const cookie = registered.headers.get('set-cookie')?.split(';')[0]
+    assert.ok(cookie)
     const light = (await fetch(
-      `http://127.0.0.1:${port}/api/bootstrap?includeWorkItems=0&includeFeishuInbox=0`,
+      `${base}/api/bootstrap?includeWorkItems=0&includeFeishuInbox=0`,
+      { headers: { cookie: cookie ?? '' } },
     ).then((response) => response.json())) as {
       workItems: unknown[]
       feishuInbox: unknown[]
@@ -71,9 +81,9 @@ test('bootstrap 默认兼容完整数据，传 includeWorkItems=0 时跳过工�
     assert.deepEqual(light.feishuInbox, [])
     assert.equal(light.repositories.length, 1)
 
-    const full = (await fetch(`http://127.0.0.1:${port}/api/bootstrap`).then((response) =>
-      response.json(),
-    )) as { workItems: unknown[]; feishuInbox: unknown[] }
+    const full = (await fetch(`${base}/api/bootstrap`, {
+      headers: { cookie: cookie ?? '' },
+    }).then((response) => response.json())) as { workItems: unknown[]; feishuInbox: unknown[] }
     assert.equal(full.workItems.length, 1)
     assert.equal(full.feishuInbox.length, 1)
   } finally {

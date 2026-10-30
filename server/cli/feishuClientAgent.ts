@@ -139,13 +139,11 @@ const allowedOrigins = new Set(
   (
     process.env.FEISHU_AGENT_ALLOWED_ORIGINS ||
     [
-      'http://8.145.45.84:8787',
-      'http://localhost:8787',
-      'http://127.0.0.1:8787',
-      'http://localhost:4173',
-      'http://127.0.0.1:4173',
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
+      'https://8.145.45.84:8787',
+      'https://localhost:8787',
+      'https://127.0.0.1:8787',
+      'https://localhost:4173',
+      'https://127.0.0.1:4173',
     ].join(',')
   )
     .split(',')
@@ -471,6 +469,9 @@ async function fetchDeliveryBootstrap(
       label: '读取平台工作项与仓库配置',
       attempts: 2,
       timeoutMs: 35_000,
+      init: {
+        headers: { authorization: `Bearer ${config.syncToken}` },
+      },
       onRetry: ({ attempt, attempts, error }) => {
         setStep(
           job,
@@ -545,10 +546,9 @@ async function validateClientCheckout(
   return { checkout, branch: actualBranch }
 }
 
-function localDeliveryEnvironment(): NodeJS.ProcessEnv {
-  const environment = { ...process.env }
+function localDeliveryEnvironment(syncToken: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env, PLATFORM_SYNC_TOKEN: syncToken }
   for (const key of [
-    'PLATFORM_SYNC_TOKEN',
     'FEISHU_INGEST_TOKEN',
     'FEISHU_ACCESS_TOKEN',
     'FEISHU_PLUGIN_SECRET',
@@ -685,7 +685,7 @@ async function executeLocalDelivery(
     const result = await runCommand(
       npmCommand,
       args,
-      localDeliveryEnvironment(),
+      localDeliveryEnvironment(config.syncToken),
       deliveryTimeoutMs,
     )
     if (result.exitCode !== 0) throw new Error(commandFailureMessage(result))

@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { config } from './config.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
@@ -7,6 +7,19 @@ import {
   assertFeishuIngestAuthorized,
   feishuIngestBearerToken,
 } from './security/ingestAuth.js'
+import {
+  clearSessionCookie,
+  parseSessionCookie,
+  sessionCookie,
+} from './security/sessionCookie.js'
+import {
+  authenticateUser,
+  createUserSession,
+  registerUser,
+  revokeSession,
+  userForSessionToken,
+  type AuthUser,
+} from './services/authService.js'
 import { createAccount, importAccounts, listAccounts } from './services/accountService.js'
 import {
   connectFeishu,
@@ -31,6 +44,7 @@ import {
   rotateFeishuSyncToken,
   verifyFeishuSyncToken,
 } from './services/feishuSyncTokenService.js'
+import { readFeishuSnapshotFromDatabase } from './services/feishuSnapshotService.js'
 import {
   cancelPipeline,
   getPipeline,
@@ -59,6 +73,31 @@ import {
 
 export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router {
   const router = Router()
+  const sessionMaxAgeSeconds = config.authSessionDays * 24 * 60 * 60
+
+  const sessionToken = (request: Request): string =>
+    parseSessionCookie(request.headers.cookie)
+
+  const sessionUser = (request: Request): AuthUser | undefined =>
+    userForSessionToken(db, sessionToken(request))
+
+  const cookieSecure = (request: Request): boolean =>
+    request.secure || config.authCookieSecure
+
+  const authPayload = (user: AuthUser) => ({ authenticated: true, user })
+
+  const sendSession = (
+    request: Request,
+    response: Response,
+    user: AuthUser,
+  ): void => {
+    const session = createUserSession(db, user, sessionMaxAgeSeconds)
+    response.append(
+      'set-cookie',
+      sessionCookie(session.token, sessionMaxAgeSeconds, cookieSecure(request)),
+    )
+    response.json({ ...authPayload(user), expiresAt: session.expiresAt })
+  }
 
   const assertSyncTokenAuthorized = (request: Request): void => {
     const tokenStatus = getFeishuSyncTokenStatus(db)
@@ -69,6 +108,11 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
         ? (token) => verifyFeishuSyncToken(db, token)
         : undefined,
     )
+  }
+
+  const hasValidServiceToken = (request: Request): boolean => {
+    const token = feishuIngestBearerToken(request.headers)
+    return Boolean(token) && verifyFeishuSyncToken(db, token)
   }
 
   router.get('/health', (_request, response) => {
@@ -101,6 +145,58 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
         lastSeenAt: agent.lastSeenAt,
       },
     })
+  })
+
+  router.get('/auth/session', (request, response) => {
+    const user = sessionUser(request)
+    response.json(user ? authPayload(user) : { authenticated: false })
+  })
+
+  router.post('/auth/register', async (request, response) => {
+    if (!config.authRegistrationEnabled) {
+      throw new AppError(403, 'REGISTRATION_DISABLED', '当前部署已关闭用户注册')
+    }
+    const user = await registerUser(db, request.body ?? {})
+    sendSession(request, response, user)
+  })
+
+  router.post('/auth/login', async (request, response) => {
+    const user = await authenticateUser(db, request.body ?? {})
+    sendSession(request, response, user)
+  })
+
+  router.post('/auth/logout', (request, response) => {
+    revokeSession(db, sessionToken(request))
+    response.append('set-cookie', clearSessionCookie(cookieSecure(request)))
+    response.json({ ok: true })
+  })
+
+  router.use((request, _response, next) => {
+    if (sessionUser(request)) {
+      next()
+      return
+    }
+    const path = request.path
+    const serviceRoute =
+      (request.method === 'GET' &&
+        (path === '/bootstrap' ||
+          path === '/repositories' ||
+          /^\/work-items\/[^/]+\/delivery-context$/.test(path))) ||
+      (request.method === 'POST' &&
+        (path === '/pipelines/local' ||
+          path === '/integrations/feishu/ingest' ||
+          path === '/integrations/feishu/agent/heartbeat' ||
+          /^\/integrations\/feishu\/agent\/commands\/[^/]+\/(?:progress|result)$/.test(path) ||
+          path === '/integrations/feishu/sync-token/rotate'))
+    if (serviceRoute && hasValidServiceToken(request)) {
+      next()
+      return
+    }
+    if (request.method === 'POST' && path === '/integrations/feishu/events') {
+      next()
+      return
+    }
+    throw new AppError(401, 'AUTH_REQUIRED', '请先登录后再访问平台')
   })
 
   router.get('/bootstrap', (request, response) => {
@@ -150,6 +246,17 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.get('/feishu/inbox', (_request, response) => {
     response.json(listFeishuInbox(db))
+  })
+
+  router.get('/feishu/snapshot', (_request, response) => {
+    const snapshot = readFeishuSnapshotFromDatabase(db, config.feishuProjectKey)
+    if (!snapshot) {
+      response.status(404).json({
+        error: { code: 'FEISHU_SNAPSHOT_NOT_FOUND', message: '飞书快照尚未生成' },
+      })
+      return
+    }
+    response.json(snapshot)
   })
 
   router.get('/integrations/feishu/status', (_request, response) => {

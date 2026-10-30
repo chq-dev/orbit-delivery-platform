@@ -7,6 +7,7 @@ import {
   GitBranch,
   KeyRound,
   LayoutDashboard,
+  LogOut,
   Menu,
   Search,
   Sparkles,
@@ -14,6 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { useAuth } from '../auth'
 import { useData } from '../store'
 import type { PageKey } from '../types'
 import { Avatar } from './ui'
@@ -46,11 +48,6 @@ const navGroups: { label: string; items: { key: PageKey; icon: typeof LayoutDash
   },
 ]
 
-const localOperator = {
-  name: '本地管理员',
-  role: '研发效能管理员',
-}
-
 export function Layout({
   page,
   onNavigate,
@@ -61,12 +58,14 @@ export function Layout({
   children: ReactNode
 }) {
   const { notify, workItems } = useData()
+  const { user, logout } = useAuth()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const meta = pageMeta[page]
   const openCount = workItems.filter(
     (item) => item.status === '待处理' || item.status === '进行中',
   ).length
+  const operatorName = user?.username ?? '本地管理员'
 
   const navigate = (target: PageKey) => {
     onNavigate(target)
@@ -137,10 +136,10 @@ export function Layout({
             <span className="online-dot" />
           </div>
           <button className="sidebar-user" onClick={() => setProfileOpen((value) => !value)}>
-            <Avatar name={localOperator.name} />
+            <Avatar name={operatorName} />
             <span>
-              <strong>{localOperator.name}</strong>
-              <small>{localOperator.role}</small>
+              <strong>{operatorName}</strong>
+              <small>已认证工作区成员</small>
             </span>
             <ChevronDown size={14} className={profileOpen ? 'rotate-180' : ''} />
           </button>
@@ -183,17 +182,17 @@ export function Layout({
             </button>
             <div className="topbar-divider" />
             <button className="topbar-profile" onClick={() => setProfileOpen((value) => !value)}>
-              <Avatar name={localOperator.name} size="sm" />
-              <span>{localOperator.name}</span>
+              <Avatar name={operatorName} size="sm" />
+              <span>{operatorName}</span>
               <ChevronDown size={13} />
             </button>
             {profileOpen && (
               <div className="profile-menu">
                 <div className="profile-menu-head">
-                  <Avatar name={localOperator.name} />
+                  <Avatar name={operatorName} />
                   <div>
-                    <strong>{localOperator.name}</strong>
-                    <span>本地部署工作区</span>
+                    <strong>{operatorName}</strong>
+                    <span>已认证工作区成员</span>
                   </div>
                 </div>
                 <button onClick={() => navigate('accounts')}>
@@ -201,6 +200,9 @@ export function Layout({
                 </button>
                 <button onClick={() => navigate('pipelines')}>
                   <Workflow size={15} /> 查看执行记录
+                </button>
+                <button className="profile-logout" onClick={() => void logout()}>
+                  <LogOut size={15} /> 退出登录
                 </button>
                 <div className="profile-menu-tip">
                   <Sparkles size={14} /> ORBIT 本地工作区

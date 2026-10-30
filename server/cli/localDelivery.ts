@@ -96,7 +96,7 @@ Usage:
   npm run deliver:local -- --work-item REQ-1137 [options]
 
 Options:
-  --api <url>          Platform base URL (default: PLATFORM_BASE_URL or http://127.0.0.1:8787)
+  --api <url>          Platform base URL (default: PLATFORM_BASE_URL or https://127.0.0.1:8787)
   --work-item <id>     Work item ID, for example REQ-1137
   --repo <id>          Repository ID (default: work item repo)
   --path <dir>         Client checkout path (default: repository localPath)
@@ -114,7 +114,7 @@ pushes run on this client against the configured checkout.`
 
 function parseArgs(argv: string[]): LocalDeliveryArgs {
   const args: LocalDeliveryArgs = {
-    api: process.env.PLATFORM_BASE_URL?.trim() || 'http://127.0.0.1:8787',
+    api: process.env.PLATFORM_BASE_URL?.trim() || 'https://127.0.0.1:8787',
     workItem: '',
     run: false,
     push: false,
@@ -145,6 +145,11 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
     else throw new Error(`未知参数：${flag}`)
   }
   return args
+}
+
+function platformHeaders(): Record<string, string> {
+  const token = process.env.PLATFORM_SYNC_TOKEN?.trim()
+  return token ? { authorization: `Bearer ${token}` } : {}
 }
 
 function git(cwd: string, args: string[]): GitResult {
@@ -205,6 +210,7 @@ async function fetchBootstrap(api: string): Promise<BootstrapData> {
       label: '读取平台工作项与仓库配置',
       attempts: 2,
       timeoutMs: 30_000,
+      init: { headers: platformHeaders() },
     },
   )
 }
@@ -219,6 +225,7 @@ async function fetchDeliveryContext(
       label: '读取需求拆解、设计稿与截图',
       attempts: 2,
       timeoutMs: 20_000,
+      init: { headers: platformHeaders() },
     },
   )
 }
@@ -390,7 +397,11 @@ async function recordPlatformDelivery(
   if (args.noCommit) return null
   const response = await fetch(`${api}/api/pipelines/local`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...platformHeaders(),
+    },
     body: JSON.stringify({
       workItemId: item.id,
       repoId: repository.id,
