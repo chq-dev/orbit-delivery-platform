@@ -23,6 +23,7 @@ import {
   enqueueFeishuAgentCommand,
   getFeishuAgentBridgeStatus,
   recordFeishuAgentHeartbeat,
+  updateFeishuAgentCommandProgress,
 } from './services/feishuAgentBridgeService.js'
 import {
   bootstrapFeishuSyncToken,
@@ -179,7 +180,14 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/integrations/feishu/agent/commands', (request, response) => {
-    response.status(202).json(enqueueFeishuAgentCommand(db, request.body?.type))
+    response
+      .status(202)
+      .json(enqueueFeishuAgentCommand(db, request.body?.type, request.body?.payload))
+  })
+
+  router.post('/integrations/feishu/agent/commands/:id/progress', (request, response) => {
+    assertSyncTokenAuthorized(request)
+    response.json(updateFeishuAgentCommandProgress(db, request.params.id, request.body))
   })
 
   router.post('/integrations/feishu/agent/commands/:id/result', (request, response) => {

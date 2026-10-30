@@ -98,7 +98,7 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 10)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 11)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_access_tokens') as { count: number }
@@ -124,7 +124,7 @@ test('版本 6 数据库升级后会创建飞书同步密钥表', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 10)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 11)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_sync_credentials') as { count: number }

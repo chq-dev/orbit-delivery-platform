@@ -1,7 +1,13 @@
-import type { FeishuClientAgentHealth, LocalDeliveryJob, PipelineRun } from './types'
+import type {
+  FeishuAgentBridgeStatus,
+  FeishuAgentCommand,
+  FeishuClientAgentHealth,
+  LocalDeliveryJob,
+  LocalDeliveryStep,
+  PipelineRun,
+} from './types'
 
-const configuredAgentUrl = (import.meta.env.VITE_FEISHU_AGENT_URL as string | undefined)?.trim()
-const AGENT_BASE = (configuredAgentUrl || 'http://127.0.0.1:18787').replace(/\/$/, '')
+const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 const LOCAL_DELIVERY_STEP_DEFINITIONS = [
   { key: 'platform', name: '读取平台', description: '加载工作项、仓库路径与目标分支' },
@@ -21,14 +27,14 @@ export interface LocalDeliveryStartInput {
   autoClose: boolean
 }
 
-interface AgentResponse {
+interface ApiResponse {
   ok?: boolean
-  job?: LocalDeliveryJob
-  error?: string
+  error?: string | { message?: string }
 }
 
 export interface LocalDeliveryAgentReadiness {
   online: boolean
+  platformReady: boolean
   configured: boolean
   meegleAuthenticated: boolean
   codexAvailable: boolean
@@ -40,55 +46,91 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function errorDetail(error: unknown): string {
-  if (!(error instanceof Error)) return String(error)
-  const cause = (error as Error & { cause?: unknown }).cause
-  if (typeof cause !== 'object' || cause === null) return error.message
-  const record = cause as Record<string, unknown>
-  return [record.code, record.message]
-    .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    .join('；')
+function apiErrorMessage(payload: ApiResponse | null, status: number): string {
+  if (typeof payload?.error === 'string') return payload.error
+  if (payload?.error?.message) return payload.error.message
+  return `平台代理请求失败（HTTP ${status}）`
 }
 
-function agentUnavailableMessage(error: unknown, path: string): string {
-  const origin = typeof window === 'undefined' ? '当前页面' : window.location.origin
-  const detail = errorDetail(error)
-  const timeout = error instanceof Error && error.name === 'TimeoutError'
-  const reason = timeout
-    ? '请求超时（20 秒）'
-    : detail || (error instanceof Error ? error.message : String(error))
-  return `无法连接本机交付代理 ${AGENT_BASE}${path}：${reason}。请确认当前客户端已运行 npm run feishu:agent，并允许页面来源 ${origin} 访问本机代理`
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
-}
-
-async function request(path: string, init?: RequestInit): Promise<AgentResponse> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${AGENT_BASE}${path}`, {
+    response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
         ...(init?.body ? { 'content-type': 'application/json' } : {}),
         ...init?.headers,
       },
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(30_000),
     })
   } catch (error) {
-    throw new Error(agentUnavailableMessage(error, path))
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`无法读取平台代理状态：${detail}。请检查平台服务是否可访问`)
   }
 
-  const payload = (await response.json().catch(() => null)) as AgentResponse | null
+  const payload = (await response.json().catch(() => null)) as
+    | (T & ApiResponse)
+    | null
   if (!response.ok || payload?.ok === false) {
-    if (payload?.error === 'origin_not_allowed') {
-      throw new Error(
-        `本机代理拒绝页面来源 ${typeof window === 'undefined' ? '' : window.location.origin}。请把该来源加入 FEISHU_AGENT_ALLOWED_ORIGINS 后重启代理`,
-      )
-    }
-    throw new Error(payload?.error || `本机代理请求失败（HTTP ${response.status}）`)
+    throw new Error(apiErrorMessage(payload, response.status))
   }
-  return payload ?? {}
+  return payload as T
+}
+
+function isDeliveryJob(value: unknown): value is LocalDeliveryJob {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    (value.status === 'running' || value.status === 'succeeded' || value.status === 'failed') &&
+    Array.isArray(value.steps)
+  )
+}
+
+function jobFromCommand(command: FeishuAgentCommand | undefined): LocalDeliveryJob | undefined {
+  if (!isRecord(command?.result)) return undefined
+  return isDeliveryJob(command.result.job) ? command.result.job : undefined
+}
+
+function jobFromHealth(
+  status: FeishuAgentBridgeStatus,
+  commandId: string,
+): LocalDeliveryJob | undefined {
+  const job = status.health?.delivery
+  if (!isDeliveryJob(job)) return undefined
+  return job.commandId === commandId || job.id === commandId ? job : undefined
+}
+
+function queuedSteps(command: FeishuAgentCommand): LocalDeliveryStep[] {
+  const startedAt = command.createdAt
+  return LOCAL_DELIVERY_STEP_DEFINITIONS.map((step) => ({
+    ...step,
+    status: step.key === 'platform' ? 'running' : 'pending',
+    log:
+      step.key === 'platform'
+        ? command.status === 'pending'
+          ? '任务已下发，等待本机代理领取'
+          : '本机代理已领取任务，等待执行状态回传'
+        : undefined,
+    startedAt: step.key === 'platform' ? startedAt : undefined,
+  }))
+}
+
+function queuedJobFromCommand(
+  command: FeishuAgentCommand,
+  input: LocalDeliveryStartInput,
+): LocalDeliveryJob {
+  const job = jobFromCommand(command)
+  if (job) return job
+  return {
+    id: command.id,
+    commandId: command.id,
+    status: 'running',
+    stage: command.status === 'pending' ? '等待本机代理领取' : '本机代理已领取',
+    workItemId: input.workItemId,
+    repoId: input.repoId,
+    startedAt: command.createdAt,
+    steps: queuedSteps(command),
+  }
 }
 
 export function createPendingLocalDeliveryJob(
@@ -98,7 +140,7 @@ export function createPendingLocalDeliveryJob(
   return {
     id: `pending-${Date.now()}`,
     status: 'running',
-    stage: '正在连接本机交付代理',
+    stage: '正在下发到本机代理',
     workItemId: input.workItemId,
     repoId: input.repoId,
     startedAt,
@@ -107,7 +149,7 @@ export function createPendingLocalDeliveryJob(
       status: step.key === 'platform' ? 'running' : 'pending',
       log:
         step.key === 'platform'
-          ? `正在请求 ${AGENT_BASE}/delivery/start`
+          ? '正在通过平台命令队列下发给本机代理'
           : undefined,
       startedAt: step.key === 'platform' ? startedAt : undefined,
     })),
@@ -120,7 +162,9 @@ export function markLocalDeliveryStartFailed(
 ): LocalDeliveryJob {
   const finishedAt = new Date().toISOString()
   const steps = (job.steps ?? []).map((step) => ({ ...step }))
-  const failed = steps.find((step) => step.status === 'running') ?? steps.find((step) => step.status === 'pending')
+  const failed =
+    steps.find((step) => step.status === 'running') ??
+    steps.find((step) => step.status === 'pending')
   if (failed) {
     failed.status = 'failed'
     failed.finishedAt = finishedAt
@@ -139,65 +183,82 @@ export function markLocalDeliveryStartFailed(
 export async function startLocalDelivery(
   input: LocalDeliveryStartInput,
 ): Promise<LocalDeliveryJob> {
-  const payload = await request('/delivery/start', {
+  const command = await request<FeishuAgentCommand>('/integrations/feishu/agent/commands', {
     method: 'POST',
-    body: JSON.stringify(input),
+    body: JSON.stringify({ type: 'delivery_start', payload: input }),
   })
-  if (!payload.job) throw new Error('本机代理未返回交付任务')
-  return payload.job
+  if (!command.id) throw new Error('平台未返回本机交付命令')
+  return queuedJobFromCommand(command, input)
 }
 
 export async function probeLocalDeliveryAgent(): Promise<LocalDeliveryAgentReadiness> {
   try {
-    const payload = await request('/health')
-    const health = payload as unknown as FeishuClientAgentHealth
+    const [status, platform] = await Promise.all([
+      request<FeishuAgentBridgeStatus>('/integrations/feishu/agent/status'),
+      request<{ deliveryContractVersion?: number }>('/health'),
+    ])
+    const health: FeishuClientAgentHealth | undefined = status.health
+    const platformReady = Number(platform.deliveryContractVersion) >= 2
     return {
-      online: true,
-      configured: Boolean(health.config?.configured),
-      meegleAuthenticated: Boolean(health.meegle?.authenticated),
-      codexAvailable: Boolean(health.codex?.available),
-      platformBaseUrl: health.config?.platformBaseUrl,
+      online: status.online,
+      platformReady,
+      configured: Boolean(health?.config?.configured),
+      meegleAuthenticated: Boolean(health?.meegle?.authenticated),
+      codexAvailable: Boolean(health?.codex?.available),
+      platformBaseUrl: health?.config?.platformBaseUrl,
+      error: !platformReady
+        ? '平台服务端仍是旧版本，请部署新服务端后重试'
+        : status.online
+          ? undefined
+          : '本机代理心跳已超过 90 秒未上报',
     }
   } catch (error) {
     return {
       online: false,
+      platformReady: false,
       configured: false,
       meegleAuthenticated: false,
       codexAvailable: false,
-      error: error instanceof Error ? error.message : '无法连接本机交付代理',
+      error: error instanceof Error ? error.message : '无法读取平台代理状态',
     }
   }
 }
 
-export async function getLocalDeliveryStatus(id: string): Promise<LocalDeliveryJob> {
-  const payload = await request(`/delivery/status/${encodeURIComponent(id)}`)
-  if (!payload.job) throw new Error('本机代理未返回交付任务状态')
-  return payload.job
-}
-
 export async function waitForLocalDelivery(
-  id: string,
+  commandId: string,
   onUpdate: (job: LocalDeliveryJob) => void,
   timeoutMs = 45 * 60_000,
 ): Promise<LocalDeliveryJob> {
   const deadline = Date.now() + timeoutMs
   let consecutiveErrors = 0
   while (Date.now() < deadline) {
-    await delay(1_500)
-    let job: LocalDeliveryJob
+    await new Promise((resolve) => window.setTimeout(resolve, 1_500))
+    let status: FeishuAgentBridgeStatus
     try {
-      job = await getLocalDeliveryStatus(id)
+      status = await request<FeishuAgentBridgeStatus>('/integrations/feishu/agent/status')
       consecutiveErrors = 0
     } catch (error) {
       consecutiveErrors += 1
       if (consecutiveErrors < 5) continue
       throw error
     }
-    onUpdate(job)
-    if (job.status === 'succeeded') return job
-    if (job.status === 'failed') throw new Error(job.error || '本机交付执行失败')
+
+    const command = status.commands.find((entry) => entry.id === commandId)
+    const job = jobFromCommand(command) ?? jobFromHealth(status, commandId)
+    if (job) {
+      onUpdate(job)
+      if (job.status === 'succeeded') return job
+      if (job.status === 'failed') throw new Error(job.error || '本机交付执行失败')
+      continue
+    }
+    if (command?.status === 'failed') {
+      throw new Error(command.error || '本机代理执行交付命令失败')
+    }
+    if (command?.status === 'succeeded') {
+      throw new Error('本机代理已接受命令，但没有返回交付任务状态')
+    }
   }
-  throw new Error('本机交付执行超时，请在本机终端检查代理与 Codex 日志')
+  throw new Error('本机交付执行超时，请检查客户端代理与 Codex 日志')
 }
 
 export function pipelineFromDeliveryResult(result: unknown): PipelineRun | undefined {

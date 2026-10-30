@@ -253,6 +253,7 @@ export function DeliveryDialog({
   >({
     checking: true,
     online: false,
+    platformReady: false,
     configured: false,
     meegleAuthenticated: false,
     codexAvailable: false,
@@ -297,6 +298,7 @@ export function DeliveryDialog({
     setLocalAgent({
       checking: true,
       online: false,
+      platformReady: false,
       configured: false,
       meegleAuthenticated: false,
       codexAvailable: false,
@@ -423,8 +425,10 @@ export function DeliveryDialog({
             <ShieldCheck size={15} />{' '}
             {localAgent.checking
               ? '正在检测当前客户端的本机交付代理'
+              : !localAgent.platformReady
+                ? localAgent.error || '平台服务端未升级，当前无法下发本机交付'
               : !localAgent.online
-                ? '本机代理离线，请先在客户端运行 npm run feishu:agent'
+                ? localAgent.error || '本机代理离线，请先在客户端运行 npm run feishu:agent'
                 : !localAgent.configured
                   ? '本机代理已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
                   : !localAgent.codexAvailable
@@ -444,6 +448,7 @@ export function DeliveryDialog({
                 launching ||
                 localAgent.checking ||
                 !localAgent.online ||
+                !localAgent.platformReady ||
                 !localAgent.configured ||
                 !localAgent.codexAvailable
               }
@@ -634,7 +639,7 @@ export function DeliveryDialog({
             <div>
               <strong>客户端执行说明</strong>
               <p>
-                点击“一键本机执行”后，页面直接请求当前客户端的 <code>npm run feishu:agent</code> 代理。代理从平台读取仓库路径与分支，在本地校验 Git 工作区后调用 Codex 完成设计、编码、验证与提交；勾选验收后推送时才会写入远程分支。
+                点击“一键本机执行”后，页面通过平台命令队列把任务下发给当前客户端的 <code>npm run feishu:agent</code> 代理。代理从平台读取仓库路径与分支，在本地校验 Git 工作区后调用 Codex 完成设计、编码、验证与提交；勾选验收后推送时才会写入远程分支。
               </p>
             </div>
           </div>

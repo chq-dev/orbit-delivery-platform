@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { createDatabase } from '../db/database.js'
 import { AppError } from '../domain/errors.js'
@@ -8,6 +11,7 @@ import {
   getFeishuAgentBridgeStatus,
   recordFeishuAgentHeartbeat,
   sanitizeFeishuAgentHealth,
+  updateFeishuAgentCommandProgress,
 } from '../services/feishuAgentBridgeService.js'
 
 const health = {
@@ -131,5 +135,123 @@ test('拒绝未知代理命令且代理状态表随数据库升级创建', () =>
     )
   } finally {
     db.close()
+  }
+})
+
+test('交付命令携带受控参数并通过进度接口回传七步状态', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    const command = enqueueFeishuAgentCommand(db, 'delivery_start', {
+      workItemId: 'REQ-1082',
+      repoId: 'repo-1',
+      autoCommit: true,
+      pushAfterAcceptance: false,
+      autoClose: false,
+    })
+    assert.equal(command.type, 'delivery_start')
+    assert.equal(command.status, 'pending')
+    assert.deepEqual(command.payload, {
+      workItemId: 'REQ-1082',
+      repoId: 'repo-1',
+      autoCommit: true,
+      pushAfterAcceptance: false,
+      autoClose: false,
+    })
+
+    const claimed = recordFeishuAgentHeartbeat(db, { health })
+    assert.equal(claimed.commands[0]?.id, command.id)
+    assert.deepEqual(claimed.commands[0]?.payload, command.payload)
+    completeFeishuAgentCommand(db, command.id, {
+      result: { job: { id: 'delivery-test', status: 'running' } },
+    })
+
+    const steps = [
+      'platform',
+      'contract',
+      'checkout',
+      'codex',
+      'evidence',
+      'commit',
+      'writeback',
+    ].map((key) => ({
+      key,
+      name: key,
+      description: key,
+      status: 'success',
+    }))
+    const updated = updateFeishuAgentCommandProgress(db, command.id, {
+      job: {
+        id: 'delivery-test',
+        commandId: command.id,
+        status: 'succeeded',
+        stage: '本机交付完成',
+        workItemId: 'REQ-1082',
+        repoId: 'repo-1',
+        steps,
+        startedAt: new Date().toISOString(),
+        result: { commit: 'abcdef1234567', changedFiles: ['src/a.ts'] },
+      },
+    })
+    assert.equal(updated.status, 'succeeded')
+    assert.equal(
+      (updated.result as { job: { steps: unknown[] } }).job.steps.length,
+      7,
+    )
+  } finally {
+    db.close()
+  }
+})
+
+test('版本 10 的代理命令表升级后保留旧命令并支持交付命令', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'orbit-agent-command-upgrade-'))
+  const filename = join(directory, 'orbit.db')
+  try {
+    const oldDb = createDatabase({ filename })
+    oldDb.exec(`
+      DROP INDEX IF EXISTS idx_feishu_agent_commands_status;
+      DROP TABLE feishu_agent_commands;
+      CREATE TABLE feishu_agent_commands (
+        id TEXT PRIMARY KEY,
+        command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        result_json TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        claimed_at TEXT,
+        completed_at TEXT
+      );
+      INSERT INTO feishu_agent_commands
+        (id, command_type, status, created_at, updated_at)
+      VALUES ('legacy-command', 'sync', 'succeeded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      PRAGMA user_version = 10;
+    `)
+    oldDb.close()
+
+    const upgraded = createDatabase({ filename })
+    const table = upgraded
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'feishu_agent_commands'",
+      )
+      .get() as { sql: string }
+    assert.match(table.sql, /delivery_start/)
+    assert.match(table.sql, /payload_json/)
+    const legacy = upgraded
+      .prepare('SELECT command_type, status FROM feishu_agent_commands WHERE id = ?')
+      .get('legacy-command') as { command_type: string; status: string }
+    assert.deepEqual(legacy, { command_type: 'sync', status: 'succeeded' })
+    assert.equal(
+      enqueueFeishuAgentCommand(upgraded, 'delivery_start', {
+        workItemId: 'REQ-1082',
+        repoId: 'repo-1',
+        autoCommit: true,
+        pushAfterAcceptance: false,
+        autoClose: false,
+      }).type,
+      'delivery_start',
+    )
+    upgraded.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
   }
 })

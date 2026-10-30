@@ -72,6 +72,7 @@ type LocalDeliveryJobStatus = 'running' | 'succeeded' | 'failed'
 
 interface LocalDeliveryJob {
   id: string
+  commandId?: string
   status: LocalDeliveryJobStatus
   stage: string
   workItemId: string
@@ -88,6 +89,7 @@ interface LocalDeliveryJob {
 function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
   return {
     id: job.id,
+    commandId: job.commandId,
     status: job.status,
     stage: job.stage,
     workItemId: job.workItemId,
@@ -97,6 +99,7 @@ function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
     steps: job.steps,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
+    result: job.result,
     error: job.error,
   }
 }
@@ -148,6 +151,9 @@ let deliveryJob: LocalDeliveryJob | null = null
 let heartbeatInFlight = false
 let loginPollInFlight = false
 let lastHeartbeatError = ''
+let lastDeliveryProgressError = ''
+let deliveryProgressInFlight = false
+let deliveryProgressQueued = false
 let cachedAuth: Awaited<ReturnType<typeof authStatus>> | null = null
 let cachedAuthAt = 0
 
@@ -287,7 +293,7 @@ async function currentHealth(): Promise<{
   const codexBinary = resolveCodexBinary()
   return {
     ok: true,
-    version: 5,
+    version: 6,
     config: publicFeishuAgentConfig(config),
     meegle: auth,
     running,
@@ -390,6 +396,7 @@ function setStep(
   if (status === 'running') {
     job.stage = job.steps.find((step) => step.key === key)?.name ?? job.stage
   }
+  scheduleDeliveryProgress(job)
 }
 
 async function fetchPlatformHealth(
@@ -671,15 +678,17 @@ async function executeLocalDelivery(
   } finally {
     job.finishedAt = new Date().toISOString()
   }
+  scheduleDeliveryProgress(job)
 }
 
-function startLocalDelivery(input: unknown): LocalDeliveryJob {
+function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJob {
   if (deliveryJob?.status === 'running') {
     throw new Error('本机已有交付正在执行，请等待完成后再启动')
   }
   const raw = isRecord(input) ? input : {}
   const job: LocalDeliveryJob = {
     id: `delivery-${randomUUID()}`,
+    commandId,
     status: 'running',
     stage: '准备本机交付',
     workItemId: text(raw.workItemId),
@@ -724,6 +733,45 @@ async function postAgentJson(
   })
 }
 
+async function reportDeliveryProgress(job: LocalDeliveryJob): Promise<void> {
+  if (!job.commandId) return
+  const config = readConfig()
+  if (!config) return
+  const response = await postAgentJson(
+    config,
+    `/api/integrations/feishu/agent/commands/${encodeURIComponent(job.commandId)}/progress`,
+    { job: deliveryJobSummary(job) },
+    10_000,
+  )
+  if (!response.ok) {
+    throw new Error(`上报本机交付进度失败：${await responseMessage(response)}`)
+  }
+  if (lastDeliveryProgressError) lastDeliveryProgressError = ''
+}
+
+function scheduleDeliveryProgress(job: LocalDeliveryJob): void {
+  if (!job.commandId) return
+  deliveryProgressQueued = true
+  if (deliveryProgressInFlight) return
+  deliveryProgressInFlight = true
+  void (async () => {
+    try {
+      while (deliveryProgressQueued) {
+        deliveryProgressQueued = false
+        await reportDeliveryProgress(job).catch((error) => {
+          const message = errorMessage(error)
+          if (message !== lastDeliveryProgressError) {
+            console.error(message)
+            lastDeliveryProgressError = message
+          }
+        })
+      }
+    } finally {
+      deliveryProgressInFlight = false
+    }
+  })()
+}
+
 async function reportCommandResult(
   commandId: string,
   input: { result?: unknown; error?: string },
@@ -742,7 +790,8 @@ async function reportCommandResult(
 
 async function executeCommand(command: {
   id: string
-  type: 'login_start' | 'sync' | 'rotate_token'
+  type: 'login_start' | 'sync' | 'rotate_token' | 'delivery_start'
+  payload?: unknown
 }): Promise<void> {
   try {
     let result: unknown
@@ -750,6 +799,8 @@ async function executeCommand(command: {
       result = { challenge: await startLogin() }
     } else if (command.type === 'sync') {
       result = await runSync()
+    } else if (command.type === 'delivery_start') {
+      result = { job: deliveryJobSummary(startLocalDelivery(command.payload, command.id)) }
     } else {
       result = await rotateToken()
     }
@@ -793,11 +844,14 @@ async function sendHeartbeat(): Promise<void> {
       const type = text(command.type)
       if (
         !id ||
-        (type !== 'login_start' && type !== 'sync' && type !== 'rotate_token')
+        (type !== 'login_start' &&
+          type !== 'sync' &&
+          type !== 'rotate_token' &&
+          type !== 'delivery_start')
       ) {
         continue
       }
-      void executeCommand({ id, type })
+      void executeCommand({ id, type, payload: command.payload })
     }
   } catch (error) {
     const message = errorMessage(error)

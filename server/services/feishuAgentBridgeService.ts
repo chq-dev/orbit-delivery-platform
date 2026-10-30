@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
 import { notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
+import { parseLocalDeliveryAgentRequest } from './localDeliveryAgentService.js'
 
 const AGENT_STATE_ID = 'primary'
 const RUNNING_COMMAND_LEASE_MS = 15 * 60_000
@@ -9,8 +10,38 @@ const RECENT_COMMAND_LIMIT = 20
 
 export const FEISHU_AGENT_ONLINE_WINDOW_MS = 90_000
 
-export type FeishuAgentCommandType = 'login_start' | 'sync' | 'rotate_token'
+export type FeishuAgentCommandType =
+  | 'login_start'
+  | 'sync'
+  | 'rotate_token'
+  | 'delivery_start'
 export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'
+
+export interface FeishuAgentDeliveryStep {
+  key: string
+  name: string
+  description: string
+  status: 'pending' | 'running' | 'success' | 'failed'
+  log?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface FeishuAgentDeliveryJob {
+  id: string
+  commandId?: string
+  status: 'running' | 'succeeded' | 'failed'
+  stage: string
+  workItemId: string
+  repoId: string
+  localPath?: string
+  branch?: string
+  steps: FeishuAgentDeliveryStep[]
+  startedAt: string
+  finishedAt?: string
+  result?: unknown
+  error?: string
+}
 
 export interface FeishuAgentHealth {
   ok: true
@@ -39,12 +70,18 @@ export interface FeishuAgentHealth {
     verificationUriComplete: string
     expiresAt: number
   } | null
+  codex?: {
+    available: boolean
+    path?: string
+  }
+  delivery?: FeishuAgentDeliveryJob | null
 }
 
 export interface FeishuAgentCommand {
   id: string
   type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
+  payload?: unknown
   createdAt: string
   updatedAt: string
   result?: unknown
@@ -70,6 +107,7 @@ interface CommandRow {
   id: string
   command_type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
+  payload_json: string | null
   result_json: string | null
   error: string | null
   created_at: string
@@ -116,10 +154,46 @@ function publicCommand(row: CommandRow): FeishuAgentCommand {
     id: row.id,
     type: row.command_type,
     status: row.status,
+    payload: parseJson(row.payload_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     result: parseJson(row.result_json),
     error: row.error || undefined,
+  }
+}
+
+function deliveryStatus(value: unknown): FeishuAgentDeliveryStep['status'] {
+  return value === 'running' || value === 'success' || value === 'failed' ? value : 'pending'
+}
+
+function sanitizeDeliveryJob(value: unknown): FeishuAgentDeliveryJob | undefined {
+  if (!isRecord(value) || !optionalText(value.id, 200)) return undefined
+  const status = value.status === 'succeeded' || value.status === 'failed' ? value.status : 'running'
+  const steps = Array.isArray(value.steps)
+    ? value.steps.slice(0, 12).filter(isRecord).map((step) => ({
+        key: text(step.key, 100),
+        name: text(step.name, 200),
+        description: text(step.description, 500),
+        status: deliveryStatus(step.status),
+        log: optionalText(step.log, 4_000),
+        startedAt: optionalText(step.startedAt, 80),
+        finishedAt: optionalText(step.finishedAt, 80),
+      })).filter((step) => step.key && step.name)
+    : []
+  return {
+    id: optionalText(value.id, 200) ?? '',
+    commandId: optionalText(value.commandId, 200),
+    status,
+    stage: optionalText(value.stage, 500) ?? '等待本机执行',
+    workItemId: optionalText(value.workItemId, 200) ?? '',
+    repoId: optionalText(value.repoId, 200) ?? '',
+    localPath: optionalText(value.localPath, 1_000),
+    branch: optionalText(value.branch, 200),
+    steps,
+    startedAt: timestamp(value.startedAt, nowIso()),
+    finishedAt: optionalText(value.finishedAt, 80),
+    result: isRecord(value.result) ? value.result : undefined,
+    error: optionalText(value.error),
   }
 }
 
@@ -139,6 +213,7 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
   const config = isRecord(value.config) ? value.config : {}
   const meegle = isRecord(value.meegle) ? value.meegle : {}
   const pendingLogin = isRecord(value.pendingLogin) ? value.pendingLogin : null
+  const codex = isRecord(value.codex) ? value.codex : {}
 
   return {
     ok: true,
@@ -168,6 +243,11 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
             expiresAt: nonNegativeInteger(pendingLogin.expiresAt),
           }
         : null,
+    codex: {
+      available: boolean(codex.available),
+      path: optionalText(codex.path, 1_000),
+    },
+    delivery: value.delivery === null ? null : sanitizeDeliveryJob(value.delivery),
   }
 }
 
@@ -183,7 +263,7 @@ function claimPendingCommands(db: AppDatabase): FeishuAgentCommand[] {
 
     const rows = db
       .prepare(
-        `SELECT id, command_type, status, result_json, error, created_at, updated_at
+        `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
          FROM feishu_agent_commands
          WHERE status = 'pending'
          ORDER BY created_at ASC, rowid ASC
@@ -229,32 +309,46 @@ export function recordFeishuAgentHeartbeat(
 export function enqueueFeishuAgentCommand(
   db: AppDatabase,
   type: unknown,
+  payload?: unknown,
 ): FeishuAgentCommand {
-  if (type !== 'login_start' && type !== 'sync' && type !== 'rotate_token') {
+  if (
+    type !== 'login_start' &&
+    type !== 'sync' &&
+    type !== 'rotate_token' &&
+    type !== 'delivery_start'
+  ) {
     throw unprocessable('不支持的代理命令')
   }
+  const request = type === 'delivery_start' ? parseLocalDeliveryAgentRequest(payload) : undefined
+  const payloadJson = request ? JSON.stringify(request) : null
   const existing = db
     .prepare(
-      `SELECT id, command_type, status, result_json, error, created_at, updated_at
+      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands
        WHERE command_type = ? AND status IN ('pending', 'running')
        ORDER BY created_at DESC, rowid DESC
        LIMIT 1`,
     )
     .get(type) as CommandRow | undefined
-  if (existing) return publicCommand(existing)
+  if (existing) {
+    if (type === 'delivery_start' && existing.payload_json !== payloadJson) {
+      throw unprocessable('本机已有其他交付正在执行，请等待完成后再启动')
+    }
+    return publicCommand(existing)
+  }
 
   const now = nowIso()
   const id = `agent-command-${randomUUID()}`
   db.prepare(
     `INSERT INTO feishu_agent_commands
-      (id, command_type, status, result_json, error, created_at, updated_at)
-     VALUES (?, ?, 'pending', NULL, NULL, ?, ?)`,
-  ).run(id, type, now, now)
+      (id, command_type, status, payload_json, result_json, error, created_at, updated_at)
+     VALUES (?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
+  ).run(id, type, payloadJson, now, now)
   return {
     id,
     type,
     status: 'pending',
+    payload: request,
     createdAt: now,
     updatedAt: now,
   }
@@ -267,7 +361,7 @@ export function completeFeishuAgentCommand(
 ): FeishuAgentCommand {
   const existing = db
     .prepare(
-      `SELECT id, command_type, status, result_json, error, created_at, updated_at
+      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands WHERE id = ?`,
     )
     .get(id) as CommandRow | undefined
@@ -275,7 +369,11 @@ export function completeFeishuAgentCommand(
 
   const payload = isRecord(input) ? input : {}
   const error = text(payload.error, 4_000)
-  const status: FeishuAgentCommandStatus = error ? 'failed' : 'succeeded'
+  const preserveDeliveryFailure =
+    existing.command_type === 'delivery_start' && existing.status === 'failed'
+  const status: FeishuAgentCommandStatus =
+    error || preserveDeliveryFailure ? 'failed' : 'succeeded'
+  const finalError = error || (preserveDeliveryFailure ? existing.error || '' : '')
   const now = nowIso()
   const resultJson =
     payload.result === undefined ? null : JSON.stringify(payload.result).slice(0, 64 * 1024)
@@ -283,12 +381,49 @@ export function completeFeishuAgentCommand(
     `UPDATE feishu_agent_commands
      SET status = ?, result_json = ?, error = ?, updated_at = ?, completed_at = ?
      WHERE id = ?`,
-  ).run(status, resultJson, error || null, now, now, id)
+  ).run(status, resultJson, finalError || null, now, now, id)
   return publicCommand({
     ...existing,
     status,
     result_json: resultJson,
-    error: error || null,
+    error: finalError || null,
+    updated_at: now,
+  })
+}
+
+export function updateFeishuAgentCommandProgress(
+  db: AppDatabase,
+  id: string,
+  input: unknown,
+): FeishuAgentCommand {
+  const existing = db
+    .prepare(
+      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
+       FROM feishu_agent_commands WHERE id = ?`,
+    )
+    .get(id) as CommandRow | undefined
+  if (!existing) throw notFound('代理命令')
+  if (existing.command_type !== 'delivery_start') {
+    throw unprocessable('该代理命令不支持交付进度')
+  }
+  const payload = isRecord(input) ? input : {}
+  const job = sanitizeDeliveryJob(payload.job)
+  if (!job) throw unprocessable('交付进度缺少有效任务')
+
+  const now = nowIso()
+  const status: FeishuAgentCommandStatus = job.status === 'failed' ? 'failed' : existing.status
+  const error = job.status === 'failed' ? job.error || '本机交付执行失败' : existing.error
+  const resultJson = JSON.stringify({ job }).slice(0, 64 * 1024)
+  db.prepare(
+    `UPDATE feishu_agent_commands
+     SET status = ?, result_json = ?, error = ?, updated_at = ?, completed_at = ?
+     WHERE id = ?`,
+  ).run(status, resultJson, error, now, job.status === 'running' ? null : now, id)
+  return publicCommand({
+    ...existing,
+    status,
+    result_json: resultJson,
+    error,
     updated_at: now,
   })
 }
@@ -302,7 +437,7 @@ export function getFeishuAgentBridgeStatus(db: AppDatabase): FeishuAgentBridgeSt
     .get(AGENT_STATE_ID) as AgentStateRow | undefined
   const rows = db
     .prepare(
-      `SELECT id, command_type, status, result_json, error, created_at, updated_at
+      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands
        ORDER BY created_at DESC, rowid DESC
        LIMIT ?`,

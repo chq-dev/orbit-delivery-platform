@@ -92,16 +92,18 @@ npm run feishu:agent
 
 The agent posts a heartbeat to
 `POST /api/integrations/feishu/agent/heartbeat` every 10 seconds and receives
-queued `login_start`, `sync`, and `rotate_token` commands. The Orbit page reads
+queued `login_start`, `sync`, `rotate_token`, and `delivery_start` commands. The Orbit page reads
 the same-origin `GET /api/integrations/feishu/agent/status` endpoint, so it never
 connects to `127.0.0.1` and is not blocked by browser local-network policy. After
 device authorization, the agent automatically runs a full sync. The browser
 never receives the Feishu login token or the platform sync token.
 
-This loopback-free rule applies to Feishu synchronization. The separate
-`客户端本地` delivery action intentionally calls the loopback-only
-`POST /delivery/start` endpoint so the browser can launch code changes in the
-configured client checkout; see `$orbit-local-delivery`.
+The same loopback-free rule applies to Feishu synchronization and `客户端本地`
+delivery. The browser enqueues a `delivery_start` command on the same-origin
+platform API; the agent claims it by heartbeat, runs the configured client
+checkout, and reports progress for the seven delivery steps. This avoids Chrome
+Private Network Access blocking HTTP pages from calling `http://127.0.0.1`; see
+`$orbit-local-delivery`.
 
 The two credentials have different sources:
 
@@ -115,7 +117,7 @@ local delivery:
 `GET /health`, `POST /configure`, `POST /login/start`, `POST /login/poll`,
 `POST /sync`, `POST /rotate-token`, `POST /delivery/start`, and
 `GET /delivery/status/:id`. Feishu synchronization does not depend on them.
-A heartbeat older than 45 seconds is reported as offline.
+A heartbeat older than 90 seconds is reported as offline.
 
 When invoked from the Orbit page, use the copied Codex instruction as the task
 contract. Verify the authenticated host and platform write token before syncing.

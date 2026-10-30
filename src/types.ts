@@ -250,6 +250,7 @@ export interface LocalDeliveryResult {
 
 export interface LocalDeliveryJob {
   id: string
+  commandId?: string
   status: LocalDeliveryJobStatus
   stage: string
   workItemId: string
@@ -271,13 +272,18 @@ export interface FeishuClientAgentState {
   error?: string
 }
 
-export type FeishuAgentCommandType = 'login_start' | 'sync' | 'rotate_token'
+export type FeishuAgentCommandType =
+  | 'login_start'
+  | 'sync'
+  | 'rotate_token'
+  | 'delivery_start'
 export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'
 
 export interface FeishuAgentCommand {
   id: string
   type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
+  payload?: unknown
   createdAt: string
   updatedAt: string
   result?: unknown
