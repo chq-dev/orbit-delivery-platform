@@ -4118,6 +4118,48 @@ p {
   white-space: nowrap;
 }
 
+.feishu-local-repo-path {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 7px 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dcece7;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.feishu-local-repo-path label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.feishu-local-repo-path label span {
+  color: #56627d;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.feishu-local-repo-path input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  color: #3d4a67;
+  font-size: 10px;
+  border: 1px solid #cddfda;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.feishu-local-repo-path small {
+  min-width: 0;
+  color: #8490a6;
+  font-size: 8.5px;
+  overflow-wrap: anywhere;
+}
+
 .feishu-live-meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -4160,6 +4202,10 @@ p {
 
 @media (max-width: 720px) {
   .feishu-agent-client-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .feishu-local-repo-path {
     grid-template-columns: 1fr;
   }
 }

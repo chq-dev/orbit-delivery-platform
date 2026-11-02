@@ -28,6 +28,9 @@ import {
   type FeishuSnapshot,
 } from './feishuSnapshot'
 import {
+  configureLocalFeishuAgent,
+  configureLocalFeishuAgentRepoPaths,
+  fetchLocalFeishuAgentHealth,
   enqueueFeishuAgentCommand,
   fetchFeishuAgentStatus,
 } from './feishuAgent'
@@ -60,7 +63,7 @@ interface FeishuAgentBindResult {
   status: FeishuSyncTokenStatus
   agentConfigured: boolean
   token?: string
-  error?: unknown
+  error?: string
 }
 
 const FEISHU_AGENT_AUTO_SYNC_INTERVAL_MS = 10 * 60_000
@@ -144,7 +147,11 @@ interface DataContextValue {
   refreshFeishuAgent: (quiet?: boolean) => Promise<FeishuClientAgentHealth | null>
   selectFeishuAgentClient: (clientId: string) => Promise<void>
   refreshFeishuSyncToken: () => Promise<FeishuSyncTokenStatus | null>
-  bindFeishuAgent: () => Promise<FeishuAgentBindResult>
+  bindFeishuAgent: (input: {
+    repoPaths: Record<string, string>
+    syncToken?: string
+  }) => Promise<FeishuAgentBindResult>
+  saveFeishuAgentRepoPaths: (repoPaths: Record<string, string>) => Promise<void>
   beginFeishuAgentLogin: () => Promise<FeishuLoginChallenge>
   rotateFeishuSyncToken: () => Promise<FeishuSyncTokenStatus>
   refreshFeishuSnapshot: (announce?: boolean) => Promise<number>
@@ -630,16 +637,76 @@ export function DataProvider({ children }: { children: ReactNode }) {
     ],
   )
 
-  const bindFeishuAgent = useCallback(async (): Promise<FeishuAgentBindResult> => {
-    const status = await fetchAgentStatus()
-    const tokenStatus = (await refreshFeishuSyncToken()) ?? feishuSyncToken
-    if (status.online && status.health?.config.configured) {
-      return { status: tokenStatus, agentConfigured: true }
+  const bindFeishuAgent = useCallback(
+    async ({ repoPaths, syncToken }: {
+      repoPaths: Record<string, string>
+      syncToken?: string
+    }): Promise<FeishuAgentBindResult> => {
+      const localHealth = await fetchLocalFeishuAgentHealth()
+      const localClientId = localHealth.config.clientId
+      if (!localClientId) throw new Error('本机代理尚未注册，请重启 npm run feishu:agent 后重试')
+      if (feishuAgentClientId.current && feishuAgentClientId.current !== localClientId) {
+        throw new Error('当前选中的不是这台 Mac，请先选择当前 Mac 的执行客户端')
+      }
+      if (!Object.keys(repoPaths).length) {
+        throw new Error('请先配置至少一个本机仓库绝对路径')
+      }
+
+      const currentStatus = await api.getFeishuSyncTokenStatus()
+      setFeishuSyncToken(currentStatus)
+
+      if (localHealth.config.configured) {
+        await configureLocalFeishuAgentRepoPaths(repoPaths)
+        await fetchAgentStatus()
+        return { status: currentStatus, agentConfigured: true }
+      }
+
+      if (currentStatus.source === 'env' && !syncToken) {
+        throw new Error('平台密钥由服务器环境变量管理，无法从账号中心读取；请让服务器管理员更新密钥配置')
+      }
+      if (currentStatus.configured && !syncToken) {
+        throw new Error('平台已有密钥，但无法再次读取；请使用本次生成的密钥重试，或由管理员重置后重新绑定')
+      }
+
+      const created = currentStatus.configured
+        ? { token: syncToken as string, status: currentStatus }
+        : await api.bootstrapFeishuSyncToken()
+      setFeishuSyncToken(created.status)
+      try {
+        await configureLocalFeishuAgent({
+          platformBaseUrl: window.location.origin,
+          syncToken: created.token,
+          projectKey: feishuIntegration.projectKey || 'rjcloud',
+          repoPaths,
+        })
+      } catch (error) {
+        return {
+          status: created.status,
+          agentConfigured: false,
+          token: created.token,
+          error: error instanceof Error ? error.message : '无法写入本机代理配置',
+        }
+      }
+
+      await delay(300)
+      await fetchAgentStatus().catch(() => undefined)
+      return { status: created.status, agentConfigured: true }
+    },
+    [fetchAgentStatus, feishuIntegration.projectKey],
+  )
+
+  const saveFeishuAgentRepoPaths = useCallback(async (repoPaths: Record<string, string>) => {
+    const localHealth = await fetchLocalFeishuAgentHealth()
+    if (!localHealth.config.configured) throw new Error('本机代理尚未绑定平台同步密钥')
+    if (
+      feishuAgentClientId.current &&
+      localHealth.config.clientId !== feishuAgentClientId.current
+    ) {
+      throw new Error('当前选中的不是这台 Mac，请先选择当前 Mac 的执行客户端')
     }
-    throw new Error(
-      '代理尚未完成平台绑定。请在客户端配置 FEISHU_AGENT_PLATFORM_URL 与 PLATFORM_SYNC_TOKEN 后重启 npm run feishu:agent',
-    )
-  }, [feishuSyncToken, fetchAgentStatus, refreshFeishuSyncToken])
+    await configureLocalFeishuAgentRepoPaths(repoPaths)
+    await fetchAgentStatus().catch(() => undefined)
+  }, [fetchAgentStatus])
 
   const rotateFeishuSyncToken = useCallback(async () => {
     const status = (await refreshFeishuSyncToken()) ?? feishuSyncToken
@@ -1105,6 +1172,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       selectFeishuAgentClient,
       refreshFeishuSyncToken,
       bindFeishuAgent,
+      saveFeishuAgentRepoPaths,
       beginFeishuAgentLogin,
       rotateFeishuSyncToken,
       refreshFeishuSnapshot,
@@ -1147,6 +1215,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       selectFeishuAgentClient,
       refreshFeishuSnapshot,
       refreshFeishuSyncToken,
+      saveFeishuAgentRepoPaths,
       repositories,
       rotateFeishuSyncToken,
       selectedFeishuAgentClientId,

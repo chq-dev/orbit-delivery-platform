@@ -9,15 +9,25 @@ import {
   LogIn,
   RefreshCw,
   RotateCcw,
+  Save,
   ShieldCheck,
   Terminal,
   WifiOff,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useData } from '../store'
+import type { Repository } from '../types'
 import { StatusBadge } from './ui'
 
-type BusyAction = 'refresh' | 'bind' | 'login' | 'sync' | 'rotate' | null
+type BusyAction = 'refresh' | 'bind' | 'path' | 'login' | 'sync' | 'rotate' | null
+
+const BASIC_COMPONENT_LOCAL_PATH =
+  '/Users/shinya/Documents/workspace/SME/basic-component-cloud'
+
+function isBasicComponentRepository(repository: Repository): boolean {
+  return repository.name.trim().toLowerCase() === 'basic-component-cloud' ||
+    repository.url.toLowerCase().includes('/basic-component-cloud')
+}
 
 function formatRunTime(value: string | undefined): string {
   if (!value) return '尚未同步'
@@ -28,6 +38,7 @@ function formatRunTime(value: string | undefined): string {
 
 export function FeishuLiveSyncCard() {
   const {
+    repositories,
     feishuAgent,
     feishuAgentClients,
     selectedFeishuAgentClientId,
@@ -38,6 +49,7 @@ export function FeishuLiveSyncCard() {
     selectFeishuAgentClient,
     refreshFeishuSyncToken,
     bindFeishuAgent,
+    saveFeishuAgentRepoPaths,
     beginFeishuAgentLogin,
     syncFeishuAgent,
     rotateFeishuSyncToken,
@@ -46,6 +58,7 @@ export function FeishuLiveSyncCard() {
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState('')
   const [issuedToken, setIssuedToken] = useState('')
+  const [repoPath, setRepoPath] = useState('')
 
   const health = feishuAgent.health
   const agentConfigured = Boolean(health?.config.configured)
@@ -54,6 +67,13 @@ export function FeishuLiveSyncCard() {
   const meegleMcp = health?.meegleMcp
   const selectedClient = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
+  )
+  const basicComponentRepository = repositories.find(isBasicComponentRepository)
+  const configuredRepoPath = basicComponentRepository
+    ? selectedClient?.health?.config.repoPaths?.[basicComponentRepository.id]
+    : undefined
+  const localClientSelected = Boolean(
+    localFeishuAgentClientId && selectedFeishuAgentClientId === localFeishuAgentClientId,
   )
   const ready = feishuAgent.online && agentConfigured && meegleAuthenticated
   const command = 'npm run feishu:agent'
@@ -75,6 +95,15 @@ export function FeishuLiveSyncCard() {
         : !agentConfigured
           ? '等待绑定密钥'
           : '等待飞书授权'
+
+  useEffect(() => {
+    if (!basicComponentRepository) return
+    setRepoPath(
+      configuredRepoPath ||
+        basicComponentRepository.localPath ||
+        BASIC_COMPONENT_LOCAL_PATH,
+    )
+  }, [basicComponentRepository?.id, basicComponentRepository?.localPath, configuredRepoPath])
 
   const run = async (action: BusyAction, operation: () => Promise<unknown>) => {
     setBusy(action)
@@ -104,8 +133,31 @@ export function FeishuLiveSyncCard() {
 
   const bind = () =>
     run('bind', async () => {
-      const result = await bindFeishuAgent()
+      if (!basicComponentRepository) {
+        throw new Error('平台仓库列表中找不到 basic-component-cloud')
+      }
+      const path = repoPath.trim()
+      if (!path.startsWith('/')) throw new Error('本机仓库路径必须是绝对路径')
+      const result = await bindFeishuAgent({
+        repoPaths: { [basicComponentRepository.id]: path },
+        syncToken: issuedToken || undefined,
+      })
       if (result.token) setIssuedToken(result.token)
+      if (result.error) throw new Error(result.error)
+      setIssuedToken('')
+      notify('本机代理已绑定', '平台密钥和 basic-component-cloud 本机路径已写入代理配置')
+    })
+
+  const saveRepoPath = () =>
+    run('path', async () => {
+      if (!basicComponentRepository) {
+        throw new Error('平台仓库列表中找不到 basic-component-cloud')
+      }
+      const path = repoPath.trim()
+      if (!path.startsWith('/')) throw new Error('本机仓库路径必须是绝对路径')
+      await saveFeishuAgentRepoPaths({ [basicComponentRepository.id]: path })
+      await refreshFeishuAgent(true)
+      notify('本机仓库路径已保存', path)
     })
 
   const login = () => run('login', async () => beginFeishuAgentLogin())
@@ -272,6 +324,35 @@ export function FeishuLiveSyncCard() {
         </div>
       )}
 
+      {localClientSelected && feishuAgent.online && (
+        <div className="feishu-local-repo-path">
+          <label>
+            <span>basic-component-cloud 本机仓库路径</span>
+            <input
+              value={repoPath}
+              onChange={(event) => setRepoPath(event.target.value)}
+              placeholder="/Users/用户名/Documents/workspace/SME/basic-component-cloud"
+              aria-label="basic-component-cloud 本机仓库路径"
+            />
+          </label>
+          <small>
+            {basicComponentRepository
+              ? `仓库标识：${basicComponentRepository.id}。路径只写入当前 Mac 的代理。`
+              : '平台仓库列表中找不到 basic-component-cloud。'}
+          </small>
+          {agentConfigured && (
+            <button
+              className="btn btn-secondary btn-xs"
+              onClick={() => void saveRepoPath()}
+              disabled={busy !== null || !basicComponentRepository}
+            >
+              {busy === 'path' ? <LoaderCircle size={13} className="spin" /> : <Save size={13} />}
+              保存本机路径
+            </button>
+          )}
+        </div>
+      )}
+
       {feishuAgentLogin.challenge && (
         <div className="feishu-login-challenge">
           <div>
@@ -342,11 +423,18 @@ export function FeishuLiveSyncCard() {
           <RefreshCw size={14} className={busy === 'refresh' || feishuAgent.checking ? 'spin' : ''} />
           重新检测
         </button>
-        {feishuAgent.online && !agentConfigured && feishuSyncToken.source !== 'env' && (
+        {feishuAgent.online && localClientSelected && !agentConfigured &&
+          (feishuSyncToken.source === 'none' || Boolean(issuedToken)) && (
           <button className="btn btn-primary" onClick={() => void bind()} disabled={busy !== null}>
             {busy === 'bind' ? <LoaderCircle size={14} className="spin" /> : <KeyRound size={14} />}
-            生成密钥并绑定
+            {issuedToken ? '重试本机绑定' : '生成密钥并绑定'}
           </button>
+        )}
+        {feishuAgent.online && localClientSelected && !agentConfigured &&
+          feishuSyncToken.source === 'database' && !issuedToken && (
+          <span className="feishu-live-ready is-warn">
+            平台已有密钥，需从原代理轮换后才能绑定这台 Mac
+          </span>
         )}
         {feishuAgent.online && agentConfigured && !meegleAuthenticated && (
           <button className="btn btn-primary" onClick={() => void login()} disabled={busy !== null}>

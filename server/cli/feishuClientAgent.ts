@@ -1221,6 +1221,30 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     sendJson(response, 200, { ok: true, config: publicFeishuAgentConfig(config) })
     return
   }
+  if (request.method === 'POST' && path === '/repo-paths') {
+    const current = readConfig()
+    if (!current) {
+      sendJson(response, 409, {
+        ok: false,
+        error: 'agent_not_configured',
+        message: '本机代理尚未绑定平台同步密钥',
+      })
+      return
+    }
+    const body = await readBody(request)
+    if (!isRecord(body.repoPaths)) {
+      throw new Error('客户端仓库路径映射必须是 JSON 对象')
+    }
+    const repoPaths = parseFeishuAgentRepoPaths(body.repoPaths, true)
+    const next = {
+      ...current,
+      repoPaths: { ...current.repoPaths, ...repoPaths },
+    }
+    writeConfig(next)
+    void sendHeartbeat()
+    sendJson(response, 200, { ok: true, config: publicFeishuAgentConfig(next) })
+    return
+  }
   if (request.method === 'POST' && path === '/login/start') {
     sendJson(response, 200, { ok: true, challenge: await startLogin() })
     return
