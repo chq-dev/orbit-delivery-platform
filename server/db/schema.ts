@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 14
+export const SCHEMA_VERSION = 15
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -258,6 +258,7 @@ CREATE TABLE IF NOT EXISTS feishu_sync_credentials (
 
 CREATE TABLE IF NOT EXISTS feishu_agent_state (
   id TEXT PRIMARY KEY,
+  client_name TEXT NOT NULL DEFAULT '',
   health_json TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -266,6 +267,7 @@ CREATE TABLE IF NOT EXISTS feishu_agent_state (
 
 CREATE TABLE IF NOT EXISTS feishu_agent_commands (
   id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL DEFAULT 'primary',
   command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start')),
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
   payload_json TEXT,

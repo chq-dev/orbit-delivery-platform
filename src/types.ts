@@ -210,6 +210,8 @@ export interface FeishuClientAgentConfigStatus {
   projectKey: string
   repoId?: string
   repoPaths?: Record<string, string>
+  clientId?: string
+  clientName?: string
 }
 
 export interface FeishuClientAgentHealth {
@@ -313,6 +315,7 @@ export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'fa
 
 export interface FeishuAgentCommand {
   id: string
+  clientId: string
   type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
   payload?: unknown
@@ -322,7 +325,20 @@ export interface FeishuAgentCommand {
   error?: string
 }
 
+export interface FeishuAgentClientStatus {
+  clientId: string
+  clientName: string
+  online: boolean
+  lastSeenAt?: string
+  health?: FeishuClientAgentHealth
+  activeCommand: FeishuAgentCommand | null
+  lastCommand: FeishuAgentCommand | null
+  commands: FeishuAgentCommand[]
+}
+
 export interface FeishuAgentBridgeStatus {
+  clientId?: string
+  clientName?: string
   online: boolean
   lastSeenAt?: string
   staleAfterSeconds: number
@@ -330,6 +346,7 @@ export interface FeishuAgentBridgeStatus {
   activeCommand: FeishuAgentCommand | null
   lastCommand: FeishuAgentCommand | null
   commands: FeishuAgentCommand[]
+  clients: FeishuAgentClientStatus[]
 }
 
 export interface FeishuLoginChallenge {

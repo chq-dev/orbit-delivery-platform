@@ -59,13 +59,13 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
     assert.deepEqual(getFeishuAgentBridgeStatus(db), {
+      clientId: undefined,
       online: false,
-      lastSeenAt: undefined,
       staleAfterSeconds: 90,
-      health: undefined,
       activeCommand: null,
       lastCommand: null,
       commands: [],
+      clients: [],
     })
 
     const sanitized = sanitizeFeishuAgentHealth(health)
@@ -181,6 +181,91 @@ test('长命令心跳续租后不会被重复领取，停止续租后才允许�
     assert.equal(reclaimed.commands.length, 1)
     assert.equal(reclaimed.commands[0]?.id, command.id)
     assert.equal(reclaimed.commands[0]?.status, 'running')
+  } finally {
+    db.close()
+  }
+})
+
+test('多个执行客户端分别上报状态且命令不会跨客户端领取', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    const healthFor = (path: string) => ({
+      ...health,
+      config: { ...health.config, repoPaths: { 'repo-1': path } },
+    })
+    const clientA = {
+      clientId: 'client-mac-a',
+      clientName: '设计 Mac',
+      health: healthFor('/Users/a/work/repo-1'),
+    }
+    const clientB = {
+      clientId: 'client-mac-b',
+      clientName: '交付 Mac',
+      health: healthFor('/Users/b/work/repo-1'),
+    }
+    recordFeishuAgentHeartbeat(db, clientA)
+    recordFeishuAgentHeartbeat(db, clientB)
+
+    const all = getFeishuAgentBridgeStatus(db)
+    assert.equal(all.clients.length, 2)
+    assert.deepEqual(
+      new Set(all.clients.map((client) => client.clientName)),
+      new Set(['设计 Mac', '交付 Mac']),
+    )
+    const selectedA = getFeishuAgentBridgeStatus(db, 'client-mac-a')
+    const selectedB = getFeishuAgentBridgeStatus(db, 'client-mac-b')
+    assert.equal(selectedA.clientId, 'client-mac-a')
+    assert.equal(selectedA.health?.config.repoPaths['repo-1'], '/Users/a/work/repo-1')
+    assert.equal(selectedB.health?.config.repoPaths['repo-1'], '/Users/b/work/repo-1')
+
+    const syncA = enqueueFeishuAgentCommand(db, 'sync', undefined, 'client-mac-a')
+    const syncB = enqueueFeishuAgentCommand(db, 'sync', undefined, 'client-mac-b')
+    assert.notEqual(syncA.id, syncB.id)
+    assert.equal(syncA.clientId, 'client-mac-a')
+    assert.equal(syncB.clientId, 'client-mac-b')
+    assert.equal(
+      enqueueFeishuAgentCommand(db, 'sync', undefined, 'client-mac-a').id,
+      syncA.id,
+    )
+
+    const claimedA = recordFeishuAgentHeartbeat(db, clientA)
+    assert.deepEqual(claimedA.commands.map((command) => command.id), [syncA.id])
+    const claimedB = recordFeishuAgentHeartbeat(db, clientB)
+    assert.deepEqual(claimedB.commands.map((command) => command.id), [syncB.id])
+    assert.throws(
+      () => completeFeishuAgentCommand(db, syncA.id, {}, 'client-mac-b'),
+      (error: unknown) => error instanceof AppError && error.statusCode === 422,
+    )
+    assert.throws(
+      () => completeFeishuAgentCommand(db, syncA.id, {}),
+      (error: unknown) =>
+        error instanceof AppError && /必须携带执行客户端标识/.test(error.message),
+    )
+    completeFeishuAgentCommand(db, syncA.id, {}, 'client-mac-a')
+    completeFeishuAgentCommand(db, syncB.id, {}, 'client-mac-b')
+    assert.equal(getFeishuAgentBridgeStatus(db, 'client-mac-a').lastCommand?.status, 'succeeded')
+    assert.equal(getFeishuAgentBridgeStatus(db, 'client-mac-b').lastCommand?.status, 'succeeded')
+  } finally {
+    db.close()
+  }
+})
+
+test('多个客户端在线时必须明确选择执行目标', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    recordFeishuAgentHeartbeat(db, { clientId: 'client-a', clientName: 'A', health })
+    recordFeishuAgentHeartbeat(db, { clientId: 'client-b', clientName: 'B', health })
+    assert.throws(
+      () => enqueueFeishuAgentCommand(db, 'sync'),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 422 &&
+        /选择要执行任务的客户端/.test(error.message),
+    )
+    assert.throws(
+      () => enqueueFeishuAgentCommand(db, 'sync', undefined, 'client-offline'),
+      (error: unknown) => error instanceof AppError && error.statusCode === 422,
+    )
   } finally {
     db.close()
   }
@@ -357,6 +442,47 @@ test('版本 10 的代理命令表升级后保留旧命令并支持交付命令'
       }).type,
       'delivery_start',
     )
+    upgraded.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('版本 14 的代理命令升级后旧命令归属默认客户端', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'orbit-agent-client-upgrade-'))
+  const filename = join(directory, 'orbit.db')
+  try {
+    const oldDb = createDatabase({ filename })
+    oldDb.exec(`
+      DROP INDEX IF EXISTS idx_feishu_agent_commands_status;
+      DROP INDEX IF EXISTS idx_feishu_agent_commands_client_status;
+      DROP TABLE feishu_agent_commands;
+      CREATE TABLE feishu_agent_commands (
+        id TEXT PRIMARY KEY,
+        command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        payload_json TEXT,
+        result_json TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        claimed_at TEXT,
+        completed_at TEXT
+      );
+      INSERT INTO feishu_agent_commands
+        (id, command_type, status, created_at, updated_at)
+      VALUES ('legacy-v14-command', 'sync', 'succeeded', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      PRAGMA user_version = 14;
+    `)
+    oldDb.close()
+
+    const upgraded = createDatabase({ filename })
+    const columns = upgraded.pragma('table_info(feishu_agent_commands)') as { name: string }[]
+    assert.equal(columns.some((column) => column.name === 'client_id'), true)
+    const legacy = upgraded
+      .prepare('SELECT client_id, status FROM feishu_agent_commands WHERE id = ?')
+      .get('legacy-v14-command') as { client_id: string; status: string }
+    assert.deepEqual(legacy, { client_id: 'primary', status: 'succeeded' })
     upgraded.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

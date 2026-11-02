@@ -138,6 +138,8 @@ const configPath = resolve(
   process.env.FEISHU_AGENT_CONFIG_PATH?.trim() ||
     resolve(homedir(), '.config', 'orbit', 'feishu-sync.json'),
 )
+const configuredClientId = process.env.FEISHU_AGENT_CLIENT_ID?.trim()
+const configuredClientName = process.env.FEISHU_AGENT_CLIENT_NAME?.trim()
 const allowedOrigins = new Set(
   (
     process.env.FEISHU_AGENT_ALLOWED_ORIGINS ||
@@ -207,31 +209,49 @@ function readConfig(): FeishuAgentStoredConfig | null {
     const config = parseFeishuAgentConfig(JSON.parse(readFileSync(configPath, 'utf8')))
     if (!config) return null
     const rawRepoPaths = process.env.FEISHU_AGENT_REPO_PATHS?.trim()
-    if (!rawRepoPaths) return config
+    if (!rawRepoPaths) return ensureClientIdentity(config)
     let environmentRepoPaths: unknown
     try {
       environmentRepoPaths = JSON.parse(rawRepoPaths)
     } catch {
       console.error('FEISHU_AGENT_REPO_PATHS 必须是 JSON 对象，已忽略该环境变量')
-      return config
+      return ensureClientIdentity(config)
     }
     try {
-      return {
+      return ensureClientIdentity({
         ...config,
         repoPaths: {
           ...config.repoPaths,
           ...parseFeishuAgentRepoPaths(environmentRepoPaths, true),
         },
-      }
+      })
     } catch (error) {
       console.error(
         `FEISHU_AGENT_REPO_PATHS 无效，已忽略该环境变量：${errorMessage(error)}`,
       )
-      return config
+      return ensureClientIdentity(config)
     }
   } catch {
     return null
   }
+}
+
+function ensureClientIdentity(config: FeishuAgentStoredConfig): FeishuAgentStoredConfig {
+  const clientId =
+    (configuredClientId && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(configuredClientId)
+      ? configuredClientId
+      : undefined) ||
+    config.clientId ||
+    randomUUID()
+  const clientName = configuredClientName?.slice(0, 120) || config.clientName || hostname()
+  if (config.clientId === clientId && config.clientName === clientName) return config
+  const next = { ...config, clientId, clientName }
+  try {
+    writeConfig(next)
+  } catch (error) {
+    console.error(`保存客户端标识失败：${errorMessage(error)}`)
+  }
+  return next
 }
 
 function writeConfig(config: FeishuAgentStoredConfig): void {
@@ -808,7 +828,7 @@ async function reportDeliveryProgress(job: LocalDeliveryJob): Promise<void> {
   const response = await postAgentJson(
     config,
     `/api/integrations/feishu/agent/commands/${encodeURIComponent(job.commandId)}/progress`,
-    { job: deliveryJobSummary(job) },
+    { clientId: config.clientId, job: deliveryJobSummary(job) },
     10_000,
   )
   if (!response.ok) {
@@ -849,7 +869,7 @@ async function reportCommandResult(
   const response = await postAgentJson(
     config,
     `/api/integrations/feishu/agent/commands/${encodeURIComponent(commandId)}/result`,
-    input,
+    { clientId: config.clientId, ...input },
   )
   if (!response.ok) {
     throw new Error(`上报代理命令结果失败：${await responseMessage(response)}`)
@@ -903,7 +923,12 @@ async function sendHeartbeat(): Promise<void> {
     const response = await postAgentJson(
       config,
       '/api/integrations/feishu/agent/heartbeat',
-      { health: await currentHealth(), runningCommandIds: runningCommandIds() },
+      {
+        clientId: config.clientId,
+        clientName: config.clientName,
+        health: await currentHealth(),
+        runningCommandIds: runningCommandIds(),
+      },
     )
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}：${await responseMessage(response)}`)
@@ -1176,7 +1201,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === 'POST' && path === '/configure') {
     const config = validateFeishuAgentConfig(await readBody(request))
-    writeConfig(config)
+    const current = readConfig()
+    writeConfig({
+      ...config,
+      clientId: config.clientId ?? current?.clientId,
+      clientName: config.clientName ?? current?.clientName,
+    })
     cachedAuth = null
     cachedAuthAt = 0
     void sendHeartbeat()

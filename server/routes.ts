@@ -280,8 +280,8 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.status(201).json(ingestFeishuWorkItems(db, request.body))
   })
 
-  router.get('/integrations/feishu/agent/status', (_request, response) => {
-    response.json(getFeishuAgentBridgeStatus(db))
+  router.get('/integrations/feishu/agent/status', (request, response) => {
+    response.json(getFeishuAgentBridgeStatus(db, request.query.clientId))
   })
 
   router.post('/integrations/feishu/agent/heartbeat', (request, response) => {
@@ -299,17 +299,33 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     }
     response
       .status(202)
-      .json(enqueueFeishuAgentCommand(db, request.body?.type, request.body?.payload))
+      .json(
+        enqueueFeishuAgentCommand(
+          db,
+          request.body?.type,
+          request.body?.payload,
+          request.body?.clientId,
+        ),
+      )
   })
 
   router.post('/integrations/feishu/agent/commands/:id/progress', (request, response) => {
     assertSyncTokenAuthorized(request)
-    response.json(updateFeishuAgentCommandProgress(db, request.params.id, request.body))
+    response.json(
+      updateFeishuAgentCommandProgress(
+        db,
+        request.params.id,
+        request.body,
+        request.body?.clientId,
+      ),
+    )
   })
 
   router.post('/integrations/feishu/agent/commands/:id/result', (request, response) => {
     assertSyncTokenAuthorized(request)
-    response.json(completeFeishuAgentCommand(db, request.params.id, request.body))
+    response.json(
+      completeFeishuAgentCommand(db, request.params.id, request.body, request.body?.clientId),
+    )
   })
 
   router.get('/integrations/feishu/sync-token', (_request, response) => {

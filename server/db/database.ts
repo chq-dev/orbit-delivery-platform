@@ -33,12 +33,22 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       ensureColumn(db, 'work_items', 'project_line', 'TEXT')
       ensureColumn(db, 'work_items', 'design_reference', 'TEXT')
       ensureColumn(db, 'work_items', 'requirement_breakdown', 'TEXT')
+      ensureColumn(db, 'feishu_agent_state', 'client_name', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(
+        db,
+        'feishu_agent_commands',
+        'client_id',
+        "TEXT NOT NULL DEFAULT 'primary'",
+      )
       migrateFeishuAgentCommands(db)
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
       )
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_work_items_project_line ON work_items(project_line)',
+      )
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_client_status ON feishu_agent_commands(client_id, status, created_at)',
       )
       db.pragma(`user_version = ${SCHEMA_VERSION}`)
     })()
@@ -49,6 +59,9 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
   )
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_work_items_project_line ON work_items(project_line)',
+  )
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_client_status ON feishu_agent_commands(client_id, status, created_at)',
   )
 
   return db
@@ -73,6 +86,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
   if (!table) return
   if (table.sql.includes("'delivery_start'")) {
     ensureColumn(db, 'feishu_agent_commands', 'payload_json', 'TEXT')
+    ensureColumn(db, 'feishu_agent_commands', 'client_id', "TEXT NOT NULL DEFAULT 'primary'")
     return
   }
 
@@ -81,6 +95,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
   db.exec(`
     CREATE TABLE feishu_agent_commands (
       id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL DEFAULT 'primary',
       command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start')),
       status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
       payload_json TEXT,
@@ -94,12 +109,15 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
   `)
   db.exec(`
     INSERT INTO feishu_agent_commands
-      (id, command_type, status, payload_json, result_json, error, created_at, updated_at, claimed_at, completed_at)
-    SELECT id, command_type, status, NULL, result_json, error, created_at, updated_at, claimed_at, completed_at
+      (id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at, claimed_at, completed_at)
+    SELECT id, 'primary', command_type, status, NULL, result_json, error, created_at, updated_at, claimed_at, completed_at
     FROM feishu_agent_commands_legacy
   `)
   db.exec('DROP TABLE feishu_agent_commands_legacy')
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_status ON feishu_agent_commands(status, created_at)',
+  )
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_client_status ON feishu_agent_commands(client_id, status, created_at)',
   )
 }

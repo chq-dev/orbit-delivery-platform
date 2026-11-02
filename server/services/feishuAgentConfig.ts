@@ -6,6 +6,8 @@ export interface FeishuAgentStoredConfig {
   projectKey: string
   repoId?: string
   repoPaths: Record<string, string>
+  clientId?: string
+  clientName?: string
 }
 
 export interface FeishuAgentPublicConfig {
@@ -14,6 +16,8 @@ export interface FeishuAgentPublicConfig {
   projectKey: string
   repoId?: string
   repoPaths: Record<string, string>
+  clientId?: string
+  clientName?: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -22,6 +26,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function clientId(value: unknown): string | undefined {
+  const candidate = text(value)
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(candidate) ? candidate : undefined
+}
+
+function clientName(value: unknown): string | undefined {
+  return text(value).slice(0, 120) || undefined
 }
 
 function repoId(value: string): boolean {
@@ -63,6 +76,8 @@ export function parseFeishuAgentConfig(value: unknown): FeishuAgentStoredConfig 
     projectKey: text(value.projectKey) || 'rjcloud',
     repoId: text(value.repoId) || undefined,
     repoPaths: parseFeishuAgentRepoPaths(value.repoPaths),
+    ...(clientId(value.clientId) ? { clientId: clientId(value.clientId) } : {}),
+    ...(clientName(value.clientName) ? { clientName: clientName(value.clientName) } : {}),
   }
 }
 
@@ -76,6 +91,8 @@ export function publicFeishuAgentConfig(
     projectKey: config.projectKey,
     repoId: config.repoId,
     repoPaths: { ...config.repoPaths },
+    ...(config.clientId ? { clientId: config.clientId } : {}),
+    ...(config.clientName ? { clientName: config.clientName } : {}),
   }
 }
 
@@ -85,6 +102,8 @@ export function validateFeishuAgentConfig(input: unknown): FeishuAgentStoredConf
   const syncToken = text(input.syncToken)
   const projectKey = text(input.projectKey) || 'rjcloud'
   const repoId = text(input.repoId)
+  const configuredClientId = clientId(input.clientId)
+  const configuredClientName = clientName(input.clientName)
   let url: URL
   try {
     url = new URL(platformBaseUrl)
@@ -96,11 +115,16 @@ export function validateFeishuAgentConfig(input: unknown): FeishuAgentStoredConf
   }
   if (syncToken.length < 16) throw new Error('平台同步密钥长度不足')
   if (!/^[A-Za-z0-9_]+$/.test(projectKey)) throw new Error('项目标识格式不正确')
+  if (input.clientId !== undefined && !configuredClientId) {
+    throw new Error('客户端标识格式不正确')
+  }
   return {
     platformBaseUrl,
     syncToken,
     projectKey,
     repoId: repoId || undefined,
     repoPaths: parseFeishuAgentRepoPaths(input.repoPaths, true),
+    ...(configuredClientId ? { clientId: configuredClientId } : {}),
+    ...(configuredClientName ? { clientName: configuredClientName } : {}),
   }
 }

@@ -24,15 +24,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-export async function fetchFeishuAgentStatus(): Promise<FeishuAgentBridgeStatus> {
-  return request<FeishuAgentBridgeStatus>('/integrations/feishu/agent/status')
+export async function fetchFeishuAgentStatus(
+  clientId?: string,
+): Promise<FeishuAgentBridgeStatus> {
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
+  return request<FeishuAgentBridgeStatus>(`/integrations/feishu/agent/status${query}`)
 }
 
 export async function enqueueFeishuAgentCommand(
   type: FeishuAgentCommandType,
+  clientId?: string,
 ): Promise<FeishuAgentCommand> {
   return request<FeishuAgentCommand>('/integrations/feishu/agent/commands', {
     method: 'POST',
-    body: JSON.stringify({ type }),
+    body: JSON.stringify({ type, clientId }),
   })
 }

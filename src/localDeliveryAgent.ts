@@ -183,19 +183,23 @@ export function markLocalDeliveryStartFailed(
 
 export async function startLocalDelivery(
   input: LocalDeliveryStartInput,
+  clientId?: string,
 ): Promise<LocalDeliveryJob> {
   const command = await request<FeishuAgentCommand>('/integrations/feishu/agent/commands', {
     method: 'POST',
-    body: JSON.stringify({ type: 'delivery_start', payload: input }),
+    body: JSON.stringify({ type: 'delivery_start', payload: input, clientId }),
   })
   if (!command.id) throw new Error('平台未返回本机交付命令')
   return queuedJobFromCommand(command, input)
 }
 
-export async function probeLocalDeliveryAgent(): Promise<LocalDeliveryAgentReadiness> {
+export async function probeLocalDeliveryAgent(
+  clientId?: string,
+): Promise<LocalDeliveryAgentReadiness> {
   try {
+    const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
     const [status, platform] = await Promise.all([
-      request<FeishuAgentBridgeStatus>('/integrations/feishu/agent/status'),
+      request<FeishuAgentBridgeStatus>(`/integrations/feishu/agent/status${query}`),
       request<{ deliveryContractVersion?: number }>('/health'),
     ])
     const health: FeishuClientAgentHealth | undefined = status.health
@@ -229,6 +233,7 @@ export async function probeLocalDeliveryAgent(): Promise<LocalDeliveryAgentReadi
 
 export async function waitForLocalDelivery(
   commandId: string,
+  clientId: string | undefined,
   onUpdate: (job: LocalDeliveryJob) => void,
   timeoutMs = 45 * 60_000,
   signal?: AbortSignal,
@@ -241,7 +246,10 @@ export async function waitForLocalDelivery(
     throwIfAborted(signal)
     let status: FeishuAgentBridgeStatus
     try {
-      status = await request<FeishuAgentBridgeStatus>('/integrations/feishu/agent/status')
+      const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
+      status = await request<FeishuAgentBridgeStatus>(
+        `/integrations/feishu/agent/status${query}`,
+      )
       consecutiveErrors = 0
     } catch (error) {
       consecutiveErrors += 1

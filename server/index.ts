@@ -46,6 +46,9 @@ const server: Server = config.httpsEnabled
     )
   : createHttpServer(app)
 
+server.keepAliveTimeout = 65_000
+server.headersTimeout = 66_000
+
 let redirectServer: Server | undefined
 if (config.httpsEnabled && config.httpRedirectPort > 0) {
   redirectServer = createHttpServer((request, response) => {
@@ -89,15 +92,36 @@ const feishuSyncTimer = setInterval(() => {
   })
 }, config.feishuSyncIntervalMs)
 
-function shutdown() {
+let shuttingDown = false
+
+function shutdown(exitCode = 0): void {
+  if (shuttingDown) return
+  shuttingDown = true
   clearInterval(pipelineTimer)
   clearInterval(feishuSyncTimer)
   redirectServer?.close()
-  server.close(() => {
-    db.close()
-    process.exit(0)
-  })
+  const finish = () => {
+    try {
+      db.close()
+    } finally {
+      process.exit(exitCode)
+    }
+  }
+  const forceTimer = setTimeout(finish, 10_000)
+  forceTimer.unref()
+  server.close(finish)
 }
 
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
+process.on('SIGHUP', () => {
+  console.info('收到 SIGHUP；生产环境由 systemd/launchd 托管，服务保持运行')
+})
+process.on('uncaughtException', (error) => {
+  console.error('未捕获异常，服务将由进程管理器自动重启', error)
+  shutdown(1)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('未处理的 Promise 拒绝，服务将由进程管理器自动重启', reason)
+  shutdown(1)
+})

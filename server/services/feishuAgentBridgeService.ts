@@ -4,7 +4,7 @@ import { notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
 import { parseLocalDeliveryAgentRequest } from './localDeliveryAgentService.js'
 
-const AGENT_STATE_ID = 'primary'
+export const DEFAULT_FEISHU_AGENT_CLIENT_ID = 'primary'
 const RUNNING_COMMAND_LEASE_MS = 15 * 60_000
 const RECENT_COMMAND_LIMIT = 20
 const MAX_RUNNING_COMMAND_IDS = 50
@@ -96,6 +96,7 @@ export interface FeishuAgentHealth {
 
 export interface FeishuAgentCommand {
   id: string
+  clientId: string
   type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
   payload?: unknown
@@ -106,6 +107,8 @@ export interface FeishuAgentCommand {
 }
 
 export interface FeishuAgentBridgeStatus {
+  clientId?: string
+  clientName?: string
   online: boolean
   lastSeenAt?: string
   staleAfterSeconds: number
@@ -113,15 +116,30 @@ export interface FeishuAgentBridgeStatus {
   activeCommand: FeishuAgentCommand | null
   lastCommand: FeishuAgentCommand | null
   commands: FeishuAgentCommand[]
+  clients: FeishuAgentClientStatus[]
+}
+
+export interface FeishuAgentClientStatus {
+  clientId: string
+  clientName: string
+  online: boolean
+  lastSeenAt?: string
+  health?: FeishuAgentHealth
+  activeCommand: FeishuAgentCommand | null
+  lastCommand: FeishuAgentCommand | null
+  commands: FeishuAgentCommand[]
 }
 
 interface AgentStateRow {
+  id: string
+  client_name: string
   health_json: string
   last_seen_at: string
 }
 
 interface CommandRow {
   id: string
+  client_id: string
   command_type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
   payload_json: string | null
@@ -141,6 +159,15 @@ function text(value: unknown, maxLength = 4_000): string {
 
 function optionalText(value: unknown, maxLength = 4_000): string | undefined {
   return text(value, maxLength) || undefined
+}
+
+function agentClientId(value: unknown): string | undefined {
+  const candidate = text(value, 128)
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(candidate) ? candidate : undefined
+}
+
+function agentClientName(value: unknown, clientId: string): string {
+  return text(value, 120) || (clientId === DEFAULT_FEISHU_AGENT_CLIENT_ID ? '默认客户端' : clientId)
 }
 
 function boolean(value: unknown): boolean {
@@ -192,6 +219,7 @@ function parseJson(value: string | null): unknown {
 function publicCommand(row: CommandRow): FeishuAgentCommand {
   return {
     id: row.id,
+    clientId: row.client_id,
     type: row.command_type,
     status: row.status,
     payload: parseJson(row.payload_json),
@@ -318,42 +346,47 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
   }
 }
 
-function renewRunningCommands(db: AppDatabase, ids: string[], now: string): void {
+function renewRunningCommands(
+  db: AppDatabase,
+  clientId: string,
+  ids: string[],
+  now: string,
+): void {
   if (ids.length === 0) return
   const placeholders = ids.map(() => '?').join(', ')
   db.prepare(
     `UPDATE feishu_agent_commands
      SET claimed_at = ?
-     WHERE status = 'running' AND id IN (${placeholders})`,
-  ).run(now, ...ids)
+     WHERE client_id = ? AND status = 'running' AND id IN (${placeholders})`,
+  ).run(now, clientId, ...ids)
 }
 
-function claimPendingCommands(db: AppDatabase): FeishuAgentCommand[] {
+function claimPendingCommands(db: AppDatabase, clientId: string): FeishuAgentCommand[] {
   return db.transaction(() => {
     const now = nowIso()
     const staleBefore = new Date(Date.now() - RUNNING_COMMAND_LEASE_MS).toISOString()
     db.prepare(
       `UPDATE feishu_agent_commands
        SET status = 'pending', claimed_at = NULL, updated_at = ?
-       WHERE status = 'running' AND (claimed_at IS NULL OR claimed_at < ?)`,
-    ).run(now, staleBefore)
+       WHERE client_id = ? AND status = 'running' AND (claimed_at IS NULL OR claimed_at < ?)`,
+    ).run(now, clientId, staleBefore)
 
     const rows = db
       .prepare(
-        `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
+        `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
          FROM feishu_agent_commands
-         WHERE status = 'pending'
+         WHERE client_id = ? AND status = 'pending'
          ORDER BY created_at ASC, rowid ASC
          LIMIT 10`,
       )
-      .all() as CommandRow[]
+      .all(clientId) as CommandRow[]
     const update = db.prepare(
       `UPDATE feishu_agent_commands
        SET status = 'running', claimed_at = ?, updated_at = ?
-       WHERE id = ? AND status = 'pending'`,
+       WHERE id = ? AND client_id = ? AND status = 'pending'`,
     )
     return rows
-      .filter((row) => update.run(now, now, row.id).changes === 1)
+      .filter((row) => update.run(now, now, row.id, clientId).changes === 1)
       .map((row) => publicCommand({ ...row, status: 'running', updated_at: now }))
   })()
 }
@@ -362,34 +395,85 @@ export function recordFeishuAgentHeartbeat(
   db: AppDatabase,
   input: unknown,
 ): {
+  clientId: string
+  clientName: string
   lastSeenAt: string
   commands: FeishuAgentCommand[]
 } {
   const payload = isRecord(input) ? input : {}
+  const requestedClientId = text(payload.clientId, 128)
+  const clientId = agentClientId(requestedClientId) ?? DEFAULT_FEISHU_AGENT_CLIENT_ID
+  if (requestedClientId && !agentClientId(requestedClientId)) {
+    throw unprocessable('客户端标识格式不正确')
+  }
+  const clientName = agentClientName(payload.clientName, clientId)
   const health = sanitizeFeishuAgentHealth(
     'health' in payload ? payload.health : input,
   )
   const activeCommandIds = runningCommandIds(payload.runningCommandIds)
   const now = nowIso()
   db.prepare(
-    `INSERT INTO feishu_agent_state (id, health_json, last_seen_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO feishu_agent_state (id, client_name, health_json, last_seen_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       client_name = excluded.client_name,
        health_json = excluded.health_json,
        last_seen_at = excluded.last_seen_at,
        updated_at = excluded.updated_at`,
-  ).run(AGENT_STATE_ID, JSON.stringify(health), now, now, now)
-  renewRunningCommands(db, activeCommandIds, now)
+  ).run(clientId, clientName, JSON.stringify(health), now, now, now)
+  renewRunningCommands(db, clientId, activeCommandIds, now)
   return {
+    clientId,
+    clientName,
     lastSeenAt: now,
-    commands: claimPendingCommands(db),
+    commands: claimPendingCommands(db, clientId),
   }
+}
+
+function onlineAt(lastSeenAt: string, now = Date.now()): boolean {
+  const lastSeen = Date.parse(lastSeenAt)
+  return Number.isFinite(lastSeen) && now - lastSeen <= FEISHU_AGENT_ONLINE_WINDOW_MS
+}
+
+function resolveCommandClientId(db: AppDatabase, requestedClientId: unknown): string {
+  const requested = agentClientId(requestedClientId)
+  if (text(requestedClientId, 128) && !requested) {
+    throw unprocessable('执行客户端标识格式不正确')
+  }
+  if (requested) {
+    const state = db
+      .prepare('SELECT id, client_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?')
+      .get(requested) as AgentStateRow | undefined
+    if (!state) {
+      throw unprocessable('执行客户端不存在或尚未上报心跳，请确认客户端代理已启动')
+    }
+    if (!onlineAt(state.last_seen_at)) {
+      throw unprocessable(
+        `执行客户端 ${state.client_name || state.id} 已离线，请恢复该客户端代理后重试`,
+      )
+    }
+    return requested
+  }
+
+  const states = db
+    .prepare(
+      `SELECT id, client_name, health_json, last_seen_at
+       FROM feishu_agent_state
+       ORDER BY last_seen_at DESC`,
+    )
+    .all() as AgentStateRow[]
+  if (states.length === 0) return DEFAULT_FEISHU_AGENT_CLIENT_ID
+  if (states.length === 1) return states[0].id
+  const online = states.filter((state) => onlineAt(state.last_seen_at))
+  if (online.length === 1) return online[0].id
+  throw unprocessable('当前有多个执行客户端在线，请先选择要执行任务的客户端')
 }
 
 export function enqueueFeishuAgentCommand(
   db: AppDatabase,
   type: unknown,
   payload?: unknown,
+  requestedClientId?: unknown,
 ): FeishuAgentCommand {
   if (
     type !== 'login_start' &&
@@ -399,20 +483,21 @@ export function enqueueFeishuAgentCommand(
   ) {
     throw unprocessable('不支持的代理命令')
   }
+  const clientId = resolveCommandClientId(db, requestedClientId)
   const request = type === 'delivery_start' ? parseLocalDeliveryAgentRequest(payload) : undefined
   const payloadJson = request ? JSON.stringify(request) : null
   const existing = db
     .prepare(
-      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands
-       WHERE command_type = ? AND status IN ('pending', 'running')
+       WHERE client_id = ? AND command_type = ? AND status IN ('pending', 'running')
        ORDER BY created_at DESC, rowid DESC
        LIMIT 1`,
     )
-    .get(type) as CommandRow | undefined
+    .get(clientId, type) as CommandRow | undefined
   if (existing) {
     if (type === 'delivery_start' && existing.payload_json !== payloadJson) {
-      throw unprocessable('本机已有其他交付正在执行，请等待完成后再启动')
+      throw unprocessable('该执行客户端已有其他交付正在执行，请等待完成后再启动')
     }
     return publicCommand(existing)
   }
@@ -421,11 +506,12 @@ export function enqueueFeishuAgentCommand(
   const id = `agent-command-${randomUUID()}`
   db.prepare(
     `INSERT INTO feishu_agent_commands
-      (id, command_type, status, payload_json, result_json, error, created_at, updated_at)
-     VALUES (?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
-  ).run(id, type, payloadJson, now, now)
+      (id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
+  ).run(id, clientId, type, payloadJson, now, now)
   return {
     id,
+    clientId,
     type,
     status: 'pending',
     payload: request,
@@ -438,14 +524,16 @@ export function completeFeishuAgentCommand(
   db: AppDatabase,
   id: string,
   input: unknown,
+  requestedClientId?: unknown,
 ): FeishuAgentCommand {
   const existing = db
     .prepare(
-      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands WHERE id = ?`,
     )
     .get(id) as CommandRow | undefined
   if (!existing) throw notFound('代理命令')
+  assertCommandClient(existing, requestedClientId)
 
   const payload = isRecord(input) ? input : {}
   const error = text(payload.error, 4_000)
@@ -490,14 +578,16 @@ export function updateFeishuAgentCommandProgress(
   db: AppDatabase,
   id: string,
   input: unknown,
+  requestedClientId?: unknown,
 ): FeishuAgentCommand {
   const existing = db
     .prepare(
-      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands WHERE id = ?`,
     )
     .get(id) as CommandRow | undefined
   if (!existing) throw notFound('代理命令')
+  assertCommandClient(existing, requestedClientId)
   if (existing.command_type !== 'delivery_start') {
     throw unprocessable('该代理命令不支持交付进度')
   }
@@ -528,35 +618,91 @@ export function updateFeishuAgentCommandProgress(
   })
 }
 
-export function getFeishuAgentBridgeStatus(db: AppDatabase): FeishuAgentBridgeStatus {
-  const state = db
-    .prepare(
-      `SELECT health_json, last_seen_at
-       FROM feishu_agent_state WHERE id = ?`,
-    )
-    .get(AGENT_STATE_ID) as AgentStateRow | undefined
+function assertCommandClient(existing: CommandRow, requestedClientId: unknown): void {
+  const requested = agentClientId(requestedClientId)
+  if (existing.client_id !== DEFAULT_FEISHU_AGENT_CLIENT_ID && !requested) {
+    throw unprocessable('多客户端代理命令必须携带执行客户端标识')
+  }
+  if (requested && requested !== existing.client_id) {
+    throw unprocessable('该代理命令不属于当前执行客户端')
+  }
+}
+
+function clientStatus(
+  db: AppDatabase,
+  state: AgentStateRow,
+  now: number,
+): FeishuAgentClientStatus {
   const rows = db
     .prepare(
-      `SELECT id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands
+       WHERE client_id = ?
        ORDER BY created_at DESC, rowid DESC
        LIMIT ?`,
     )
-    .all(RECENT_COMMAND_LIMIT) as CommandRow[]
+    .all(state.id, RECENT_COMMAND_LIMIT) as CommandRow[]
   const commands = rows.map(publicCommand)
-  const lastSeen = state ? Date.parse(state.last_seen_at) : Number.NaN
-  const online = Number.isFinite(lastSeen) && Date.now() - lastSeen <= FEISHU_AGENT_ONLINE_WINDOW_MS
-
   return {
-    online,
-    lastSeenAt: state?.last_seen_at,
-    staleAfterSeconds: Math.floor(FEISHU_AGENT_ONLINE_WINDOW_MS / 1_000),
-    health: state ? (parseJson(state.health_json) as FeishuAgentHealth) : undefined,
+    clientId: state.id,
+    clientName: state.client_name || agentClientName(undefined, state.id),
+    online: onlineAt(state.last_seen_at, now),
+    lastSeenAt: state.last_seen_at,
+    health: parseJson(state.health_json) as FeishuAgentHealth | undefined,
     activeCommand:
       commands.find(
         (command) => command.status === 'pending' || command.status === 'running',
       ) ?? null,
     lastCommand: commands[0] ?? null,
     commands,
+  }
+}
+
+export function getFeishuAgentBridgeStatus(
+  db: AppDatabase,
+  requestedClientId?: unknown,
+): FeishuAgentBridgeStatus {
+  const states = db
+    .prepare(
+      `SELECT id, client_name, health_json, last_seen_at
+       FROM feishu_agent_state
+       ORDER BY last_seen_at DESC`,
+    )
+    .all() as AgentStateRow[]
+  const now = Date.now()
+  const clients = states
+    .map((state) => clientStatus(db, state, now))
+    .sort((left, right) => {
+      if (left.online !== right.online) return left.online ? -1 : 1
+      return Date.parse(right.lastSeenAt ?? '') - Date.parse(left.lastSeenAt ?? '')
+    })
+  const requested = agentClientId(requestedClientId)
+  const selected = requested
+    ? clients.find((client) => client.clientId === requested)
+    : clients.find((client) => client.online) ?? clients[0]
+
+  if (!selected) {
+    return {
+      clientId: requested,
+      online: false,
+      staleAfterSeconds: Math.floor(FEISHU_AGENT_ONLINE_WINDOW_MS / 1_000),
+      activeCommand: null,
+      lastCommand: null,
+      commands: [],
+      clients,
+    }
+  }
+
+  return {
+    clientId: selected.clientId,
+    clientName: selected.clientName,
+    online: selected.online,
+    lastSeenAt: selected.lastSeenAt,
+    staleAfterSeconds: Math.floor(FEISHU_AGENT_ONLINE_WINDOW_MS / 1_000),
+    health: selected.health,
+    activeCommand: selected.activeCommand,
+    lastCommand: selected.lastCommand,
+    commands: selected.commands,
+    clients,
   }
 }

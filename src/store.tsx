@@ -34,6 +34,7 @@ import {
 import {
   type Account,
   type FeishuAgentBridgeStatus,
+  type FeishuAgentClientStatus,
   type FeishuAgentCommand,
   type FeishuAgentLoginState,
   type FeishuClientAgentHealth,
@@ -113,6 +114,8 @@ interface DataContextValue {
   feishuIntegration: FeishuIntegrationStatus
   feishuSnapshot: FeishuSnapshotStatus
   feishuAgent: FeishuClientAgentState
+  feishuAgentClients: FeishuAgentClientStatus[]
+  selectedFeishuAgentClientId?: string
   feishuSyncToken: FeishuSyncTokenStatus
   feishuAgentLogin: FeishuAgentLoginState
   loading: boolean
@@ -134,6 +137,7 @@ interface DataContextValue {
   syncFeishu: () => Promise<FeishuSyncResult>
   syncFeishuAgent: (announce?: boolean) => Promise<FeishuSyncResult>
   refreshFeishuAgent: (quiet?: boolean) => Promise<FeishuClientAgentHealth | null>
+  selectFeishuAgentClient: (clientId: string) => Promise<void>
   refreshFeishuSyncToken: () => Promise<FeishuSyncTokenStatus | null>
   bindFeishuAgent: () => Promise<FeishuAgentBindResult>
   beginFeishuAgentLogin: () => Promise<FeishuLoginChallenge>
@@ -178,6 +182,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
     checking: true,
     online: false,
   })
+  const [feishuAgentClients, setFeishuAgentClients] = useState<FeishuAgentClientStatus[]>([])
+  const [selectedFeishuAgentClientId, setSelectedFeishuAgentClientId] = useState<
+    string | undefined
+  >()
   const [feishuSyncToken, setFeishuSyncToken] = useState<FeishuSyncTokenStatus>({
     configured: false,
     source: 'none',
@@ -192,6 +200,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const hasLoaded = useRef(false)
   const pipelineStatuses = useRef<Map<string, PipelineRun['status']>>(new Map())
   const feishuAgentHealth = useRef<FeishuClientAgentHealth | null>(null)
+  const feishuAgentOnline = useRef(false)
+  const feishuAgentClientId = useRef<string | undefined>(undefined)
   const feishuAgentSyncInFlight = useRef(false)
   const lastFeishuAgentSyncAt = useRef(0)
   const workItemsRequest = useRef<Promise<void> | null>(null)
@@ -387,12 +397,38 @@ export function DataProvider({ children }: { children: ReactNode }) {
   )
 
   const applyFeishuAgentStatus = useCallback((status: FeishuAgentBridgeStatus) => {
-    const health = status.health
+    const clients = status.clients ?? []
+    setFeishuAgentClients(clients)
+    const currentClientId = feishuAgentClientId.current
+    const currentClientExists = Boolean(
+      currentClientId && clients.some((client) => client.clientId === currentClientId),
+    )
+    const statusClientExists = Boolean(
+      status.clientId && clients.some((client) => client.clientId === status.clientId),
+    )
+    const nextClientId =
+      (currentClientExists ? currentClientId : undefined) ||
+      (statusClientExists ? status.clientId : undefined) ||
+      clients.find((client) => client.online)?.clientId ||
+      clients[0]?.clientId
+    if (nextClientId && nextClientId !== feishuAgentClientId.current) {
+      feishuAgentClientId.current = nextClientId
+      setSelectedFeishuAgentClientId(nextClientId)
+    } else if (!nextClientId && feishuAgentClientId.current) {
+      feishuAgentClientId.current = undefined
+      setSelectedFeishuAgentClientId(undefined)
+    }
+    const selected = nextClientId
+      ? clients.find((client) => client.clientId === nextClientId)
+      : undefined
+    const effective = selected ?? status
+    const health = effective.health
     feishuAgentHealth.current = health ?? null
+    feishuAgentOnline.current = effective.online
     setFeishuAgent({
       checking: false,
-      online: status.online,
-      lastSeenAt: status.lastSeenAt,
+      online: effective.online,
+      lastSeenAt: effective.lastSeenAt,
       health,
     })
     const challenge = loginChallengeFrom(health?.pendingLogin)
@@ -406,10 +442,34 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const fetchAgentStatus = useCallback(async () => {
-    const status = await fetchFeishuAgentStatus()
+    const status = await fetchFeishuAgentStatus(feishuAgentClientId.current)
     applyFeishuAgentStatus(status)
     return status
   }, [applyFeishuAgentStatus])
+
+  const selectFeishuAgentClient = useCallback(
+    async (clientId: string) => {
+      if (!clientId) return
+      feishuAgentClientId.current = clientId
+      setSelectedFeishuAgentClientId(clientId)
+      feishuAgentHealth.current = null
+      feishuAgentOnline.current = false
+      setFeishuAgent((current) => ({ ...current, checking: true, error: undefined }))
+      setFeishuAgentLogin({ polling: false })
+      try {
+        const status = await fetchFeishuAgentStatus(clientId)
+        applyFeishuAgentStatus(status)
+      } catch (error) {
+        setFeishuAgent((current) => ({
+          ...current,
+          checking: false,
+          online: false,
+          error: error instanceof Error ? error.message : '无法读取执行客户端状态',
+        }))
+      }
+    },
+    [applyFeishuAgentStatus],
+  )
 
   const refreshFeishuAgent = useCallback(
     async (quiet = false) => {
@@ -421,6 +481,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         return status.online ? status.health ?? null : null
       } catch (error) {
         feishuAgentHealth.current = null
+        feishuAgentOnline.current = false
         setFeishuAgent((current) => ({
           ...current,
           checking: false,
@@ -434,11 +495,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
   )
 
   const waitForAgentCommand = useCallback(
-    async (command: FeishuAgentCommand, timeoutMs: number): Promise<FeishuAgentCommand> => {
+    async (
+      command: FeishuAgentCommand,
+      timeoutMs: number,
+      clientId: string,
+    ): Promise<FeishuAgentCommand> => {
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
         await delay(command.type === 'sync' ? 2_000 : 1_200)
-        const status = await fetchAgentStatus()
+        const status = await fetchFeishuAgentStatus(clientId)
         const current = status.commands.find((entry) => entry.id === command.id)
         if (current?.status === 'failed') {
           throw new Error(current.error || '本机代理执行命令失败')
@@ -447,7 +512,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }
       throw new Error('等待本机代理执行超时，请检查代理是否在线')
     },
-    [fetchAgentStatus],
+    [],
   )
 
   const refreshFeishuSyncToken = useCallback(async () => {
@@ -465,12 +530,22 @@ export function DataProvider({ children }: { children: ReactNode }) {
       if (feishuAgentSyncInFlight.current) {
         throw new Error('飞书同步正在执行，请稍后刷新状态')
       }
+      const clientId = feishuAgentClientId.current
+      if (!clientId) {
+        throw new Error('未选择执行客户端，请先启动客户端代理并在页面选择执行客户端')
+      }
       let health = feishuAgentHealth.current
       if (!health?.config.configured || !health.meegle.authenticated) {
         health = await refreshFeishuAgent(true)
       }
+      if (feishuAgentClientId.current !== clientId) {
+        throw new Error('执行客户端已切换，请重新发起飞书同步')
+      }
       if (!health) {
         throw new Error('本机飞书同步代理未启动，请先在客户端运行 npm run feishu:agent')
+      }
+      if (!feishuAgentOnline.current) {
+        throw new Error('所选执行客户端离线，请恢复该客户端代理后重试')
       }
       if (health.running) throw new Error('本机飞书同步代理正在执行同步，请稍后重试')
       if (!health.config.configured) {
@@ -485,8 +560,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
       feishuAgentSyncInFlight.current = true
       try {
-        const command = await enqueueFeishuAgentCommand('sync')
-        const completed = await waitForAgentCommand(command, 15 * 60_000)
+        const command = await enqueueFeishuAgentCommand('sync', clientId)
+        const completed = await waitForAgentCommand(command, 15 * 60_000, clientId)
         const result = syncResultFrom(completed.result)
         if (!result) throw new Error('本机代理未返回有效的同步结果')
         lastFeishuAgentSyncAt.current = Date.now()
@@ -542,8 +617,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
     if (!health?.config.configured) {
       throw new Error('本机代理尚未保存当前同步密钥，无法通过代理轮换')
     }
-    const command = await enqueueFeishuAgentCommand('rotate_token')
-    await waitForAgentCommand(command, 60_000)
+    const clientId = feishuAgentClientId.current
+    if (!clientId) throw new Error('未选择执行客户端，请先选择要执行密钥轮换的客户端')
+    const command = await enqueueFeishuAgentCommand('rotate_token', clientId)
+    await waitForAgentCommand(command, 60_000, clientId)
     const rotated = await refreshFeishuSyncToken()
     if (!rotated) throw new Error('无法读取轮换后的同步密钥状态')
     setFeishuSyncToken(rotated)
@@ -567,8 +644,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       if (status.health.meegle.authenticated) {
         throw new Error('飞书已经完成授权，无需重复登录')
       }
-      const command = await enqueueFeishuAgentCommand('login_start')
-      const completed = await waitForAgentCommand(command, 45_000)
+      const clientId = feishuAgentClientId.current
+      if (!clientId) throw new Error('未选择执行客户端，无法发起飞书授权')
+      const command = await enqueueFeishuAgentCommand('login_start', clientId)
+      const completed = await waitForAgentCommand(command, 45_000, clientId)
       let challenge = loginChallengeFrom(
         (completed.result as { challenge?: unknown } | undefined)?.challenge,
       )
@@ -669,7 +748,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
     if (document.visibilityState !== 'visible' || feishuAgentSyncInFlight.current) return
     let health = feishuAgentHealth.current
     if (!health) health = await refreshFeishuAgent(true)
-    if (!health?.config.configured || !health.meegle.authenticated || health.running) return
+    if (
+      !feishuAgentOnline.current ||
+      !health?.config.configured ||
+      !health.meegle.authenticated ||
+      health.running
+    ) {
+      return
+    }
     const lastRunAt = health.lastRun ? Date.parse(health.lastRun.at) : Number.NaN
     const lastSyncAt = Math.max(
       lastFeishuAgentSyncAt.current,
@@ -961,6 +1047,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       feishuIntegration,
       feishuSnapshot,
       feishuAgent,
+      feishuAgentClients,
+      selectedFeishuAgentClientId,
       feishuSyncToken,
       feishuAgentLogin,
       loading,
@@ -979,6 +1067,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       syncFeishu,
       syncFeishuAgent,
       refreshFeishuAgent,
+      selectFeishuAgentClient,
       refreshFeishuSyncToken,
       bindFeishuAgent,
       beginFeishuAgentLogin,
@@ -1000,6 +1089,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       disconnectFeishu,
       dismissToast,
       feishuAgent,
+      feishuAgentClients,
       feishuAgentLogin,
       feishuInbox,
       feishuInboxError,
@@ -1018,10 +1108,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
       reload,
       reports,
       refreshFeishuAgent,
+      selectFeishuAgentClient,
       refreshFeishuSnapshot,
       refreshFeishuSyncToken,
       repositories,
       rotateFeishuSyncToken,
+      selectedFeishuAgentClientId,
       syncFeishuAgent,
       updateRepositorySettings,
       syncFeishu,

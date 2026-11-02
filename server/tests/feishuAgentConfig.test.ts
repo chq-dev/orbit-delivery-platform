@@ -77,3 +77,24 @@ test('本机代理保存仓库专属路径且公开状态不泄漏密钥', () =>
     false,
   )
 })
+
+test('每台执行客户端持久化唯一标识和展示名称', () => {
+  const parsed = parseFeishuAgentConfig({
+    platformBaseUrl: 'http://8.145.45.84:8787',
+    syncToken: 'agent-secret-token-with-enough-length',
+    clientId: 'client-mac-harvey',
+    clientName: '交付 Mac',
+  })
+  assert.ok(parsed)
+  assert.equal(parsed.clientId, 'client-mac-harvey')
+  assert.equal(parsed.clientName, '交付 Mac')
+  assert.equal(publicFeishuAgentConfig(parsed).clientId, 'client-mac-harvey')
+  assert.equal(publicFeishuAgentConfig(parsed).clientName, '交付 Mac')
+  assert.throws(() =>
+    validateFeishuAgentConfig({
+      platformBaseUrl: 'http://8.145.45.84:8787',
+      syncToken: '0123456789abcdef',
+      clientId: 'bad client id',
+    }),
+  )
+})

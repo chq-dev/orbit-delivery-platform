@@ -138,14 +138,19 @@ tail -f /tmp/orbit-feishu-agent.out /tmp/orbit-feishu-agent.err
   页面不允许轮换，客户端代理需使用相同值启动。
 
 本机代理默认监听 `127.0.0.1:18787`。飞书同步、密钥轮换和客户端本地交付都通过平台命令队列
-执行；代理只接受工作项、仓库和布尔选项，分支从平台仓库配置读取，本地路径优先使用当前客户端
-的仓库路径映射、未配置时回退到平台仓库路径。代理主动访问
-平台并领取命令，同时回传七步执行进度：
+执行。每台代理首次启动会生成并持久化唯一的 `clientId`，同时用 hostname 作为页面展示名；平台
+页面可从任意终端打开，并在“执行客户端”选择器里切换到真正要执行任务的机器。命令只下发给选定
+的 `clientId`，不会由其他在线客户端竞争领取。代理只接受工作项、仓库和布尔选项，分支从平台仓库
+配置读取，本地路径优先使用该客户端的仓库路径映射、未配置时回退到平台仓库路径。代理主动访问
+平台并领取自己的命令，同时回传七步执行进度：
 
 ```bash
 FEISHU_AGENT_PORT=18787
 FEISHU_AGENT_HEARTBEAT_INTERVAL_MS=10000
 FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
+# 可选：同一用户目录用独立配置文件和端口运行多个代理，或需要稳定展示名时显式指定
+FEISHU_AGENT_CLIENT_ID=client-mac-harvey
+FEISHU_AGENT_CLIENT_NAME=交付 Mac
 ```
 
 代理配置默认写入 `~/.config/orbit/feishu-sync.json`（权限 `0600`），不会写入浏览器
@@ -161,6 +166,8 @@ FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
   "platformBaseUrl": "http://8.145.45.84:8787",
   "syncToken": "由平台生成后一次性写入",
   "projectKey": "rjcloud",
+  "clientId": "client-mac-harvey",
+  "clientName": "交付 Mac",
   "repoPaths": {
     "repo-1": "/Users/shinya/Documents/workspace/SME/basic-component-cloud"
   }
@@ -169,7 +176,8 @@ FEISHU_AGENT_LOGIN_POLL_INTERVAL_MS=3000
 
 也可以用 `FEISHU_AGENT_REPO_PATHS='{"repo-1":"/absolute/path"}'` 覆盖，适合写入 launchd
 环境。平台仓库配置仍是默认值；`repoPaths` 只影响当前代理所在客户端，并会作为当前客户端实际
-采用路径显示在一键交付弹窗中。
+采用路径显示在一键交付弹窗中。`clientId` 和 `clientName` 会随心跳上报；页面同时展示所有在线/
+离线客户端，只有在线客户端可以被选为命令目标。
 
 同一仓库在不同客户端上也可能检出了不同分支。平台仓库配置的 `branch` 只作为默认值；本机代理
 会在执行前读取当前 Git 工作区的实际分支，并以实际分支完成 Codex 执行、提交、推送和平台回写。
@@ -341,6 +349,26 @@ npm run build
 npm run start:server
 ```
 
+生产服务器不要直接在 SSH 终端前台运行 `npm run start:server`，否则连接断开或进程异常后服务会
+长期离线。Linux 服务器可安装 systemd 常驻服务，进程退出后 3 秒自动拉起，并忽略 SSH 会话产生
+的 `SIGHUP`：
+
+```bash
+sudo bash scripts/install-orbit-server-systemd.sh
+sudo systemctl status orbit-delivery
+sudo journalctl -u orbit-delivery -f
+curl -kfsS https://127.0.0.1:8787/api/health || curl -fsS http://127.0.0.1:8787/api/health
+```
+
+脚本会生成 `/etc/systemd/system/orbit-delivery.service`，默认以当前 sudo 用户运行。配置读取顺序是
+`ORBIT_ENV_FILE`、仓库根目录 `.env`、`/etc/orbit-delivery.env`；前两者都不存在时会创建
+`/etc/orbit-delivery.env`，新数据库使用随机 `VAULT_KEY`。如果已经存在 `data/orbit.db`，脚本会
+沿用该数据库和原默认 `VAULT_KEY`，避免常驻化后旧凭据无法解密。安装前请先停掉前台运行的旧服务，
+避免 8787 端口冲突。可用 `ORBIT_SERVICE_USER`、`ORBIT_ENV_FILE`、`ORBIT_NPM_BIN`、
+`ORBIT_NODE_BIN`、`ORBIT_VAULT_KEY`、`ORBIT_STATE_DIR` 覆盖默认值。Node.js HTTP
+`keepAliveTimeout` 已设为 65 秒，高于常见反向代理的 60 秒空闲连接回收时间，避免正常长连接被默认
+5 秒超时提前关闭。
+
 后端测试与类型检查：
 
 ```bash
@@ -387,9 +415,9 @@ server/
 - `GET /api/integrations/feishu/status`、`POST /api/integrations/feishu/connect`。
 - `POST /api/integrations/feishu/test`、`POST /api/integrations/feishu/sync`。
 - `POST /api/integrations/feishu/ingest`：供 Meegle CLI 外部同步器写入工作项，使用 `FEISHU_INGEST_TOKEN` 鉴权。
-- `GET /api/integrations/feishu/agent/status`：返回代理在线状态、脱敏健康状态和最近命令，不返回任何密钥。
-- `POST /api/integrations/feishu/agent/heartbeat`：代理携带同步密钥上报心跳并领取待执行命令。
-- `POST /api/integrations/feishu/agent/commands`：页面下发登录、同步或密钥轮换命令；相同类型的未完成命令会去重。
+- `GET /api/integrations/feishu/agent/status?clientId=...`：返回指定客户端状态，并在 `clients` 中返回全部客户端；不返回任何密钥。
+- `POST /api/integrations/feishu/agent/heartbeat`：代理携带 `clientId`/`clientName`、同步密钥和运行中命令 ID 上报心跳，只领取自己的待执行命令。
+- `POST /api/integrations/feishu/agent/commands`：页面携带目标 `clientId` 下发登录、同步、密钥轮换或交付命令；同类型未完成命令仅在同一个客户端内去重。
 - `POST /api/integrations/feishu/agent/commands/:id/result`：代理携带同步密钥上报命令结果。
 - `GET /api/integrations/feishu/sync-token`：返回平台同步密钥状态和尾号，不返回明文。
 - `POST /api/integrations/feishu/sync-token/bootstrap`：首次生成平台同步密钥，明文仅返回一次。
@@ -449,16 +477,17 @@ Use $rjcloud-local-delivery to deliver REQ-1082 locally.
 
 ### 客户端本地执行
 
-远端平台无法访问开发机上的 `/Users/...` 路径。需要在客户端检出中执行代码时，先在客户端运行
-并保持 `npm run feishu:agent`。页面“启动一键交付”选择“客户端本地”后点击“一键本机执行”，
-浏览器通过平台同源命令接口入队，代理领取后从平台仓库配置读取路径和分支并直接执行 `deliver:local`：
+远端平台无法访问开发机上的 `/Users/...` 路径。需要在某个客户端检出中执行代码时，先在该机器运行
+并保持 `npm run feishu:agent`，然后在任意浏览器终端打开平台，在交付弹窗选择对应的“执行客户端”。点击
+“一键客户端执行”后，浏览器通过平台同源命令接口只向该 `clientId` 入队，代理领取后从平台仓库配置读取
+路径和分支并直接执行 `deliver:local`：
 
 ```text
 浏览器页面 -> POST /api/integrations/feishu/agent/commands
-           -> 平台命令队列 -> 本机代理主动心跳领取
+           -> 平台按 clientId 定向队列 -> 目标客户端代理主动心跳领取
            -> 本机代理读取平台 /api/bootstrap
            -> npm run deliver:local -- --path <仓库配置> --branch <仓库配置> --run ...
-           -> 代理回传步骤进度 -> 页面轮询同源 /api/integrations/feishu/agent/status
+           -> 代理回传步骤进度 -> 页面轮询所选客户端的 /api/integrations/feishu/agent/status
 ```
 
 执行弹窗会实时显示“读取平台 → 校验契约 → 校验仓库 → Codex 执行 → 检查证据 → 提交推送 → 回写平台”的步骤状态。平台健康检查遇到瞬时网络错误会自动重试；失败时停留在具体步骤并显示连接超时、路径、分支、Codex 或回写错误。旧服务端缺少 `deliveryContractVersion` 时会在启动 Codex 前明确拒绝。

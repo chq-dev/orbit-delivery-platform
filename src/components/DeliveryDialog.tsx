@@ -45,10 +45,10 @@ import { Field, Modal, StatusBadge } from './ui'
 const MAX_VISIBLE_WORK_ITEMS = 50
 
 function deliveryStatusLabel(job: LocalDeliveryJob | null, error: string): string {
-  if (error || job?.status === 'failed') return '本机执行失败'
-  if (job?.status === 'succeeded') return '本机执行完成'
-  if (job?.status === 'running') return '本机执行中'
-  return '等待本机执行'
+  if (error || job?.status === 'failed') return '客户端执行失败'
+  if (job?.status === 'succeeded') return '客户端执行完成'
+  if (job?.status === 'running') return '客户端执行中'
+  return '等待客户端执行'
 }
 
 function WorkItemPicker({
@@ -250,6 +250,9 @@ export function DeliveryDialog({
     notify,
     reload,
     refreshWorkItems,
+    feishuAgentClients,
+    selectedFeishuAgentClientId,
+    selectFeishuAgentClient,
   } = useData()
   const [workItemId, setWorkItemId] = useState('')
   const [repoId, setRepoId] = useState('')
@@ -287,6 +290,9 @@ export function DeliveryDialog({
   )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
+  const selectedClient = feishuAgentClients.find(
+    (client) => client.clientId === selectedFeishuAgentClientId,
+  )
   const localRepoPath = localAgent.repoPaths[repoId]
   const effectiveLocalPath = localRepoPath || selectedRepo?.localPath
   const savedScreenshotCount = selectedItem?.requirementScreenshotCount ?? 0
@@ -369,13 +375,13 @@ export function DeliveryDialog({
       codexAvailable: false,
       repoPaths: {},
     })
-    void probeLocalDeliveryAgent().then((state) => {
+    void probeLocalDeliveryAgent(selectedFeishuAgentClientId).then((state) => {
       if (!cancelled) setLocalAgent({ ...state, checking: false })
     })
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, selectedFeishuAgentClientId])
 
   useEffect(() => {
     if (open) return
@@ -413,6 +419,13 @@ export function DeliveryDialog({
     setRepoId(id)
     setDeliveryJob(null)
     setDeliveryError('')
+  }
+
+  const handleClientChange = (clientId: string) => {
+    setDeliveryJob(null)
+    setDeliveryError('')
+    setLocalAgent((current) => ({ ...current, checking: true }))
+    void selectFeishuAgentClient(clientId)
   }
 
   const addScreenshotFiles = async (files: File[]) => {
@@ -464,6 +477,11 @@ export function DeliveryDialog({
 
   const launch = async () => {
     if (launching) return
+    const clientId = selectedFeishuAgentClientId
+    if (!clientId) {
+      notify('未选择执行客户端', '请先启动客户端代理并在页面选择执行客户端', 'warning')
+      return
+    }
     if (selectedItem?.type === 'requirement' && requirementContextIssue) {
       notify('缺少需求交付上下文', requirementContextIssue, 'warning')
       return
@@ -475,23 +493,23 @@ export function DeliveryDialog({
     if (!effectiveLocalPath) {
       notify(
         '缺少客户端代码路径',
-        '请先到代码仓库配置绝对路径，或在本机代理 repoPaths 中配置当前客户端的路径',
+        '请先到代码仓库配置绝对路径，或在所选执行客户端的 repoPaths 中配置本机路径',
         'warning',
       )
       return
     }
     if (!localAgent.online) {
-      notify('本机代理离线', '请先在当前客户端运行 npm run feishu:agent', 'warning')
+      notify('执行客户端离线', '请先在目标机器运行 npm run feishu:agent', 'warning')
       return
     }
     if (!localAgent.configured) {
-      notify('本机代理未绑定平台', '请先到账号中心完成本机代理绑定', 'warning')
+      notify('执行客户端未绑定平台', '请先到账号中心完成客户端代理绑定', 'warning')
       return
     }
     if (!localAgent.codexAvailable) {
       notify(
         '未找到 Codex CLI',
-        '请先设置 CODEX_BIN 为 Codex 可执行文件绝对路径，再重启本机代理',
+        '请先在该执行客户端设置 CODEX_BIN 为 Codex 可执行文件绝对路径，再重启代理',
         'warning',
       )
       return
@@ -516,21 +534,25 @@ export function DeliveryDialog({
         autoClose,
       })
       setDeliveryJob(pending)
-      const started = await startLocalDelivery({
-        workItemId,
-        repoId,
-        autoCommit,
-        pushAfterAcceptance,
-        autoClose,
-      })
+      const started = await startLocalDelivery(
+        {
+          workItemId,
+          repoId,
+          autoCommit,
+          pushAfterAcceptance,
+          autoClose,
+        },
+        clientId,
+      )
       setDeliveryJob(started)
       notify(
-        '本机交付已启动',
-        `${workItemId} · ${selectedRepo.name} · ${selectedRepo.branch}`,
+        '客户端交付已启动',
+        `${workItemId} · ${selectedClient?.clientName ?? clientId} · ${selectedRepo.name}`,
         'info',
       )
       const completed = await waitForLocalDelivery(
         started.id,
+        clientId,
         setDeliveryJob,
         45 * 60_000,
         controller.signal,
@@ -567,7 +589,7 @@ export function DeliveryDialog({
       })
       setDeliveryError(message)
       notify('本机交付失败', message, 'warning')
-      void probeLocalDeliveryAgent().then((state) =>
+      void probeLocalDeliveryAgent(selectedFeishuAgentClientId).then((state) =>
         setLocalAgent({ ...state, checking: false }),
       )
     } finally {
@@ -588,18 +610,18 @@ export function DeliveryDialog({
           <span className="modal-footer-hint">
             <ShieldCheck size={15} />{' '}
             {localAgent.checking
-              ? '正在检测当前客户端的本机交付代理'
+              ? '正在检测所选执行客户端'
               : requirementContextIssue
                 ? requirementContextIssue
               : !localAgent.platformReady
                 ? localAgent.error || '平台服务端未升级，当前无法下发本机交付'
               : !localAgent.online
-                ? localAgent.error || '本机代理离线，请先在客户端运行 npm run feishu:agent'
+                ? localAgent.error || '执行客户端离线，请先在目标机器运行 npm run feishu:agent'
                 : !localAgent.configured
-                  ? '本机代理已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
+                  ? '执行客户端已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
                   : !localAgent.codexAvailable
                     ? '未检测到 Codex CLI，请设置 CODEX_BIN 为可执行文件绝对路径后重启代理'
-                    : '点击后由本机代理在配置路径直接执行 Codex，只有真实代码变更才会创建提交'}
+                    : '点击后由所选执行客户端在配置路径直接执行 Codex，只有真实代码变更才会创建提交'}
           </span>
           <div className="modal-footer-actions">
             <button
@@ -618,6 +640,7 @@ export function DeliveryDialog({
                 Boolean(requirementContextIssue) ||
                 compressingScreenshots ||
                 launching ||
+                !selectedFeishuAgentClientId ||
                 localAgent.checking ||
                 !localAgent.online ||
                 !localAgent.platformReady ||
@@ -625,7 +648,7 @@ export function DeliveryDialog({
                 !localAgent.codexAvailable
               }
             >
-              {launching ? '本机执行中…' : '一键本机执行'} <ArrowRight size={16} />
+              {launching ? '客户端执行中…' : '一键客户端执行'} <ArrowRight size={16} />
             </button>
           </div>
         </>
@@ -823,6 +846,34 @@ export function DeliveryDialog({
               )}
             </section>
           )}
+          <Field
+            label="执行客户端"
+            required
+            hint={
+              selectedClient
+                ? `${selectedClient.online ? '在线' : '离线'} · ${selectedClient.clientId.slice(0, 8)} · ${Object.keys(selectedClient.health?.config.repoPaths ?? {}).length} 个仓库专属路径`
+                : '请先启动至少一个 feishu:agent 客户端代理'
+            }
+          >
+            <select
+              value={selectedFeishuAgentClientId ?? ''}
+              onChange={(event) => handleClientChange(event.target.value)}
+              disabled={launching || feishuAgentClients.length === 0}
+            >
+              {!selectedFeishuAgentClientId && <option value="">未发现执行客户端</option>}
+              {feishuAgentClients.map((client) => (
+                <option
+                  key={client.clientId}
+                  value={client.clientId}
+                  disabled={!client.online && client.clientId !== selectedFeishuAgentClientId}
+                >
+                  {client.clientName} · {client.online ? '在线' : '离线'} ·{' '}
+                  {client.clientId.slice(0, 8)}
+                </option>
+              ))}
+            </select>
+          </Field>
+
           <div className="field-row">
             <Field label="目标代码仓库" required>
               <select value={repoId} onChange={(event) => handleRepoChange(event.target.value)}>
@@ -848,10 +899,12 @@ export function DeliveryDialog({
             </Field>
           </div>
 
-          <Field label="执行位置" hint="代码只在本机执行，服务端不再提供模拟交付入口">
+          <Field label="执行位置" hint="代码只在所选执行客户端运行，服务端不提供模拟交付入口">
             <div className="input-with-icon readonly-input">
               <Terminal size={15} />
-              <span>客户端本地 · 本机代理</span>
+              <span>
+                客户端本地 · {selectedClient?.clientName ?? selectedFeishuAgentClientId ?? '未选择'}
+              </span>
             </div>
           </Field>
 
@@ -859,10 +912,10 @@ export function DeliveryDialog({
             label="客户端代码路径"
             hint={
               localRepoPath
-                ? '当前本机代理已为这个仓库配置专属路径，优先于平台共享路径'
+                ? '所选执行客户端已为这个仓库配置专属路径，优先于平台共享路径'
                 : effectiveLocalPath
-                  ? '使用平台仓库路径；如当前客户端路径不同，请为本机代理配置 repoPaths'
-                  : '未配置客户端路径，无法一键执行；请先到代码仓库填写'
+                  ? '使用平台仓库路径；如所选客户端路径不同，请为该客户端配置 repoPaths'
+                  : '所选执行客户端未配置客户端路径，无法一键执行；请先到代码仓库填写'
             }
           >
             <div className="input-with-icon readonly-input">
@@ -912,8 +965,8 @@ export function DeliveryDialog({
 
           {(deliveryJob || deliveryError) && (
             <Field
-              label="本机执行状态"
-              hint={`本机代理 ${
+              label={`${selectedClient?.clientName ?? '执行客户端'}状态`}
+              hint={`执行客户端 ${
                 localAgent.checking
                   ? '检测中'
                   : localAgent.online
@@ -958,7 +1011,7 @@ export function DeliveryDialog({
             <div>
               <strong>客户端执行说明</strong>
               <p>
-                点击“一键本机执行”后，页面通过平台命令队列把任务下发给当前客户端的 <code>npm run feishu:agent</code> 代理。代理从平台读取仓库路径与分支，在本地校验 Git 工作区后调用 Codex 完成设计、编码、验证与提交；勾选验收后推送时才会写入远程分支。
+                点击“一键本机执行”后，页面通过平台命令队列把任务只下发给所选执行客户端的 <code>npm run feishu:agent</code> 代理。代理从平台读取仓库路径与分支，在本地校验 Git 工作区后调用 Codex 完成设计、编码、验证与提交；勾选验收后推送时才会写入远程分支。
               </p>
             </div>
           </div>

@@ -29,9 +29,12 @@ function formatRunTime(value: string | undefined): string {
 export function FeishuLiveSyncCard() {
   const {
     feishuAgent,
+    feishuAgentClients,
+    selectedFeishuAgentClientId,
     feishuAgentLogin,
     feishuSyncToken,
     refreshFeishuAgent,
+    selectFeishuAgentClient,
     refreshFeishuSyncToken,
     bindFeishuAgent,
     beginFeishuAgentLogin,
@@ -48,6 +51,9 @@ export function FeishuLiveSyncCard() {
   const meegleAuthenticated = Boolean(health?.meegle.authenticated)
   const feishuMcp = health?.feishuMcp
   const meegleMcp = health?.meegleMcp
+  const selectedClient = feishuAgentClients.find(
+    (client) => client.clientId === selectedFeishuAgentClientId,
+  )
   const ready = feishuAgent.online && agentConfigured && meegleAuthenticated
   const command = 'npm run feishu:agent'
   const lastRun = health?.lastRun
@@ -112,18 +118,47 @@ export function FeishuLiveSyncCard() {
         <div className="feishu-live-title">
           <span className="feishu-live-icon"><Laptop size={17} /></span>
           <div>
-            <h2>本机飞书实时同步</h2>
-            <p>同步代理通过平台心跳接收任务，从已登录的 Meegle CLI 拉取需求和缺陷并写入平台。</p>
+            <h2>飞书实时同步</h2>
+            <p>可从任意页面选择在线执行客户端；代理通过平台心跳领取自己的任务，从已登录的 Meegle CLI 拉取需求和缺陷并写入平台。</p>
           </div>
         </div>
         <StatusBadge status={status} label={statusLabel} />
       </div>
 
+      {feishuAgentClients.length > 0 && (
+        <label className="feishu-agent-client-picker">
+          <span>执行客户端</span>
+          <select
+            value={selectedFeishuAgentClientId ?? ''}
+            onChange={(event) => void selectFeishuAgentClient(event.target.value)}
+            aria-label="选择飞书同步执行客户端"
+          >
+            {feishuAgentClients.map((client) => (
+              <option key={client.clientId} value={client.clientId}>
+                {client.clientName} · {client.online ? '在线' : '离线'} ·{' '}
+                {client.clientId.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+          <small>
+            {selectedClient?.health?.config.repoPaths
+              ? `仓库路径：${Object.entries(selectedClient.health.config.repoPaths)
+                  .map(([repoId, path]) => `${repoId} → ${path}`)
+                  .join('；')}`
+              : '该客户端未上报仓库专属路径，将使用平台共享路径'}
+          </small>
+        </label>
+      )}
+
       <div className="feishu-live-meta">
         <span>
-          <small>本机代理</small>
+          <small>执行客户端</small>
           <strong className={feishuAgent.online ? 'is-ok' : 'is-warn'}>
-            {feishuAgent.checking ? '检测中…' : feishuAgent.online ? '在线' : '离线'}
+            {feishuAgent.checking
+              ? '检测中…'
+              : feishuAgent.online
+                ? selectedClient?.clientName || '在线'
+                : selectedClient?.clientName || '离线'}
           </strong>
         </span>
         <span>
