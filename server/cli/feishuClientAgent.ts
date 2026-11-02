@@ -38,6 +38,7 @@ import {
   LOCAL_DELIVERY_CONTRACT_VERSION,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryTarget,
+  resolveLocalDeliveryBranch,
   supportsLocalDeliveryContract,
   updateLocalDeliveryAgentStep,
   type LocalDeliveryAgentRequest,
@@ -535,7 +536,7 @@ async function fetchDeliveryBootstrap(
 async function validateClientCheckout(
   job: LocalDeliveryJob,
   localPath: string,
-  branch: string,
+  configuredBranch?: string,
 ): Promise<{ checkout: string; branch: string }> {
   setStep(job, 'checkout', 'running', '正在校验绝对路径、Git 根目录与目标分支')
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
@@ -568,11 +569,16 @@ async function validateClientCheckout(
     throw new Error(`读取本地分支失败：${currentBranch.stderr.trim() || currentBranch.stdout.trim()}`)
   }
   const actualBranch = currentBranch.stdout.trim()
-  if (actualBranch !== branch) {
-    throw new Error(`本地仓库当前分支为 ${actualBranch}，与配置分支 ${branch} 不一致`)
-  }
-  setStep(job, 'checkout', 'success', `${checkout} · ${actualBranch}`)
-  return { checkout, branch: actualBranch }
+  const resolved = resolveLocalDeliveryBranch(actualBranch, configuredBranch)
+  setStep(
+    job,
+    'checkout',
+    'success',
+    resolved.adapted
+      ? `${checkout} · ${resolved.branch}（平台配置 ${resolved.configuredBranch}，已按本机实际分支执行）`
+      : `${checkout} · ${resolved.branch}`,
+  )
+  return { checkout, branch: resolved.branch }
 }
 
 function localDeliveryEnvironment(syncToken: string): NodeJS.ProcessEnv {
@@ -676,17 +682,17 @@ async function executeLocalDelivery(
     const bootstrap = await fetchDeliveryBootstrap(job, config)
     setStep(job, 'platform', 'success', '已读取工作项与仓库配置')
     const target = resolveLocalDeliveryTarget(bootstrap, request, config.repoPaths)
-    job.localPath = target.localPath
-    job.branch = target.branch
-    await validateClientCheckout(job, target.localPath, target.branch)
+    const checkout = await validateClientCheckout(job, target.localPath, target.branch)
+    job.localPath = checkout.checkout
+    job.branch = checkout.branch
     setStep(job, 'codex', 'running', 'Codex 正在分析需求、生成设计与代码')
     job.stage = 'Codex 正在执行需求解析、编码与验证'
 
     const args = buildLocalDeliveryCommand({
       platformBaseUrl: config.platformBaseUrl,
       ...request,
-      localPath: target.localPath,
-      branch: target.branch,
+      localPath: checkout.checkout,
+      branch: checkout.branch,
     })
     const result = await runCommand(
       npmCommand,

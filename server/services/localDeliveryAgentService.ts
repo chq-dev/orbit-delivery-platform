@@ -156,7 +156,13 @@ export interface LocalDeliveryTarget {
   workItem: LocalDeliveryBootstrapWorkItem
   repository: LocalDeliveryBootstrapRepository
   localPath: string
+  branch?: string
+}
+
+export interface LocalDeliveryBranchResolution {
   branch: string
+  configuredBranch?: string
+  adapted: boolean
 }
 
 export interface LocalDeliveryCommandInput {
@@ -248,8 +254,21 @@ export function resolveLocalDeliveryTarget(
   }
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
   const branch = text(repository.branch) || text(workItem.branch)
-  if (!branch) throw new Error('该仓库尚未配置目标分支')
-  return { workItem, repository, localPath, branch }
+  return { workItem, repository, localPath, branch: branch || undefined }
+}
+
+export function resolveLocalDeliveryBranch(
+  actualBranch: unknown,
+  configuredBranch?: unknown,
+): LocalDeliveryBranchResolution {
+  const branch = text(actualBranch)
+  if (!branch) throw new Error('无法读取本地仓库当前分支')
+  const configured = text(configuredBranch)
+  return {
+    branch,
+    configuredBranch: configured || undefined,
+    adapted: Boolean(configured && configured !== branch),
+  }
 }
 
 export function buildLocalDeliveryCommand(input: LocalDeliveryCommandInput): string[] {

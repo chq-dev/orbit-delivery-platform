@@ -833,10 +833,17 @@ export function DeliveryDialog({
                 ))}
               </select>
             </Field>
-            <Field label="目标分支" hint="来自仓库配置">
+            <Field
+              label="目标分支"
+              hint={
+                deliveryJob?.branch
+                  ? '本机实际分支'
+                  : '平台默认值，执行时以本机实际分支为准'
+              }
+            >
               <div className="input-with-icon readonly-input">
                 <GitBranch size={15} />
-                <span>{selectedRepo?.branch ?? '-'}</span>
+                <span>{deliveryJob?.branch ?? selectedRepo?.branch ?? '-'}</span>
               </div>
             </Field>
           </div>
@@ -972,7 +979,7 @@ export function DeliveryDialog({
             <div>
               <GitBranch size={15} />
               <span>{selectedRepo?.name ?? '-'}</span>
-              <small>{selectedRepo?.branch ?? '-'}</small>
+              <small>{deliveryJob?.branch ?? selectedRepo?.branch ?? '-'}</small>
             </div>
             <div>
               <FileText size={15} />
@@ -982,7 +989,7 @@ export function DeliveryDialog({
             <div>
               <GitMerge size={15} />
               <span>集成报告 · 提交 · 编译 · 升级 · 测试</span>
-              <small>验证通过后推送 {selectedRepo?.branch ?? '目标分支'} 并生成测试报告</small>
+              <small>验证通过后推送本机实际分支并生成测试报告</small>
             </div>
           </div>
           <div className="preview-footer">

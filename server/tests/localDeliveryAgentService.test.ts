@@ -8,6 +8,7 @@ import {
   describeFetchError,
   fetchJsonWithRetry,
   parseLocalDeliveryAgentRequest,
+  resolveLocalDeliveryBranch,
   resolveLocalDeliveryTarget,
   supportsLocalDeliveryContract,
   updateLocalDeliveryAgentStep,
@@ -96,6 +97,37 @@ test('本机代理的仓库路径映射优先于平台共享路径', () => {
   )
   assert.equal(target.localPath, '/Users/chenhuaqu/sme/sme-main')
   assert.equal(target.branch, 'dev-harvey')
+})
+
+test('本机实际分支优先于平台默认分支，并标记已适配', () => {
+  assert.deepEqual(resolveLocalDeliveryBranch('dev-harvey', 'main-harvey'), {
+    branch: 'dev-harvey',
+    configuredBranch: 'main-harvey',
+    adapted: true,
+  })
+  assert.deepEqual(resolveLocalDeliveryBranch('main-harvey', 'main-harvey'), {
+    branch: 'main-harvey',
+    configuredBranch: 'main-harvey',
+    adapted: false,
+  })
+  assert.deepEqual(resolveLocalDeliveryBranch('feature/local', ''), {
+    branch: 'feature/local',
+    configuredBranch: undefined,
+    adapted: false,
+  })
+  assert.throws(() => resolveLocalDeliveryBranch('', 'main-harvey'), /无法读取本地仓库当前分支/)
+})
+
+test('平台未配置默认分支时仍可使用本机实际分支', () => {
+  const target = resolveLocalDeliveryTarget(
+    {
+      repositories: [{ id: 'repo-1', localPath: '/Users/example/sme-main' }],
+      workItems: [{ id: 'REQ-1082', repoId: 'repo-1' }],
+    },
+    request,
+  )
+  assert.equal(target.branch, undefined)
+  assert.equal(resolveLocalDeliveryBranch('main-harvey', target.branch).branch, 'main-harvey')
 })
 
 test('一键交付命令通过 argv 传递并自动授权推送确认', () => {

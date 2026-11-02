@@ -33,6 +33,7 @@ import { materializeDeliveryScreenshots } from '../services/deliveryContextAsset
 import {
   buildCodexExecArgs,
   fetchJsonWithRetry,
+  resolveLocalDeliveryBranch,
   supportsLocalDeliveryContract,
 } from '../services/localDeliveryAgentService.js'
 import type { Repository, WorkItem, WorkItemScreenshot } from '../../src/types'
@@ -101,7 +102,7 @@ Options:
   --work-item <id>     Work item ID, for example REQ-1137
   --repo <id>          Repository ID (default: work item repo)
   --path <dir>         Client checkout path (default: repository localPath)
-  --branch <name>      Expected branch (default: repository branch)
+  --branch <name>      Platform default branch (local checkout branch wins when different)
   --run                Start Codex in the client checkout after generating the prompt
   --no-commit          Leave validated changes uncommitted for human review
   --push               Push the resulting commit after Codex succeeds (requires confirmation)
@@ -174,7 +175,7 @@ function requireGit(cwd: string, args: string[], operation: string): string {
   return result.stdout
 }
 
-function validateCheckout(localPath: string, expectedBranch: string) {
+function validateCheckout(localPath: string, configuredBranch?: string) {
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
   if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
     throw new Error(`客户端代码路径不存在或不是目录：${localPath}`)
@@ -185,13 +186,23 @@ function validateCheckout(localPath: string, expectedBranch: string) {
     throw new Error(`客户端代码路径不是 Git 工作区根目录：${localPath}`)
   }
   const currentBranch = requireGit(checkout, ['symbolic-ref', '--short', 'HEAD'], '读取本地分支')
-  if (currentBranch !== expectedBranch) {
-    throw new Error(`本地仓库当前分支为 ${currentBranch}，与配置分支 ${expectedBranch} 不一致`)
+  const resolved = resolveLocalDeliveryBranch(currentBranch, configuredBranch)
+  if (resolved.adapted) {
+    console.warn(
+      `提示：本地仓库当前分支为 ${resolved.branch}，与平台配置分支 ${resolved.configuredBranch} 不一致，已按本机实际分支 ${resolved.branch} 执行`,
+    )
   }
   const dirty = Boolean(requireGit(checkout, ['status', '--porcelain'], '检查本地变更'))
   const head = requireGit(checkout, ['rev-parse', 'HEAD'], '读取本地提交')
   const remote = git(checkout, ['remote', 'get-url', 'origin'])
-  return { checkout, branch: currentBranch, dirty, head, remote: remote.stdout }
+  return {
+    checkout,
+    branch: resolved.branch,
+    configuredBranch: resolved.configuredBranch,
+    dirty,
+    head,
+    remote: remote.stdout,
+  }
 }
 
 async function fetchBootstrap(api: string): Promise<BootstrapData> {
@@ -528,8 +539,9 @@ async function main(): Promise<void> {
 
   const localPath = args.path || repository.localPath
   if (!localPath) throw new Error('未配置客户端代码路径，请先在仓库配置中填写本地绝对路径')
-  const branch = args.branch || repository.branch || item.branch
-  const checkout = validateCheckout(localPath, branch)
+  const configuredBranch = args.branch || repository.branch || item.branch
+  const checkout = validateCheckout(localPath, configuredBranch)
+  const branch = checkout.branch
   if (!checkout.remote) console.warn('提示：本地仓库没有 origin 远端，--push 将无法执行')
 
   const artifactDir = join(checkout.checkout, 'delivery-artifacts', item.id)
@@ -561,6 +573,7 @@ async function main(): Promise<void> {
     title: item.title,
     repository: repository.name,
     branch,
+    configuredBranch: checkout.configuredBranch ?? null,
     checkout: checkout.checkout,
     head: checkout.head,
     dirty: checkout.dirty,
@@ -681,6 +694,7 @@ async function main(): Promise<void> {
     workItem: item.id,
     checkout: checkout.checkout,
     branch,
+    configuredBranch: checkout.configuredBranch ?? null,
     previousHead: checkout.head,
     commit: finalHead,
     pushed: args.push,
