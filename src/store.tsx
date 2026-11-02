@@ -32,6 +32,10 @@ import {
   fetchFeishuAgentStatus,
 } from './feishuAgent'
 import {
+  discoverLocalFeishuAgentClientId,
+  localAgentIsRegistered,
+} from './localAgentDiscovery'
+import {
   type Account,
   type FeishuAgentBridgeStatus,
   type FeishuAgentClientStatus,
@@ -116,6 +120,7 @@ interface DataContextValue {
   feishuAgent: FeishuClientAgentState
   feishuAgentClients: FeishuAgentClientStatus[]
   selectedFeishuAgentClientId?: string
+  localFeishuAgentClientId?: string
   feishuSyncToken: FeishuSyncTokenStatus
   feishuAgentLogin: FeishuAgentLoginState
   loading: boolean
@@ -184,6 +189,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
   })
   const [feishuAgentClients, setFeishuAgentClients] = useState<FeishuAgentClientStatus[]>([])
   const [selectedFeishuAgentClientId, setSelectedFeishuAgentClientId] = useState<
+    string | undefined
+  >()
+  const [localFeishuAgentClientId, setLocalFeishuAgentClientId] = useState<
     string | undefined
   >()
   const [feishuSyncToken, setFeishuSyncToken] = useState<FeishuSyncTokenStatus>({
@@ -403,20 +411,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
     const currentClientExists = Boolean(
       currentClientId && clients.some((client) => client.clientId === currentClientId),
     )
-    const statusClientExists = Boolean(
-      status.clientId && clients.some((client) => client.clientId === status.clientId),
-    )
     const nextClientId =
-      (currentClientExists ? currentClientId : undefined) ||
-      (statusClientExists ? status.clientId : undefined) ||
-      clients.find((client) => client.online)?.clientId ||
-      clients[0]?.clientId
+      currentClientExists ? currentClientId : undefined
     if (nextClientId && nextClientId !== feishuAgentClientId.current) {
       feishuAgentClientId.current = nextClientId
       setSelectedFeishuAgentClientId(nextClientId)
     } else if (!nextClientId && feishuAgentClientId.current) {
       feishuAgentClientId.current = undefined
       setSelectedFeishuAgentClientId(undefined)
+    }
+    if (!nextClientId) {
+      feishuAgentHealth.current = null
+      feishuAgentOnline.current = false
+      setFeishuAgent({
+        checking: false,
+        online: false,
+        lastSeenAt: undefined,
+        health: undefined,
+      })
+      return
     }
     const selected = nextClientId
       ? clients.find((client) => client.clientId === nextClientId)
@@ -471,6 +484,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [applyFeishuAgentStatus],
   )
 
+  const autoSelectLocalFeishuAgent = useCallback(
+    async (clients: FeishuAgentClientStatus[]): Promise<boolean> => {
+      if (feishuAgentClientId.current) return false
+      const localClientId = await discoverLocalFeishuAgentClientId()
+      if (localClientId) setLocalFeishuAgentClientId(localClientId)
+      if (
+        !localClientId ||
+        feishuAgentClientId.current ||
+        !localAgentIsRegistered(localClientId, clients)
+      ) {
+        return false
+      }
+      await selectFeishuAgentClient(localClientId)
+      return true
+    },
+    [selectFeishuAgentClient],
+  )
+
   const refreshFeishuAgent = useCallback(
     async (quiet = false) => {
       if (!quiet) {
@@ -478,6 +509,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }
       try {
         const status = await fetchAgentStatus()
+        if (await autoSelectLocalFeishuAgent(status.clients ?? [])) {
+          return feishuAgentOnline.current ? feishuAgentHealth.current : null
+        }
         return status.online ? status.health ?? null : null
       } catch (error) {
         feishuAgentHealth.current = null
@@ -491,7 +525,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         return null
       }
     },
-    [fetchAgentStatus],
+    [autoSelectLocalFeishuAgent, fetchAgentStatus],
   )
 
   const waitForAgentCommand = useCallback(
@@ -1049,6 +1083,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       feishuAgent,
       feishuAgentClients,
       selectedFeishuAgentClientId,
+      localFeishuAgentClientId,
       feishuSyncToken,
       feishuAgentLogin,
       loading,
@@ -1095,6 +1130,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       feishuInboxError,
       feishuInboxLoading,
       feishuIntegration,
+      localFeishuAgentClientId,
       feishuSnapshot,
       feishuSyncToken,
       importAccounts,

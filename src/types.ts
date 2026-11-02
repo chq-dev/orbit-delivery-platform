@@ -328,6 +328,7 @@ export interface FeishuAgentCommand {
 export interface FeishuAgentClientStatus {
   clientId: string
   clientName: string
+  machineName?: string
   online: boolean
   lastSeenAt?: string
   health?: FeishuClientAgentHealth
@@ -339,6 +340,7 @@ export interface FeishuAgentClientStatus {
 export interface FeishuAgentBridgeStatus {
   clientId?: string
   clientName?: string
+  machineName?: string
   online: boolean
   lastSeenAt?: string
   staleAfterSeconds: number

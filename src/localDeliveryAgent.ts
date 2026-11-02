@@ -183,7 +183,7 @@ export function markLocalDeliveryStartFailed(
 
 export async function startLocalDelivery(
   input: LocalDeliveryStartInput,
-  clientId?: string,
+  clientId: string,
 ): Promise<LocalDeliveryJob> {
   const command = await request<FeishuAgentCommand>('/integrations/feishu/agent/commands', {
     method: 'POST',
@@ -196,8 +196,19 @@ export async function startLocalDelivery(
 export async function probeLocalDeliveryAgent(
   clientId?: string,
 ): Promise<LocalDeliveryAgentReadiness> {
+  if (!clientId) {
+    return {
+      online: false,
+      platformReady: false,
+      configured: false,
+      meegleAuthenticated: false,
+      codexAvailable: false,
+      repoPaths: {},
+      error: '请先选择执行客户端',
+    }
+  }
   try {
-    const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
+    const query = `?clientId=${encodeURIComponent(clientId)}`
     const [status, platform] = await Promise.all([
       request<FeishuAgentBridgeStatus>(`/integrations/feishu/agent/status${query}`),
       request<{ deliveryContractVersion?: number }>('/health'),
@@ -233,7 +244,7 @@ export async function probeLocalDeliveryAgent(
 
 export async function waitForLocalDelivery(
   commandId: string,
-  clientId: string | undefined,
+  clientId: string,
   onUpdate: (job: LocalDeliveryJob) => void,
   timeoutMs = 45 * 60_000,
   signal?: AbortSignal,
@@ -246,7 +257,7 @@ export async function waitForLocalDelivery(
     throwIfAborted(signal)
     let status: FeishuAgentBridgeStatus
     try {
-      const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
+      const query = `?clientId=${encodeURIComponent(clientId)}`
       status = await request<FeishuAgentBridgeStatus>(
         `/integrations/feishu/agent/status${query}`,
       )

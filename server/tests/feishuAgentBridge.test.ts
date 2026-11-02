@@ -14,6 +14,8 @@ import {
   updateFeishuAgentCommandProgress,
 } from '../services/feishuAgentBridgeService.js'
 
+const TEST_CLIENT_ID = 'client-test'
+
 const health = {
   ok: true,
   version: 3,
@@ -55,6 +57,13 @@ const health = {
   cookie: 'must-not-be-stored-in-public-state',
 }
 
+const testClient = {
+  clientId: TEST_CLIENT_ID,
+  clientName: '测试客户端',
+  machineName: 'test-machine',
+  health,
+}
+
 test('代理心跳只保存脱敏状态并据此判断在线', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
@@ -81,10 +90,15 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
     assert.equal(sanitized.meegleMcp?.configured, true)
     assert.equal(sanitized.meegleMcp?.available, true)
 
-    const heartbeat = recordFeishuAgentHeartbeat(db, { health })
+    const heartbeat = recordFeishuAgentHeartbeat(db, {
+      health,
+      machineName: 'machine-primary',
+    })
     assert.ok(heartbeat.lastSeenAt)
+    assert.equal(heartbeat.machineName, 'machine-primary')
     const status = getFeishuAgentBridgeStatus(db)
     assert.equal(status.online, true)
+    assert.equal(status.machineName, 'machine-primary')
     assert.equal(status.health?.config.repoId, 'repo-1')
     assert.deepEqual(status.health?.config.repoPaths, {
       'repo-1': '/Users/shinya/Documents/workspace/SME/basic-component-cloud',
@@ -107,12 +121,13 @@ test('代理心跳只保存脱敏状态并据此判断在线', () => {
 test('代理命令去重、领取和完成结果可被页面查询', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
-    const first = enqueueFeishuAgentCommand(db, 'sync')
-    const duplicate = enqueueFeishuAgentCommand(db, 'sync')
+    recordFeishuAgentHeartbeat(db, testClient)
+    const first = enqueueFeishuAgentCommand(db, 'sync', undefined, TEST_CLIENT_ID)
+    const duplicate = enqueueFeishuAgentCommand(db, 'sync', undefined, TEST_CLIENT_ID)
     assert.equal(first.id, duplicate.id)
     assert.equal(first.status, 'pending')
 
-    const heartbeat = recordFeishuAgentHeartbeat(db, { health })
+    const heartbeat = recordFeishuAgentHeartbeat(db, testClient)
     assert.equal(heartbeat.commands.length, 1)
     assert.equal(heartbeat.commands[0]?.id, first.id)
     assert.equal(heartbeat.commands[0]?.status, 'running')
@@ -120,7 +135,7 @@ test('代理命令去重、领取和完成结果可被页面查询', () => {
 
     const completed = completeFeishuAgentCommand(db, first.id, {
       result: { fetched: 57, upserted: 57, archived: 1, skipped: 0 },
-    })
+    }, TEST_CLIENT_ID)
     assert.equal(completed.status, 'succeeded')
     assert.deepEqual(completed.result, {
       fetched: 57,
@@ -133,8 +148,8 @@ test('代理命令去重、领取和完成结果可被页面查询', () => {
     assert.equal(status.lastCommand?.id, first.id)
     assert.equal(status.lastCommand?.status, 'succeeded')
 
-    const failed = enqueueFeishuAgentCommand(db, 'login_start')
-    completeFeishuAgentCommand(db, failed.id, { error: '授权服务不可用' })
+    const failed = enqueueFeishuAgentCommand(db, 'login_start', undefined, TEST_CLIENT_ID)
+    completeFeishuAgentCommand(db, failed.id, { error: '授权服务不可用' }, TEST_CLIENT_ID)
     assert.equal(getFeishuAgentBridgeStatus(db).lastCommand?.status, 'failed')
     assert.equal(getFeishuAgentBridgeStatus(db).lastCommand?.error, '授权服务不可用')
   } finally {
@@ -145,8 +160,9 @@ test('代理命令去重、领取和完成结果可被页面查询', () => {
 test('长命令心跳续租后不会被重复领取，停止续租后才允许重新领取', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
-    const command = enqueueFeishuAgentCommand(db, 'sync')
-    const claimed = recordFeishuAgentHeartbeat(db, { health })
+    recordFeishuAgentHeartbeat(db, testClient)
+    const command = enqueueFeishuAgentCommand(db, 'sync', undefined, TEST_CLIENT_ID)
+    const claimed = recordFeishuAgentHeartbeat(db, testClient)
     assert.equal(claimed.commands[0]?.id, command.id)
 
     const staleAt = new Date(Date.now() - 16 * 60_000).toISOString()
@@ -158,7 +174,7 @@ test('长命令心跳续租后不会被重复领取，停止续租后才允许�
 
     expireLease()
     const renewed = recordFeishuAgentHeartbeat(db, {
-      health,
+      ...testClient,
       runningCommandIds: [command.id, command.id, '  '],
     })
     assert.deepEqual(renewed.commands, [])
@@ -170,14 +186,14 @@ test('长命令心跳续租后不会被重复领取，停止续租后才允许�
 
     expireLease()
     const stillRenewed = recordFeishuAgentHeartbeat(db, {
-      health,
+      ...testClient,
       runningCommandIds: [command.id],
     })
     assert.deepEqual(stillRenewed.commands, [])
     assert.equal(getFeishuAgentBridgeStatus(db).activeCommand?.id, command.id)
 
     expireLease()
-    const reclaimed = recordFeishuAgentHeartbeat(db, { health })
+    const reclaimed = recordFeishuAgentHeartbeat(db, testClient)
     assert.equal(reclaimed.commands.length, 1)
     assert.equal(reclaimed.commands[0]?.id, command.id)
     assert.equal(reclaimed.commands[0]?.status, 'running')
@@ -196,11 +212,13 @@ test('多个执行客户端分别上报状态且命令不会跨客户端领取',
     const clientA = {
       clientId: 'client-mac-a',
       clientName: '设计 Mac',
+      machineName: 'machine-a',
       health: healthFor('/Users/a/work/repo-1'),
     }
     const clientB = {
       clientId: 'client-mac-b',
       clientName: '交付 Mac',
+      machineName: 'machine-b',
       health: healthFor('/Users/b/work/repo-1'),
     }
     recordFeishuAgentHeartbeat(db, clientA)
@@ -215,6 +233,7 @@ test('多个执行客户端分别上报状态且命令不会跨客户端领取',
     const selectedA = getFeishuAgentBridgeStatus(db, 'client-mac-a')
     const selectedB = getFeishuAgentBridgeStatus(db, 'client-mac-b')
     assert.equal(selectedA.clientId, 'client-mac-a')
+    assert.equal(selectedA.machineName, 'machine-a')
     assert.equal(selectedA.health?.config.repoPaths['repo-1'], '/Users/a/work/repo-1')
     assert.equal(selectedB.health?.config.repoPaths['repo-1'], '/Users/b/work/repo-1')
 
@@ -254,6 +273,13 @@ test('多个客户端在线时必须明确选择执行目标', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
     recordFeishuAgentHeartbeat(db, { clientId: 'client-a', clientName: 'A', health })
+    assert.throws(
+      () => enqueueFeishuAgentCommand(db, 'sync'),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 422 &&
+        /选择要执行任务的客户端/.test(error.message),
+    )
     recordFeishuAgentHeartbeat(db, { clientId: 'client-b', clientName: 'B', health })
     assert.throws(
       () => enqueueFeishuAgentCommand(db, 'sync'),
@@ -266,6 +292,36 @@ test('多个客户端在线时必须明确选择执行目标', () => {
       () => enqueueFeishuAgentCommand(db, 'sync', undefined, 'client-offline'),
       (error: unknown) => error instanceof AppError && error.statusCode === 422,
     )
+  } finally {
+    db.close()
+  }
+})
+
+test('复制同一客户端配置的两台机器不能竞争领取命令', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    recordFeishuAgentHeartbeat(db, {
+      clientId: 'shared-client-id',
+      clientName: '交付 Mac',
+      machineName: 'machine-a',
+      health,
+    })
+    assert.throws(
+      () =>
+        recordFeishuAgentHeartbeat(db, {
+          clientId: 'shared-client-id',
+          clientName: '交付 Mac',
+          machineName: 'machine-b',
+          health,
+        }),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 422 &&
+        /已被机器 machine-a 使用/.test(error.message),
+    )
+    const status = getFeishuAgentBridgeStatus(db, 'shared-client-id')
+    assert.equal(status.machineName, 'machine-a')
+    assert.equal(status.clients.length, 1)
   } finally {
     db.close()
   }
@@ -297,13 +353,14 @@ test('拒绝未知代理命令且代理状态表随数据库升级创建', () =>
 test('交付命令携带受控参数并通过进度接口回传七步状态', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
+    recordFeishuAgentHeartbeat(db, testClient)
     const command = enqueueFeishuAgentCommand(db, 'delivery_start', {
       workItemId: 'REQ-1082',
       repoId: 'repo-1',
       autoCommit: true,
       pushAfterAcceptance: false,
       autoClose: false,
-    })
+    }, TEST_CLIENT_ID)
     assert.equal(command.type, 'delivery_start')
     assert.equal(command.status, 'pending')
     assert.deepEqual(command.payload, {
@@ -314,12 +371,12 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
       autoClose: false,
     })
 
-    const claimed = recordFeishuAgentHeartbeat(db, { health })
+    const claimed = recordFeishuAgentHeartbeat(db, testClient)
     assert.equal(claimed.commands[0]?.id, command.id)
     assert.deepEqual(claimed.commands[0]?.payload, command.payload)
     const running = completeFeishuAgentCommand(db, command.id, {
       result: { job: { id: 'delivery-test', status: 'running' } },
-    })
+    }, TEST_CLIENT_ID)
     assert.equal(running.status, 'running')
     assert.equal(getFeishuAgentBridgeStatus(db).activeCommand?.id, command.id)
 
@@ -349,7 +406,7 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
         startedAt: new Date().toISOString(),
         result: { commit: 'abcdef1234567', changedFiles: ['src/a.ts'] },
       },
-    })
+    }, TEST_CLIENT_ID)
     assert.equal(updated.status, 'succeeded')
     assert.equal(
       (updated.result as { job: { steps: unknown[] } }).job.steps.length,
@@ -363,14 +420,15 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
 test('交付进度成功时会将运行中的命令收口为成功', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {
+    recordFeishuAgentHeartbeat(db, testClient)
     const command = enqueueFeishuAgentCommand(db, 'delivery_start', {
       workItemId: 'REQ-1083',
       repoId: 'repo-1',
       autoCommit: true,
       pushAfterAcceptance: false,
       autoClose: false,
-    })
-    const claimed = recordFeishuAgentHeartbeat(db, { health })
+    }, TEST_CLIENT_ID)
+    const claimed = recordFeishuAgentHeartbeat(db, testClient)
     assert.equal(claimed.commands[0]?.id, command.id)
 
     const updated = updateFeishuAgentCommandProgress(db, command.id, {
@@ -386,7 +444,7 @@ test('交付进度成功时会将运行中的命令收口为成功', () => {
         finishedAt: new Date().toISOString(),
         result: { commit: 'abcdef1234567' },
       },
-    })
+    }, TEST_CLIENT_ID)
     assert.equal(updated.status, 'succeeded')
     assert.equal(getFeishuAgentBridgeStatus(db).activeCommand, null)
   } finally {
@@ -432,6 +490,7 @@ test('版本 10 的代理命令表升级后保留旧命令并支持交付命令'
       .prepare('SELECT command_type, status FROM feishu_agent_commands WHERE id = ?')
       .get('legacy-command') as { command_type: string; status: string }
     assert.deepEqual(legacy, { command_type: 'sync', status: 'succeeded' })
+    recordFeishuAgentHeartbeat(upgraded, testClient)
     assert.equal(
       enqueueFeishuAgentCommand(upgraded, 'delivery_start', {
         workItemId: 'REQ-1082',
@@ -439,7 +498,7 @@ test('版本 10 的代理命令表升级后保留旧命令并支持交付命令'
         autoCommit: true,
         pushAfterAcceptance: false,
         autoClose: false,
-      }).type,
+      }, TEST_CLIENT_ID).type,
       'delivery_start',
     )
     upgraded.close()
@@ -483,6 +542,52 @@ test('版本 14 的代理命令升级后旧命令归属默认客户端', () => {
       .prepare('SELECT client_id, status FROM feishu_agent_commands WHERE id = ?')
       .get('legacy-v14-command') as { client_id: string; status: string }
     assert.deepEqual(legacy, { client_id: 'primary', status: 'succeeded' })
+    upgraded.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('版本 15 的代理状态升级后记录机器名并支持身份冲突校验', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'orbit-agent-machine-upgrade-'))
+  const filename = join(directory, 'orbit.db')
+  try {
+    const oldDb = createDatabase({ filename })
+    oldDb.exec(`
+      DROP TABLE feishu_agent_state;
+      CREATE TABLE feishu_agent_state (
+        id TEXT PRIMARY KEY,
+        client_name TEXT NOT NULL DEFAULT '',
+        health_json TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO feishu_agent_state
+        (id, client_name, health_json, last_seen_at, created_at, updated_at)
+      VALUES ('legacy-client', '旧客户端', '{}', '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      PRAGMA user_version = 15;
+    `)
+    oldDb.close()
+
+    const upgraded = createDatabase({ filename })
+    const columns = upgraded.pragma('table_info(feishu_agent_state)') as { name: string }[]
+    assert.equal(columns.some((column) => column.name === 'machine_name'), true)
+    const legacy = upgraded
+      .prepare('SELECT machine_name FROM feishu_agent_state WHERE id = ?')
+      .get('legacy-client') as { machine_name: string }
+    assert.equal(legacy.machine_name, '')
+    recordFeishuAgentHeartbeat(upgraded, {
+      clientId: 'legacy-client',
+      clientName: '旧客户端',
+      machineName: 'machine-upgraded',
+      health,
+    })
+    assert.equal(
+      getFeishuAgentBridgeStatus(upgraded, 'legacy-client').machineName,
+      'machine-upgraded',
+    )
     upgraded.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

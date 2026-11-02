@@ -109,6 +109,7 @@ export interface FeishuAgentCommand {
 export interface FeishuAgentBridgeStatus {
   clientId?: string
   clientName?: string
+  machineName?: string
   online: boolean
   lastSeenAt?: string
   staleAfterSeconds: number
@@ -122,6 +123,7 @@ export interface FeishuAgentBridgeStatus {
 export interface FeishuAgentClientStatus {
   clientId: string
   clientName: string
+  machineName?: string
   online: boolean
   lastSeenAt?: string
   health?: FeishuAgentHealth
@@ -133,6 +135,7 @@ export interface FeishuAgentClientStatus {
 interface AgentStateRow {
   id: string
   client_name: string
+  machine_name: string
   health_json: string
   last_seen_at: string
 }
@@ -397,6 +400,7 @@ export function recordFeishuAgentHeartbeat(
 ): {
   clientId: string
   clientName: string
+  machineName?: string
   lastSeenAt: string
   commands: FeishuAgentCommand[]
 } {
@@ -407,24 +411,42 @@ export function recordFeishuAgentHeartbeat(
     throw unprocessable('客户端标识格式不正确')
   }
   const clientName = agentClientName(payload.clientName, clientId)
+  const machineName = text(payload.machineName, 120)
+  const existingState = db
+    .prepare(
+      'SELECT id, client_name, machine_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?',
+    )
+    .get(clientId) as AgentStateRow | undefined
+  if (
+    existingState?.machine_name &&
+    machineName &&
+    existingState.machine_name !== machineName
+  ) {
+    throw unprocessable(
+      `执行客户端标识 ${clientId} 已被机器 ${existingState.machine_name} 使用；请在当前机器设置唯一的 FEISHU_AGENT_CLIENT_ID 后重启代理`,
+    )
+  }
+  const storedMachineName = machineName || existingState?.machine_name || ''
   const health = sanitizeFeishuAgentHealth(
     'health' in payload ? payload.health : input,
   )
   const activeCommandIds = runningCommandIds(payload.runningCommandIds)
   const now = nowIso()
   db.prepare(
-    `INSERT INTO feishu_agent_state (id, client_name, health_json, last_seen_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO feishu_agent_state (id, client_name, machine_name, health_json, last_seen_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        client_name = excluded.client_name,
+       machine_name = excluded.machine_name,
        health_json = excluded.health_json,
        last_seen_at = excluded.last_seen_at,
        updated_at = excluded.updated_at`,
-  ).run(clientId, clientName, JSON.stringify(health), now, now, now)
+  ).run(clientId, clientName, storedMachineName, JSON.stringify(health), now, now, now)
   renewRunningCommands(db, clientId, activeCommandIds, now)
   return {
     clientId,
     clientName,
+    machineName: storedMachineName || undefined,
     lastSeenAt: now,
     commands: claimPendingCommands(db, clientId),
   }
@@ -440,33 +462,23 @@ function resolveCommandClientId(db: AppDatabase, requestedClientId: unknown): st
   if (text(requestedClientId, 128) && !requested) {
     throw unprocessable('执行客户端标识格式不正确')
   }
-  if (requested) {
-    const state = db
-      .prepare('SELECT id, client_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?')
-      .get(requested) as AgentStateRow | undefined
-    if (!state) {
-      throw unprocessable('执行客户端不存在或尚未上报心跳，请确认客户端代理已启动')
-    }
-    if (!onlineAt(state.last_seen_at)) {
-      throw unprocessable(
-        `执行客户端 ${state.client_name || state.id} 已离线，请恢复该客户端代理后重试`,
-      )
-    }
-    return requested
+  if (!requested) {
+    throw unprocessable('请先选择要执行任务的客户端，平台不会再自动猜测执行机器')
   }
-
-  const states = db
+  const state = db
     .prepare(
-      `SELECT id, client_name, health_json, last_seen_at
-       FROM feishu_agent_state
-       ORDER BY last_seen_at DESC`,
+      'SELECT id, client_name, machine_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?',
     )
-    .all() as AgentStateRow[]
-  if (states.length === 0) return DEFAULT_FEISHU_AGENT_CLIENT_ID
-  if (states.length === 1) return states[0].id
-  const online = states.filter((state) => onlineAt(state.last_seen_at))
-  if (online.length === 1) return online[0].id
-  throw unprocessable('当前有多个执行客户端在线，请先选择要执行任务的客户端')
+    .get(requested) as AgentStateRow | undefined
+  if (!state) {
+    throw unprocessable('执行客户端不存在或尚未上报心跳，请确认客户端代理已启动')
+  }
+  if (!onlineAt(state.last_seen_at)) {
+    throw unprocessable(
+      `执行客户端 ${state.client_name || state.id} 已离线，请恢复该客户端代理后重试`,
+    )
+  }
+  return requested
 }
 
 export function enqueueFeishuAgentCommand(
@@ -646,6 +658,7 @@ function clientStatus(
   return {
     clientId: state.id,
     clientName: state.client_name || agentClientName(undefined, state.id),
+    machineName: state.machine_name || undefined,
     online: onlineAt(state.last_seen_at, now),
     lastSeenAt: state.last_seen_at,
     health: parseJson(state.health_json) as FeishuAgentHealth | undefined,
@@ -664,7 +677,7 @@ export function getFeishuAgentBridgeStatus(
 ): FeishuAgentBridgeStatus {
   const states = db
     .prepare(
-      `SELECT id, client_name, health_json, last_seen_at
+      `SELECT id, client_name, machine_name, health_json, last_seen_at
        FROM feishu_agent_state
        ORDER BY last_seen_at DESC`,
     )
@@ -696,6 +709,7 @@ export function getFeishuAgentBridgeStatus(
   return {
     clientId: selected.clientId,
     clientName: selected.clientName,
+    machineName: selected.machineName,
     online: selected.online,
     lastSeenAt: selected.lastSeenAt,
     staleAfterSeconds: Math.floor(FEISHU_AGENT_ONLINE_WINDOW_MS / 1_000),

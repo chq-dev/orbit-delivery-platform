@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 15
+export const SCHEMA_VERSION = 16
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -259,6 +259,7 @@ CREATE TABLE IF NOT EXISTS feishu_sync_credentials (
 CREATE TABLE IF NOT EXISTS feishu_agent_state (
   id TEXT PRIMARY KEY,
   client_name TEXT NOT NULL DEFAULT '',
+  machine_name TEXT NOT NULL DEFAULT '',
   health_json TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   created_at TEXT NOT NULL,

@@ -252,6 +252,7 @@ export function DeliveryDialog({
     refreshWorkItems,
     feishuAgentClients,
     selectedFeishuAgentClientId,
+    localFeishuAgentClientId,
     selectFeishuAgentClient,
   } = useData()
   const [workItemId, setWorkItemId] = useState('')
@@ -613,6 +614,14 @@ export function DeliveryDialog({
               ? '正在检测所选执行客户端'
               : requirementContextIssue
                 ? requirementContextIssue
+              : !localFeishuAgentClientId
+                ? feishuAgentClients.length > 0
+                  ? '当前页面所在终端未注册执行代理；下方客户端属于其他机器。请先在本机项目目录运行 npm run feishu:agent'
+                  : '当前终端未检测到执行代理，请先在本机项目目录运行 npm run feishu:agent'
+              : !selectedFeishuAgentClientId
+                ? feishuAgentClients.length > 0
+                  ? '请先明确选择执行客户端，平台不会再自动选择机器'
+                  : '尚未发现执行客户端，请先在目标机器运行 npm run feishu:agent'
               : !localAgent.platformReady
                 ? localAgent.error || '平台服务端未升级，当前无法下发本机交付'
               : !localAgent.online
@@ -851,7 +860,7 @@ export function DeliveryDialog({
             required
             hint={
               selectedClient
-                ? `${selectedClient.online ? '在线' : '离线'} · ${selectedClient.clientId.slice(0, 8)} · ${Object.keys(selectedClient.health?.config.repoPaths ?? {}).length} 个仓库专属路径`
+                ? `${selectedClient.online ? '在线' : '离线'} · ${selectedClient.machineName || '未知机器'} · ${selectedClient.clientId.slice(0, 8)} · ${Object.keys(selectedClient.health?.config.repoPaths ?? {}).length} 个仓库专属路径`
                 : '请先启动至少一个 feishu:agent 客户端代理'
             }
           >
@@ -860,14 +869,23 @@ export function DeliveryDialog({
               onChange={(event) => handleClientChange(event.target.value)}
               disabled={launching || feishuAgentClients.length === 0}
             >
-              {!selectedFeishuAgentClientId && <option value="">未发现执行客户端</option>}
+              {!selectedFeishuAgentClientId && (
+                <option value="">
+                  {feishuAgentClients.length > 0 ? '请选择执行客户端' : '未发现执行客户端'}
+                </option>
+              )}
               {feishuAgentClients.map((client) => (
                 <option
                   key={client.clientId}
                   value={client.clientId}
                   disabled={!client.online && client.clientId !== selectedFeishuAgentClientId}
                 >
-                  {client.clientName} · {client.online ? '在线' : '离线'} ·{' '}
+                  {client.clientName}
+                  {client.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}
+                  {client.machineName && client.machineName !== client.clientName
+                    ? ` · ${client.machineName}`
+                    : ''}{' '}
+                  · {client.online ? '在线' : '离线'} ·{' '}
                   {client.clientId.slice(0, 8)}
                 </option>
               ))}
@@ -903,7 +921,10 @@ export function DeliveryDialog({
             <div className="input-with-icon readonly-input">
               <Terminal size={15} />
               <span>
-                客户端本地 · {selectedClient?.clientName ?? selectedFeishuAgentClientId ?? '未选择'}
+                客户端本地 ·{' '}
+                {selectedClient
+                  ? `${selectedClient.clientName}${selectedClient.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}${selectedClient.machineName && selectedClient.machineName !== selectedClient.clientName ? ` (${selectedClient.machineName})` : ''}`
+                  : selectedFeishuAgentClientId ?? '未选择'}
               </span>
             </div>
           </Field>
@@ -911,11 +932,13 @@ export function DeliveryDialog({
           <Field
             label="客户端代码路径"
             hint={
-              localRepoPath
-                ? '所选执行客户端已为这个仓库配置专属路径，优先于平台共享路径'
-                : effectiveLocalPath
-                  ? '使用平台仓库路径；如所选客户端路径不同，请为该客户端配置 repoPaths'
-                  : '所选执行客户端未配置客户端路径，无法一键执行；请先到代码仓库填写'
+              selectedClient && selectedClient.clientId !== localFeishuAgentClientId
+                ? `当前路径来自所选客户端 ${selectedClient.clientName}；代码会在这台客户端执行，不会在页面所在终端执行`
+                : localRepoPath
+                  ? '当前终端代理已为这个仓库配置专属路径，优先于平台共享路径'
+                  : effectiveLocalPath
+                    ? '使用平台仓库路径；如当前终端路径不同，请为代理配置 repoPaths'
+                    : '当前终端代理未配置代码路径，无法一键执行；请先到代码仓库填写'
             }
           >
             <div className="input-with-icon readonly-input">

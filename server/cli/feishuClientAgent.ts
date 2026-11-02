@@ -144,11 +144,18 @@ const allowedOrigins = new Set(
   (
     process.env.FEISHU_AGENT_ALLOWED_ORIGINS ||
     [
+      'http://8.145.45.84:8787',
       'https://8.145.45.84:8787',
+      'http://localhost:8787',
       'https://localhost:8787',
+      'http://127.0.0.1:8787',
       'https://127.0.0.1:8787',
+      'http://localhost:4173',
       'https://localhost:4173',
+      'http://127.0.0.1:4173',
       'https://127.0.0.1:4173',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
     ].join(',')
   )
     .split(',')
@@ -926,6 +933,7 @@ async function sendHeartbeat(): Promise<void> {
       {
         clientId: config.clientId,
         clientName: config.clientName,
+        machineName: hostname(),
         health: await currentHealth(),
         runningCommandIds: runningCommandIds(),
       },

@@ -31,6 +31,7 @@ export function FeishuLiveSyncCard() {
     feishuAgent,
     feishuAgentClients,
     selectedFeishuAgentClientId,
+    localFeishuAgentClientId,
     feishuAgentLogin,
     feishuSyncToken,
     refreshFeishuAgent,
@@ -58,18 +59,22 @@ export function FeishuLiveSyncCard() {
   const command = 'npm run feishu:agent'
   const lastRun = health?.lastRun
   const lastRunFailed = lastRun?.status === 'failed'
-  const status = ready
+  const status = selectedFeishuAgentClientId && ready
     ? 'active'
-    : feishuAgent.online && agentConfigured
+    : selectedFeishuAgentClientId && feishuAgent.online && agentConfigured
       ? 'pending'
       : 'warning'
-  const statusLabel = ready
-    ? '自动同步就绪'
-    : !feishuAgent.online
-      ? '同步代理离线'
-      : !agentConfigured
-        ? '等待绑定密钥'
-        : '等待飞书授权'
+  const statusLabel = !selectedFeishuAgentClientId
+    ? localFeishuAgentClientId
+      ? '未选择执行客户端'
+      : '当前终端未注册代理'
+    : ready
+      ? '自动同步就绪'
+      : !feishuAgent.online
+        ? '同步代理离线'
+        : !agentConfigured
+          ? '等待绑定密钥'
+          : '等待飞书授权'
 
   const run = async (action: BusyAction, operation: () => Promise<unknown>) => {
     setBusy(action)
@@ -133,15 +138,23 @@ export function FeishuLiveSyncCard() {
             onChange={(event) => void selectFeishuAgentClient(event.target.value)}
             aria-label="选择飞书同步执行客户端"
           >
+            {!selectedFeishuAgentClientId && <option value="">请选择执行客户端</option>}
             {feishuAgentClients.map((client) => (
               <option key={client.clientId} value={client.clientId}>
-                {client.clientName} · {client.online ? '在线' : '离线'} ·{' '}
+                {client.clientName}
+                {client.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}
+                {client.machineName && client.machineName !== client.clientName
+                  ? ` · ${client.machineName}`
+                  : ''}{' '}
+                · {client.online ? '在线' : '离线'} ·{' '}
                 {client.clientId.slice(0, 8)}
               </option>
             ))}
           </select>
           <small>
-            {selectedClient?.health?.config.repoPaths
+            {!selectedClient
+              ? '请选择要执行同步的机器；平台不会自动选择'
+              : selectedClient.health?.config.repoPaths
               ? `仓库路径：${Object.entries(selectedClient.health.config.repoPaths)
                   .map(([repoId, path]) => `${repoId} → ${path}`)
                   .join('；')}`
@@ -157,8 +170,10 @@ export function FeishuLiveSyncCard() {
             {feishuAgent.checking
               ? '检测中…'
               : feishuAgent.online
-                ? selectedClient?.clientName || '在线'
-                : selectedClient?.clientName || '离线'}
+                ? selectedClient
+                  ? `${selectedClient.clientName}${selectedClient.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}${selectedClient.machineName && selectedClient.machineName !== selectedClient.clientName ? ` (${selectedClient.machineName})` : ''}`
+                  : '未选择'
+                : selectedClient?.clientName || '未选择'}
           </strong>
         </span>
         <span>
@@ -302,6 +317,16 @@ export function FeishuLiveSyncCard() {
         <div className="feishu-live-warning">
           <AlertTriangle size={15} />
           <span>{error}</span>
+        </div>
+      )}
+
+      {!localFeishuAgentClientId && feishuAgentClients.length > 0 && (
+        <div className="feishu-live-warning">
+          <AlertTriangle size={15} />
+          <span>
+            当前页面所在终端未检测到执行代理；下方客户端属于其他机器。请先在本机项目目录运行
+            <code> npm run feishu:agent</code>，否则任务不会在页面所在机器执行。
+          </span>
         </div>
       )}
 

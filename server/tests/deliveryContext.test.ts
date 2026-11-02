@@ -6,6 +6,7 @@ import { createDatabase } from '../db/database.js'
 import { CredentialVault } from '../security/vault.js'
 import { createAccount } from '../services/accountService.js'
 import { createRepository } from '../services/repositoryService.js'
+import { recordFeishuAgentHeartbeat } from '../services/feishuAgentBridgeService.js'
 import {
   assertRequirementDeliveryContextReady,
   createWorkItem,
@@ -205,11 +206,29 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
       pushAfterAcceptance: false,
       autoClose: false,
     }
+    const clientId = 'delivery-context-client'
+    recordFeishuAgentHeartbeat(db, {
+      clientId,
+      clientName: '测试交付客户端',
+      machineName: 'test-machine',
+      health: {
+        ok: true,
+        config: {
+          configured: true,
+          projectKey: 'rjcloud',
+          repoPaths: {},
+        },
+        meegle: { available: true, authenticated: true },
+        running: false,
+        lastRun: null,
+        pendingLogin: null,
+      },
+    })
 
     const rejected = await fetch(`${base}/api/integrations/feishu/agent/commands`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ type: 'delivery_start', payload }),
+      body: JSON.stringify({ type: 'delivery_start', payload, clientId }),
     })
     assert.equal(rejected.status, 422)
     assert.match(await rejected.text(), /需求交付前必须提供需求拆解/)
@@ -229,7 +248,7 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
     const accepted = await fetch(`${base}/api/integrations/feishu/agent/commands`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ type: 'delivery_start', payload }),
+      body: JSON.stringify({ type: 'delivery_start', payload, clientId }),
     })
     assert.equal(accepted.status, 202)
   } finally {

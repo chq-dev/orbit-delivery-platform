@@ -34,6 +34,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       ensureColumn(db, 'work_items', 'design_reference', 'TEXT')
       ensureColumn(db, 'work_items', 'requirement_breakdown', 'TEXT')
       ensureColumn(db, 'feishu_agent_state', 'client_name', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(db, 'feishu_agent_state', 'machine_name', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(
         db,
         'feishu_agent_commands',
