@@ -91,6 +91,22 @@ interface DeliveryReportInput {
   content: string
 }
 
+interface DeliveryAttemptContext {
+  api: string
+  args: LocalDeliveryArgs
+  item: WorkItem
+  repository: Repository
+  branch: string
+  localPath: string
+  autoCommit: boolean
+  artifactDir?: string
+  evidence?: DeliveryEvidence
+  stageResults?: DeliveryStageResult[]
+  reports?: ReturnType<typeof deliveryReports>
+  commit?: string
+  failureRecorded?: boolean
+}
+
 function usage(): string {
   return `Orbit client-local delivery
 
@@ -406,7 +422,6 @@ async function recordPlatformDelivery(
   stageResults: DeliveryStageResult[],
   reports: ReturnType<typeof deliveryReports>,
 ): Promise<unknown> {
-  if (args.noCommit) return null
   const response = await fetch(`${api}/api/pipelines/local`, {
     method: 'POST',
     headers: {
@@ -415,6 +430,7 @@ async function recordPlatformDelivery(
       ...platformHeaders(),
     },
     body: JSON.stringify({
+      outcome: 'success',
       workItemId: item.id,
       repoId: repository.id,
       branch,
@@ -461,6 +477,85 @@ async function recordPlatformDelivery(
     }
   }
   return payload
+}
+
+function failureStageIndex(
+  message: string,
+  stageResults?: DeliveryStageResult[],
+): number {
+  if (/design-report|缺少 delivery-artifacts 中的设计报告/.test(message)) return 1
+  if (/integration-report|缺少 delivery-artifacts 中的集成报告/.test(message)) return 3
+  if (/推送失败|已取消推送|没有 origin 远端/.test(message)) return 4
+  if (/创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|HEAD 没有变化/.test(message)) {
+    return 4
+  }
+  if (/未启用自动提交/.test(message)) return 4
+  if (/Codex 执行失败/.test(message)) return 2
+  if (/没有检测到.*代码文件变更|仅生成说明或报告/.test(message)) return 2
+  if (/回写平台|平台未返回|流水线记录/.test(message)) return 8
+  if (
+    /读取平台|平台服务端|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
+      message,
+    )
+  ) {
+    return 0
+  }
+  if (/路径|分支|Git 工作区|工作区根目录|未提交变更/.test(message)) return 0
+  return stageResults?.find((result) => result.status === 'failed')?.index ?? 0
+}
+
+async function recordPlatformFailure(
+  context: DeliveryAttemptContext,
+  message: string,
+  failedIndex: number,
+): Promise<{ id: string; status?: string }> {
+  let reports = context.reports
+  if (!reports && context.artifactDir) {
+    try {
+      reports = deliveryReports(context.artifactDir)
+    } catch (error) {
+      console.warn(
+        `提示：读取交付报告失败，失败流水线将不附带报告：${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+  const response = await fetch(`${context.api}/api/pipelines/local`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...platformHeaders(),
+    },
+    body: JSON.stringify({
+      outcome: 'failed',
+      workItemId: context.item.id,
+      repoId: context.repository.id,
+      branch: context.branch,
+      localPath: context.localPath,
+      ...(context.commit ? { commit: context.commit } : {}),
+      error: message,
+      failedStageIndex: failedIndex,
+      autoCommit: context.autoCommit,
+      stageResults: context.stageResults,
+      reports,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!response.ok) {
+    const payload = await response.text().catch(() => '')
+    throw new Error(`回写失败流水线失败（HTTP ${response.status}）：${payload}`)
+  }
+  const payload = (await response.json().catch(() => null)) as {
+    id?: unknown
+    status?: unknown
+  } | null
+  if (!payload || typeof payload.id !== 'string' || !payload.id) {
+    throw new Error('平台未返回失败流水线记录')
+  }
+  if (payload.status !== 'failed') {
+    throw new Error(`平台返回的失败流水线状态异常：${String(payload.status)}`)
+  }
+  return { id: payload.id, status: payload.status }
 }
 
 function buildPrompt(
@@ -525,193 +620,254 @@ async function main(): Promise<void> {
   const context = await fetchDeliveryContext(args.api, args.workItem)
   const item = context.workItem
   if (!item || item.id !== args.workItem) throw new Error(`平台中不存在工作项 ${args.workItem}`)
-  if (item.type === 'requirement') {
-    const contextIssue = requirementDeliveryContextIssue({
+  const contextIssue =
+    item.type === 'requirement'
+      ? requirementDeliveryContextIssue({
       requirementBreakdown: context.requirementBreakdown,
       designReference: context.designReference,
       screenshotCount: context.screenshots.length,
     })
-    if (contextIssue) throw new Error(contextIssue)
-  }
+      : undefined
   const repositoryId = args.repo || item.repoId
   const repository = bootstrap.repositories.find((entry) => entry.id === repositoryId)
   if (!repository) throw new Error(`平台中不存在仓库 ${repositoryId}`)
 
-  const localPath = args.path || repository.localPath
-  if (!localPath) throw new Error('未配置客户端代码路径，请先在仓库配置中填写本地绝对路径')
+  const localPath = args.path || repository.localPath || ''
   const configuredBranch = args.branch || repository.branch || item.branch
-  const checkout = validateCheckout(localPath, configuredBranch)
-  const branch = checkout.branch
-  if (!checkout.remote) console.warn('提示：本地仓库没有 origin 远端，--push 将无法执行')
-
-  const artifactDir = join(checkout.checkout, 'delivery-artifacts', item.id)
-  mkdirSync(artifactDir, { recursive: true })
-  const screenshotPaths = materializeDeliveryScreenshots(artifactDir, context.screenshots)
   const deliveryItem: WorkItem = {
     ...item,
     requirementBreakdown: context.requirementBreakdown ?? item.requirementBreakdown,
     designReference: context.designReference ?? item.designReference,
   }
-  const promptPath = join(artifactDir, 'codex-prompt.md')
-  const runDescription = args.run
-    ? 'Run the required code changes now; the launcher will not ask for the prompt again.'
-    : 'This is a prepared prompt. Do not edit code until a runner starts Codex with this prompt.'
-  const prompt = buildPrompt(
-    deliveryItem,
+  const attempt: DeliveryAttemptContext = {
+    api: args.api,
+    args,
+    item: deliveryItem,
     repository,
-    checkout.checkout,
-    branch,
-    runDescription,
-    screenshotPaths,
-  )
-  writeFileSync(promptPath, `${prompt}\n`, 'utf8')
-  const feishuMcp = resolveFeishuMcpRuntime()
-  const meegleMcp = resolveMeegleMcpRuntime()
-
-  console.log(JSON.stringify({
-    workItem: item.id,
-    title: item.title,
-    repository: repository.name,
-    branch,
-    configuredBranch: checkout.configuredBranch ?? null,
-    checkout: checkout.checkout,
-    head: checkout.head,
-    dirty: checkout.dirty,
-    remote: checkout.remote || null,
-    promptFile: promptPath,
-    screenshotFiles: screenshotPaths,
-    run: args.run,
-    push: args.push,
+    branch: configuredBranch || 'unknown',
+    localPath,
     autoCommit: !args.noCommit,
-    close: args.close,
-    feishuMcp: feishuMcp.status,
-    meegleMcp: meegleMcp.status,
-  }, null, 2))
-
-  if (!args.run) {
-    console.log(`\nPrompt 已生成：${promptPath}`)
-    console.log('需要立即执行时，在命令末尾增加 --run。')
-    return
   }
 
-  assertCleanDeliveryWorktree(checkout.checkout)
-
-  const codexCommand = resolveCodexBinary()
-  if (!codexCommand) throw new Error(codexBinaryError())
-  if (feishuMcpRequired() && !feishuMcp.status.available) {
-    throw new Error(`FEISHU_MCP_REQUIRED=true，但飞书 MCP 不可用：${feishuMcp.status.reason ?? '未知原因'}`)
-  }
-  if (feishuMcp.status.configured && !feishuMcp.status.available) {
-    console.warn(`提示：飞书 MCP 已配置但不可用：${feishuMcp.status.reason ?? '未知原因'}`)
-  }
-  if (meegleMcpRequired() && !meegleMcp.status.available) {
-    throw new Error(`MEEGLE_MCP_REQUIRED=true，但 Meegle MCP 不可用：${meegleMcp.status.reason ?? '未知原因'}`)
-  }
-  if (meegleMcp.status.configured && !meegleMcp.status.available) {
-    console.warn(`提示：Meegle MCP 已配置但不可用：${meegleMcp.status.reason ?? '未知原因'}`)
-  }
-  const mcpArgs = [
-    ...buildFeishuMcpCodexArgs(feishuMcp),
-    ...buildMeegleMcpCodexArgs(meegleMcp),
-  ]
-  const lastMessagePath = join(artifactDir, 'codex-last-message.md')
-  const result = spawnSync(
-    codexCommand,
-    buildCodexExecArgs({
-      checkout: checkout.checkout,
-      prompt,
-      lastMessagePath,
-      imagePaths: screenshotPaths,
-      mcpArgs,
-    }),
-    {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
-    },
-  )
-  if (result.error) throw result.error
-  if (result.stdout) process.stdout.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
-  if (result.status !== 0) {
-    const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`
-      .trim()
-      .slice(-4_000)
-    throw new Error(
-      `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
-    )
-  }
-
-  const evidence = artifactEvidence(artifactDir)
-  evidence.changedFiles = deliveryCodeFiles(workTreeFiles(checkout.checkout))
-  if (evidence.changedFiles.length === 0) {
-    throw new Error(
-      'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
-    )
-  }
-  if (!args.noCommit && (!evidence.designReport || !evidence.integrationReport)) {
-    throw new Error('缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交')
-  }
-
-  const finalHead = args.noCommit
-    ? requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取本地提交')
-    : commitDeliveredChanges(checkout.checkout, deliveryItem)
-
-  const stageResults = deliveryStageResults(evidence, !args.noCommit)
-  const reports = deliveryReports(artifactDir)
-
-  if (args.push) {
-    await confirmPush(branch, args.yes)
-    if (!checkout.remote) throw new Error('本地仓库没有 origin 远端，无法推送')
-    const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${branch}`])
-    if (push.status !== 0) {
-      throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)
-    }
-  }
-
-  let platformPipeline: unknown = null
   try {
-    platformPipeline = await recordPlatformDelivery(
-      args.api,
-      args,
+    if (contextIssue) throw new Error(contextIssue)
+    if (!localPath) {
+      throw new Error('未配置客户端代码路径，请先在仓库配置中填写本地绝对路径')
+    }
+    const checkout = validateCheckout(localPath, configuredBranch)
+    const branch = checkout.branch
+    attempt.branch = branch
+    attempt.localPath = checkout.checkout
+    if (!checkout.remote) console.warn('提示：本地仓库没有 origin 远端，--push 将无法执行')
+
+    const artifactDir = join(checkout.checkout, 'delivery-artifacts', item.id)
+    attempt.artifactDir = artifactDir
+    mkdirSync(artifactDir, { recursive: true })
+    const screenshotPaths = materializeDeliveryScreenshots(artifactDir, context.screenshots)
+    const promptPath = join(artifactDir, 'codex-prompt.md')
+    const runDescription = args.run
+      ? 'Run the required code changes now; the launcher will not ask for the prompt again.'
+      : 'This is a prepared prompt. Do not edit code until a runner starts Codex with this prompt.'
+    const prompt = buildPrompt(
       deliveryItem,
       repository,
       checkout.checkout,
-      finalHead,
       branch,
-      evidence,
-      stageResults,
-      reports,
+      runDescription,
+      screenshotPaths,
     )
-  } catch (error) {
-    throw new Error(
-      `本地代码已提交 ${finalHead}${args.push ? `并推送到 origin/${branch}` : '，尚未推送'}，但${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
+    writeFileSync(promptPath, `${prompt}\n`, 'utf8')
+    const feishuMcp = resolveFeishuMcpRuntime()
+    const meegleMcp = resolveMeegleMcpRuntime()
 
-  console.log(JSON.stringify({
-    status: 'success',
-    workItem: item.id,
-    checkout: checkout.checkout,
-    branch,
-    configuredBranch: checkout.configuredBranch ?? null,
-    previousHead: checkout.head,
-    commit: finalHead,
-    pushed: args.push,
-    changedFiles: evidence.changedFiles,
-    evidence: {
-      designReport: evidence.designReport,
-      integrationReport: evidence.integrationReport,
-      testReport: evidence.testReport,
-      buildReport: evidence.buildReport,
-      upgradeReport: evidence.upgradeReport,
-    },
-    stageResults,
-    platformPipeline,
-    promptFile: promptPath,
-    screenshotFiles: screenshotPaths,
-    lastMessageFile: lastMessagePath,
-  }, null, 2))
+    console.log(JSON.stringify({
+      workItem: item.id,
+      title: item.title,
+      repository: repository.name,
+      branch,
+      configuredBranch: checkout.configuredBranch ?? null,
+      checkout: checkout.checkout,
+      head: checkout.head,
+      dirty: checkout.dirty,
+      remote: checkout.remote || null,
+      promptFile: promptPath,
+      screenshotFiles: screenshotPaths,
+      run: args.run,
+      push: args.push,
+      autoCommit: !args.noCommit,
+      close: args.close,
+      feishuMcp: feishuMcp.status,
+      meegleMcp: meegleMcp.status,
+    }, null, 2))
+
+    if (!args.run) {
+      console.log(`\nPrompt 已生成：${promptPath}`)
+      console.log('需要立即执行时，在命令末尾增加 --run。')
+      return
+    }
+
+    assertCleanDeliveryWorktree(checkout.checkout)
+
+    const codexCommand = resolveCodexBinary()
+    if (!codexCommand) throw new Error(codexBinaryError())
+    if (feishuMcpRequired() && !feishuMcp.status.available) {
+      throw new Error(`FEISHU_MCP_REQUIRED=true，但飞书 MCP 不可用：${feishuMcp.status.reason ?? '未知原因'}`)
+    }
+    if (feishuMcp.status.configured && !feishuMcp.status.available) {
+      console.warn(`提示：飞书 MCP 已配置但不可用：${feishuMcp.status.reason ?? '未知原因'}`)
+    }
+    if (meegleMcpRequired() && !meegleMcp.status.available) {
+      throw new Error(`MEEGLE_MCP_REQUIRED=true，但 Meegle MCP 不可用：${meegleMcp.status.reason ?? '未知原因'}`)
+    }
+    if (meegleMcp.status.configured && !meegleMcp.status.available) {
+      console.warn(`提示：Meegle MCP 已配置但不可用：${meegleMcp.status.reason ?? '未知原因'}`)
+    }
+    const mcpArgs = [
+      ...buildFeishuMcpCodexArgs(feishuMcp),
+      ...buildMeegleMcpCodexArgs(meegleMcp),
+    ]
+    const lastMessagePath = join(artifactDir, 'codex-last-message.md')
+    const result = spawnSync(
+      codexCommand,
+      buildCodexExecArgs({
+        checkout: checkout.checkout,
+        prompt,
+        lastMessagePath,
+        imagePaths: screenshotPaths,
+        mcpArgs,
+      }),
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+      },
+    )
+    if (result.error) throw result.error
+    if (result.stdout) process.stdout.write(result.stdout)
+    if (result.stderr) process.stderr.write(result.stderr)
+
+    const evidence = artifactEvidence(artifactDir)
+    try {
+      evidence.changedFiles = deliveryCodeFiles(workTreeFiles(checkout.checkout))
+    } catch (error) {
+      console.warn(`提示：读取 Codex 代码变更失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+    attempt.evidence = evidence
+
+    if (result.status !== 0) {
+      const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`
+        .trim()
+        .slice(-4_000)
+      throw new Error(
+        `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
+      )
+    }
+    if (evidence.changedFiles.length === 0) {
+      throw new Error(
+        'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
+      )
+    }
+    if (!args.noCommit && (!evidence.designReport || !evidence.integrationReport)) {
+      throw new Error('缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交')
+    }
+
+    if (args.noCommit) {
+      const message = '未启用自动提交代码；代码变更已保留在客户端工作区，本次交付未创建提交'
+      attempt.stageResults = deliveryStageResults(evidence, false)
+      const failure = await recordPlatformFailure(
+        attempt,
+        message,
+        4,
+      )
+      attempt.failureRecorded = true
+      throw new Error(`${message}。平台已记录失败流水线 ${failure.id}`)
+    }
+
+    const finalHead = commitDeliveredChanges(checkout.checkout, deliveryItem)
+    attempt.commit = finalHead
+    const stageResults = deliveryStageResults(evidence, true)
+    attempt.stageResults = stageResults
+    const reports = deliveryReports(artifactDir)
+    attempt.reports = reports
+
+    if (args.push) {
+      await confirmPush(branch, args.yes)
+      if (!checkout.remote) throw new Error('本地仓库没有 origin 远端，无法推送')
+      const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${branch}`])
+      if (push.status !== 0) {
+        throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)
+      }
+    }
+
+    let platformPipeline: unknown = null
+    try {
+      platformPipeline = await recordPlatformDelivery(
+        args.api,
+        args,
+        deliveryItem,
+        repository,
+        checkout.checkout,
+        finalHead,
+        branch,
+        evidence,
+        stageResults,
+        reports,
+      )
+    } catch (error) {
+      throw new Error(
+        `本地代码已提交 ${finalHead}${args.push ? `并推送到 origin/${branch}` : '，尚未推送'}，但${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+
+    console.log(JSON.stringify({
+      status: 'success',
+      workItem: item.id,
+      checkout: checkout.checkout,
+      branch,
+      configuredBranch: checkout.configuredBranch ?? null,
+      previousHead: checkout.head,
+      commit: finalHead,
+      pushed: args.push,
+      changedFiles: evidence.changedFiles,
+      evidence: {
+        designReport: evidence.designReport,
+        integrationReport: evidence.integrationReport,
+        testReport: evidence.testReport,
+        buildReport: evidence.buildReport,
+        upgradeReport: evidence.upgradeReport,
+      },
+      stageResults,
+      platformPipeline,
+      promptFile: promptPath,
+      screenshotFiles: screenshotPaths,
+      lastMessageFile: lastMessagePath,
+    }, null, 2))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    let recordedPipelineId: string | undefined
+    if (!attempt.failureRecorded) {
+      if (!attempt.stageResults && attempt.evidence) {
+        attempt.stageResults = deliveryStageResults(attempt.evidence, Boolean(attempt.commit))
+      }
+      try {
+        const failure = await recordPlatformFailure(
+          attempt,
+          message,
+          failureStageIndex(message, attempt.stageResults),
+        )
+        attempt.failureRecorded = true
+        recordedPipelineId = failure.id
+        console.error(`平台已记录失败流水线 ${failure.id}`)
+      } catch (recordError) {
+        console.error(
+          `LOCAL_DELIVERY_RECORD_ERROR: ${recordError instanceof Error ? recordError.message : String(recordError)}`,
+        )
+      }
+    }
+    throw recordedPipelineId
+      ? new Error(`${message}（平台已记录失败流水线 ${recordedPipelineId}）`)
+      : error
+  }
 }
 
 main().catch((error: unknown) => {

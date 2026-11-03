@@ -479,6 +479,78 @@ test('客户端本地交付只记录实际证据并保存真实报告', () => {
   assert.match(run.designReport?.sections[0].content ?? '', /真实内容/)
 })
 
+test('客户端本地交付失败也会写入流水线并保留真实失败阶段', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '记录失败交付',
+    description: '验证 Codex 失败后仍会生成可查询的失败流水线',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const run = recordLocalDelivery(db, {
+    outcome: 'failed',
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    commit: 'fedcba9876543210fedcba9876543210fedcba98',
+    autoCommit: true,
+    error: 'Codex 执行失败：进程超时',
+    failedStageIndex: 2,
+    stageResults: [
+      { index: 0, status: 'success', log: '真实完成需求解析' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '已修改 3 个代码文件' },
+      { index: 4, status: 'pending', log: '尚未创建提交' },
+    ],
+  })
+
+  assert.equal(run.status, 'failed')
+  assert.equal(run.clientExecuted, true)
+  assert.equal(run.stages[0].status, 'success')
+  assert.equal(run.stages[1].status, 'success')
+  assert.equal(run.stages[2].status, 'failed')
+  assert.match(run.stages[2].log ?? '', /Codex 执行失败/)
+  assert.equal(run.stages[4].status, 'pending')
+  assert.equal(getWorkItem(db, item.id).status, '待处理')
+})
+
+test('未启用自动提交时仍记录失败流水线而不是静默跳过回写', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '未提交交付记录',
+    description: '验证代码已变更但未提交时仍能在流水线中查到本次执行',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const run = recordLocalDelivery(db, {
+    outcome: 'failed',
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    autoCommit: false,
+    error: '未启用自动提交代码；代码变更已保留在客户端工作区，本次交付未创建提交',
+    failedStageIndex: 4,
+    stageResults: [
+      { index: 0, status: 'success', log: '真实完成需求解析' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '真实修改 7 个代码文件' },
+      { index: 3, status: 'success', log: '真实完成集成验证' },
+      { index: 4, status: 'pending', log: '未启用自动提交' },
+    ],
+  })
+
+  assert.equal(run.status, 'failed')
+  assert.equal(run.commit, '-')
+  assert.equal(run.stages[2].status, 'success')
+  assert.equal(run.stages[4].status, 'failed')
+  assert.match(run.stages[4].log ?? '', /未启用自动提交代码/)
+  assert.equal(getWorkItem(db, item.id).status, '待处理')
+})
+
 test('飞书绑定状态、Webhook 验签和缺陷关闭回写队列', () => {
   const pluginSecret = 'feishu-plugin-secret-test'
   const webhookSecret = 'feishu-webhook-secret-test'

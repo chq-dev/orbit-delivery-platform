@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path'
 
-export const LOCAL_DELIVERY_CONTRACT_VERSION = 3
+export const LOCAL_DELIVERY_CONTRACT_VERSION = 4
 
 export type LocalDeliveryAgentStepStatus = 'pending' | 'running' | 'success' | 'failed'
 
@@ -323,7 +323,7 @@ export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
 export function classifyLocalDeliveryFailure(message: string): string {
   if (/契约|deliveryContractVersion/i.test(message)) return 'contract'
   if (
-    /不支持交付参数|缺少工作项|缺少代码仓库|自动提交|布尔值|未启用自动提交/.test(message)
+    /不支持交付参数|缺少工作项|缺少代码仓库|布尔值/.test(message)
   ) {
     return 'contract'
   }
@@ -334,10 +334,14 @@ export function classifyLocalDeliveryFailure(message: string): string {
   if (/Codex 执行失败|No prompt provided|Reading prompt from stdin/i.test(message)) {
     return 'codex'
   }
-  if (/HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败/.test(message)) {
+  if (
+    /HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败|未启用自动提交/.test(
+      message,
+    )
+  ) {
     return 'commit'
   }
-  if (/回写平台|平台未返回|流水线记录/.test(message)) return 'writeback'
+  if (/回写平台|平台未返回|平台已记录.*流水线|流水线记录/.test(message)) return 'writeback'
   if (/路径|分支|Git 工作区|工作区根目录/.test(message)) return 'checkout'
   if (
     /读取平台|尚未绑定平台|本机代理|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(

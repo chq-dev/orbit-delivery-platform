@@ -201,6 +201,11 @@ test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', ()
     'evidence',
   )
   assert.equal(classifyLocalDeliveryFailure('推送失败：remote rejected'), 'commit')
+  assert.equal(classifyLocalDeliveryFailure('未启用自动提交代码；代码保留在工作区'), 'commit')
+  assert.equal(
+    classifyLocalDeliveryFailure('平台已记录失败流水线 RUN-2411，但本次交付失败'),
+    'writeback',
+  )
 })
 
 test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {
@@ -210,7 +215,8 @@ test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 0 }), false)
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 1 }), false)
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: '2' }), false)
-  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 3 }), true)
+  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 3 }), false)
+  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 4 }), true)
 })
 
 test('本机交付步骤会记录运行、成功、失败与日志', () => {

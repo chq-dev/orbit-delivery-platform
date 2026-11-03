@@ -589,6 +589,7 @@ export function DeliveryDialog({
         return markLocalDeliveryStartFailed(current, message)
       })
       setDeliveryError(message)
+      await reload(true).catch(() => undefined)
       notify('本机交付失败', message, 'warning')
       void probeLocalDeliveryAgent(selectedFeishuAgentClientId).then((state) =>
         setLocalAgent({ ...state, checking: false }),

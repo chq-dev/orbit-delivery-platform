@@ -97,6 +97,10 @@ local defect as closed and reuses the platform's Feishu close outbox.
   `upgrade-report.md`/`upgrade.log`, and `test-report.md` actually exist.
 - The server rejects `POST /api/pipelines` and `/advance`; only
   `POST /api/pipelines/local` may record a client result.
+- Every one-click run must leave a pipeline record. Successful runs, failed runs and
+  runs that intentionally skip commit (`--no-commit`) all write to
+  `POST /api/pipelines/local`; failures keep the actual failed stage and error instead of
+  disappearing from the pipeline history.
 - The runner commits only after validating real source changes and the design and
   integration reports. Do not push unless the runner was invoked with `--push`
   and the user authorized the external write.

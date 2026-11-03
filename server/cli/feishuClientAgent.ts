@@ -755,13 +755,23 @@ async function executeLocalDelivery(
       'success',
       commit ? `本地提交 ${commit.slice(0, 12)}` : '本地提交已记录',
     )
+    if (
+      !isRecord(platformPipeline) ||
+      typeof platformPipeline.id !== 'string' ||
+      !platformPipeline.id
+    ) {
+      throw new Error('本机执行已结束，但平台未返回流水线记录；本次交付不能标记为完成')
+    }
+    if (platformPipeline.status !== 'success') {
+      throw new Error(
+        `平台已记录流水线 ${platformPipeline.id}，但状态为 ${String(platformPipeline.status ?? 'unknown')}；本次交付不能标记为完成`,
+      )
+    }
     setStep(
       job,
       'writeback',
       'success',
-      platformPipeline && typeof platformPipeline.id === 'string'
-        ? `平台流水线 ${platformPipeline.id}`
-        : '平台已确认真实执行记录',
+      `平台流水线 ${platformPipeline.id}`,
     )
     job.status = 'succeeded'
     job.stage = '本机交付完成'

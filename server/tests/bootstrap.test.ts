@@ -60,7 +60,7 @@ test('bootstrap 默认兼容完整数据，传 includeWorkItems=0 时跳过工�
     const health = (await fetch(`http://127.0.0.1:${port}/api/health`).then((response) =>
       response.json(),
     )) as { deliveryContractVersion?: number }
-    assert.equal(health.deliveryContractVersion, 3)
+    assert.equal(health.deliveryContractVersion, 4)
     const registered = await fetch(`${base}/api/auth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
