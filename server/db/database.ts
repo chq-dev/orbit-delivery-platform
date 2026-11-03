@@ -28,6 +28,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       db.exec(schemaSql)
       ensureColumn(db, 'repositories', 'local_path', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'pipelines', 'local_path', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(db, 'accounts', 'service_url', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'work_items', 'archived_at', 'TEXT')
       ensureColumn(db, 'work_items', 'feishu_status', 'TEXT')
       ensureColumn(db, 'work_items', 'project_line', 'TEXT')

@@ -11,6 +11,7 @@ import {
 import {
   api,
   type AccountInput,
+  type AccountUpdateInput,
   type BootstrapData,
   type FeishuConnectInput,
   type RepositoryInput,
@@ -134,6 +135,8 @@ interface DataContextValue {
     input: RepositorySettingsInput,
   ) => Promise<Repository>
   addAccount: (input: AccountInput) => Promise<Account>
+  updateAccount: (id: string, input: AccountUpdateInput) => Promise<Account>
+  deleteAccount: (id: string) => Promise<void>
   importAccounts: (inputs: AccountInput[]) => Promise<number>
   addWorkItem: (input: WorkItemInput) => Promise<WorkItem>
   getWorkItemDetail: (id: string) => Promise<WorkItem>
@@ -979,6 +982,37 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [notify, reportApiError],
   )
 
+  const updateAccount = useCallback(
+    async (id: string, input: AccountUpdateInput) => {
+      try {
+        const account = await api.updateAccount(id, input)
+        setAccounts((current) =>
+          current.map((item) => (item.id === account.id ? account : item)),
+        )
+        notify('账号已更新', `${account.username} 的账号配置已保存`)
+        return account
+      } catch (error) {
+        reportApiError('账号更新失败', error)
+        throw error
+      }
+    },
+    [notify, reportApiError],
+  )
+
+  const deleteAccount = useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteAccount(id)
+        setAccounts((current) => current.filter((account) => account.id !== id))
+        notify('账号已删除', '该账号已从凭据保险箱移除', 'info')
+      } catch (error) {
+        reportApiError('账号删除失败', error)
+        throw error
+      }
+    },
+    [notify, reportApiError],
+  )
+
   const importAccounts = useCallback(
     async (inputs: AccountInput[]) => {
       try {
@@ -1158,6 +1192,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addRepository,
       updateRepositorySettings,
       addAccount,
+      updateAccount,
+      deleteAccount,
       importAccounts,
       addWorkItem,
       getWorkItemDetail,
@@ -1190,6 +1226,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       bindFeishuAgent,
       connectFeishu,
       disconnectFeishu,
+      deleteAccount,
       dismissToast,
       feishuAgent,
       feishuAgentClients,
@@ -1221,6 +1258,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       selectedFeishuAgentClientId,
       syncFeishuAgent,
       updateRepositorySettings,
+      updateAccount,
       syncFeishu,
       testFeishu,
       toasts,

@@ -94,23 +94,27 @@ test('新数据库只建表，不包含预置业务数据', () => {
 test('旧版数据库升级后可使用抓包 Token 存储', () => {
   const filename = join(tempDir, 'upgrade-v2.db')
   const oldDb = createDatabase({ filename })
-  oldDb.exec('DROP TABLE feishu_access_tokens; PRAGMA user_version = 2;')
+  oldDb.exec(
+    'ALTER TABLE accounts DROP COLUMN service_url; DROP TABLE feishu_access_tokens; PRAGMA user_version = 2;',
+  )
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 16)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 17)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_access_tokens') as { count: number }
   assert.equal(table.count, 1)
   const repositoryColumns = upgraded.pragma('table_info(repositories)') as { name: string }[]
   const pipelineColumns = upgraded.pragma('table_info(pipelines)') as { name: string }[]
+  const accountColumns = upgraded.pragma('table_info(accounts)') as { name: string }[]
   const workItemColumns = upgraded.pragma('table_info(work_items)') as { name: string }[]
   const syncTokenTable = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_sync_credentials') as { count: number }
   assert.equal(repositoryColumns.some((column) => column.name === 'local_path'), true)
   assert.equal(pipelineColumns.some((column) => column.name === 'local_path'), true)
+  assert.equal(accountColumns.some((column) => column.name === 'service_url'), true)
   assert.equal(workItemColumns.some((column) => column.name === 'archived_at'), true)
   assert.equal(workItemColumns.some((column) => column.name === 'project_line'), true)
   assert.equal(workItemColumns.some((column) => column.name === 'requirement_breakdown'), true)
@@ -129,7 +133,7 @@ test('版本 6 数据库升级后会创建飞书同步密钥表', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 16)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), 17)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_sync_credentials') as { count: number }

@@ -36,6 +36,7 @@ import {
   resolveLocalDeliveryBranch,
   supportsLocalDeliveryContract,
 } from '../services/localDeliveryAgentService.js'
+import type { DeliveryBuildOutcome } from '../services/deliveryBuildService.js'
 import type { Repository, WorkItem, WorkItemScreenshot } from '../../src/types'
 
 interface BootstrapData {
@@ -483,6 +484,44 @@ async function recordPlatformDelivery(
   return payload
 }
 
+async function requestDeliveryBuild(
+  api: string,
+  workItemId: string,
+  repoId: string,
+): Promise<DeliveryBuildOutcome> {
+  const response = await fetch(`${api}/api/pipelines/local/build`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...platformHeaders(),
+    },
+    body: JSON.stringify({ workItemId, repoId }),
+    signal: AbortSignal.timeout(45_000),
+  })
+  const payload = (await response.json().catch(() => null)) as
+    | (Partial<DeliveryBuildOutcome> & { error?: { message?: string } })
+    | null
+  if (!response.ok) {
+    const message =
+      payload && typeof payload.message === 'string'
+        ? payload.message
+        : payload?.error?.message
+          ? payload.error.message
+        : `HTTP ${response.status}`
+    throw new Error(`触发内部编译失败：${message}`)
+  }
+  if (
+    !payload ||
+    typeof payload.configured !== 'boolean' ||
+    typeof payload.triggered !== 'boolean' ||
+    typeof payload.message !== 'string'
+  ) {
+    throw new Error('平台返回的内部编译结果格式不正确')
+  }
+  return payload as DeliveryBuildOutcome
+}
+
 function failureStageIndex(
   message: string,
   stageResults?: DeliveryStageResult[],
@@ -494,6 +533,7 @@ function failureStageIndex(
     return 4
   }
   if (/未启用自动提交/.test(message)) return 4
+  if (/内部编译|编译系统|Jenkins|编译任务|触发编译/.test(message)) return 5
   if (/Codex 执行失败/.test(message)) return 2
   if (/没有检测到.*代码文件变更|仅生成说明或报告/.test(message)) return 2
   if (/回写平台|平台未返回|流水线记录/.test(message)) return 8
@@ -816,12 +856,31 @@ async function main(): Promise<void> {
     const reports = deliveryReports(artifactDir)
     attempt.reports = reports
 
+    let internalBuild: DeliveryBuildOutcome | undefined
     if (args.push) {
       await confirmPush(branch, args.yes)
       if (!checkout.remote) throw new Error('本地仓库没有 origin 远端，无法推送')
       const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${branch}`])
       if (push.status !== 0) {
         throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)
+      }
+      internalBuild = await requestDeliveryBuild(args.api, item.id, repository.id)
+      const buildStage = stageResults.find((result) => result.index === 5)
+      if (internalBuild.triggered && internalBuild.build) {
+        evidence.buildReport = true
+        if (buildStage) {
+          buildStage.status = 'success'
+          buildStage.log = `${internalBuild.message}${
+            internalBuild.build.queueUrl ? `；队列 ${internalBuild.build.queueUrl}` : ''
+          }`
+        }
+      } else if (buildStage && !evidence.buildReport) {
+        buildStage.log = internalBuild.message
+      }
+    } else {
+      const buildStage = stageResults.find((result) => result.index === 5)
+      if (buildStage && !evidence.buildReport) {
+        buildStage.log = '代码未推送到远端，未触发 Jenkins 内部编译'
       }
     }
 
@@ -862,6 +921,7 @@ async function main(): Promise<void> {
         buildReport: evidence.buildReport,
         upgradeReport: evidence.upgradeReport,
       },
+      internalBuild,
       stageResults,
       platformPipeline,
       promptFile: promptPath,

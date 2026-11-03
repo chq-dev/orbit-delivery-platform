@@ -605,7 +605,7 @@ export function DeliveryDialog({
       open={open}
       onClose={onClose}
       title="启动一键交付"
-      subtitle="在本机真实执行需求解析、设计、编码、集成验证与提交；构建、升级、测试仅在存在真实证据时完成"
+      subtitle="在本机真实执行需求解析、设计、编码、集成验证、提交与推送；推送后触发已配置的 Jenkins 内部编译，升级与测试仍仅在真实证据时完成"
       size="lg"
       footer={
         <>
@@ -974,7 +974,7 @@ export function DeliveryDialog({
               <span className="custom-check" />
               <span>
                 <strong>验收通过后推送</strong>
-                <small>勾选即授权；Codex 成功结束后自动将本地提交推送到目标分支</small>
+                <small>勾选即授权；推送成功后由平台触发已配置的 Jenkins 内部编译</small>
               </span>
             </label>
             <label className="check-row">

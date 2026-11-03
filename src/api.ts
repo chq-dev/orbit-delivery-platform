@@ -1,5 +1,7 @@
 import type {
   Account,
+  BuildJobInfo,
+  BuildTriggerResult,
   FeishuInboxItem,
   FeishuIntegrationStatus,
   FeishuSyncResult,
@@ -61,6 +63,15 @@ export interface AccountInput {
   username: string
   password: string
   label: string
+  serviceUrl?: string
+}
+
+export interface AccountUpdateInput {
+  platform?: PlatformKey
+  username?: string
+  password?: string
+  label?: string
+  serviceUrl?: string
 }
 
 export interface WorkItemInput {
@@ -167,6 +178,20 @@ export const api = {
     }),
   createAccount: (input: AccountInput) =>
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(input) }),
+  updateAccount: (id: string, input: AccountUpdateInput) =>
+    request<Account>(`/accounts/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteAccount: (id: string) =>
+    request<{ ok: true }>(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getBuildJob: (id: string) =>
+    request<BuildJobInfo>(`/accounts/${encodeURIComponent(id)}/build-job`),
+  triggerBuild: (id: string, parameters: Record<string, string>) =>
+    request<BuildTriggerResult>(`/accounts/${encodeURIComponent(id)}/build`, {
+      method: 'POST',
+      body: JSON.stringify({ parameters }),
+    }),
   importAccounts: (accounts: AccountInput[]) =>
     request<ImportResult<Account>>('/accounts/import', {
       method: 'POST',

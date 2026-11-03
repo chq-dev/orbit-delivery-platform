@@ -20,7 +20,15 @@ import {
   userForSessionToken,
   type AuthUser,
 } from './services/authService.js'
-import { createAccount, importAccounts, listAccounts } from './services/accountService.js'
+import {
+  createAccount,
+  deleteAccount,
+  importAccounts,
+  listAccounts,
+  updateAccount,
+} from './services/accountService.js'
+import { getBuildJob, triggerBuild } from './services/buildService.js'
+import { triggerDeliveryBuild } from './services/deliveryBuildService.js'
 import {
   connectFeishu,
   disconnectFeishu,
@@ -184,6 +192,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
           /^\/work-items\/[^/]+\/delivery-context$/.test(path))) ||
       (request.method === 'POST' &&
         (path === '/pipelines/local' ||
+          path === '/pipelines/local/build' ||
           path === '/integrations/feishu/ingest' ||
           path === '/integrations/feishu/agent/heartbeat' ||
           /^\/integrations\/feishu\/agent\/commands\/[^/]+\/(?:progress|result)$/.test(path) ||
@@ -242,6 +251,25 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       count: result.accounts.length,
       skipped: result.skipped,
     })
+  })
+
+  router.patch('/accounts/:id', (request, response) => {
+    response.json(updateAccount(db, vault, request.params.id, request.body ?? {}))
+  })
+
+  router.delete('/accounts/:id', (request, response) => {
+    deleteAccount(db, request.params.id)
+    response.json({ ok: true })
+  })
+
+  router.get('/accounts/:id/build-job', async (request, response) => {
+    response.json(await getBuildJob(db, vault, request.params.id))
+  })
+
+  router.post('/accounts/:id/build', async (request, response) => {
+    response.status(202).json(
+      await triggerBuild(db, vault, request.params.id, request.body?.parameters),
+    )
   })
 
   router.get('/feishu/inbox', (_request, response) => {
@@ -398,6 +426,11 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   router.post('/pipelines/local', (request, response) => {
     response.status(201).json(recordLocalDelivery(db, request.body ?? {}))
+  })
+
+  router.post('/pipelines/local/build', async (request, response) => {
+    const result = await triggerDeliveryBuild(db, vault, request.body ?? {})
+    response.status(result.triggered ? 202 : 200).json(result)
   })
 
   router.post('/pipelines/:id/advance', (_request, _response) => {

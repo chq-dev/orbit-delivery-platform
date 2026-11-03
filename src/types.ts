@@ -32,9 +32,36 @@ export interface Account {
   platform: PlatformKey
   username: string
   label: string
+  serviceUrl: string
   secretHint: string
   status: 'active' | 'expiring'
   createdAt: string
+}
+
+export interface BuildJobParameter {
+  name: string
+  type: string
+  description?: string
+  choices?: string[]
+  defaultValue: string
+}
+
+export interface BuildJobInfo {
+  accountId: string
+  name: string
+  jobUrl: string
+  buildable: boolean
+  parameters: BuildJobParameter[]
+}
+
+export interface BuildTriggerResult {
+  ok: true
+  accountId: string
+  jobName: string
+  jobUrl: string
+  queueUrl?: string
+  triggeredAt: string
+  parameters: string[]
 }
 
 export type WorkItemType = 'requirement' | 'defect'

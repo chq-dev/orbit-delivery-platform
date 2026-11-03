@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 17
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   platform TEXT NOT NULL CHECK (platform IN ('git', 'feishu', 'build', 'device')),
   username TEXT NOT NULL,
   label TEXT NOT NULL,
+  service_url TEXT NOT NULL DEFAULT '',
   secret_ciphertext TEXT NOT NULL,
   secret_iv TEXT NOT NULL,
   secret_tag TEXT NOT NULL,

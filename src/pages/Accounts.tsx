@@ -3,24 +3,36 @@ import {
   ChevronRight,
   ClipboardPaste,
   CloudUpload,
+  ExternalLink,
   FileText,
+  Hammer,
   KeyRound,
   LockKeyhole,
   MoreHorizontal,
+  Pencil,
+  Play,
   Plus,
   Search,
   ShieldCheck,
+  Trash2,
   TriangleAlert,
   Upload,
   UserPlus,
 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { api } from '../api'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuIntegrationCard } from '../components/FeishuIntegrationCard'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { platformMeta } from '../appConfig'
 import { useData } from '../store'
-import type { PlatformKey, WorkItemType } from '../types'
+import type {
+  Account,
+  BuildJobInfo,
+  BuildTriggerResult,
+  PlatformKey,
+  WorkItemType,
+} from '../types'
 import { Field, Modal, StatusBadge } from '../components/ui'
 
 const platformOrder: PlatformKey[] = ['git', 'feishu', 'build', 'device']
@@ -72,27 +84,55 @@ function parseImport(text: string) {
   return { rows, invalid }
 }
 
+function messageOf(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
 export function Accounts() {
-  const { accounts, addAccount, importAccounts, feishuIntegration } = useData()
+  const {
+    accounts,
+    addAccount,
+    updateAccount,
+    deleteAccount,
+    importAccounts,
+    feishuIntegration,
+    notify,
+  } = useData()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | PlatformKey>('all')
   const [modalOpen, setModalOpen] = useState(false)
   const [mode, setMode] = useState<'manual' | 'import'>('manual')
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [platform, setPlatform] = useState<PlatformKey>('git')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [label, setLabel] = useState('')
+  const [serviceUrl, setServiceUrl] = useState('')
+  const [actionMenuId, setActionMenuId] = useState<string | null>(null)
   const [importText, setImportText] = useState('')
   const [importError, setImportError] = useState('')
   const [feishuMode, setFeishuMode] = useState<WorkItemType>('requirement')
   const [feishuImportOpen, setFeishuImportOpen] = useState(false)
+  const [buildAccount, setBuildAccount] = useState<Account | null>(null)
+  const [buildJob, setBuildJob] = useState<BuildJobInfo | null>(null)
+  const [buildValues, setBuildValues] = useState<Record<string, string>>({})
+  const [buildLoading, setBuildLoading] = useState(false)
+  const [buildStarting, setBuildStarting] = useState(false)
+  const [buildError, setBuildError] = useState('')
+  const [buildResult, setBuildResult] = useState<BuildTriggerResult | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const buildRequestId = useRef(0)
 
   const filtered = useMemo(
     () =>
       accounts.filter((account) => {
         const platformMatches = filter === 'all' || account.platform === filter
-        const textMatches = [account.username, account.label, platformMeta[account.platform].name]
+        const textMatches = [
+          account.username,
+          account.label,
+          account.serviceUrl ?? '',
+          platformMeta[account.platform].name,
+        ]
           .join(' ')
           .toLowerCase()
           .includes(search.toLowerCase())
@@ -105,27 +145,127 @@ export function Accounts() {
 
   const openManual = (nextPlatform: PlatformKey = 'git') => {
     setMode('manual')
+    setEditingAccount(null)
     setPlatform(nextPlatform)
     setUsername('')
     setPassword('')
     setLabel('')
+    setServiceUrl('')
+    setActionMenuId(null)
     setModalOpen(true)
+  }
+
+  const openEdit = (account: Account) => {
+    setMode('manual')
+    setEditingAccount(account)
+    setPlatform(account.platform)
+    setUsername(account.username)
+    setPassword('')
+    setLabel(account.label)
+    setServiceUrl(account.serviceUrl ?? '')
+    setActionMenuId(null)
+    setModalOpen(true)
+  }
+
+  const closeModal = () => {
+    setModalOpen(false)
+    setEditingAccount(null)
   }
 
   const openImport = () => {
     setMode('import')
+    setEditingAccount(null)
     setImportText('')
     setImportError('')
+    setActionMenuId(null)
     setModalOpen(true)
   }
 
   const submitManual = async () => {
-    if (!username.trim() || !password.trim()) return
+    if (!username.trim() || (!editingAccount && !password.trim())) return
     try {
-      await addAccount({ platform, username: username.trim(), password, label: label.trim() })
-      setModalOpen(false)
+      if (editingAccount) {
+        await updateAccount(editingAccount.id, {
+          platform,
+          username: username.trim(),
+          password: password.trim() ? password : undefined,
+          label: label.trim(),
+          serviceUrl: serviceUrl.trim(),
+        })
+      } else {
+        await addAccount({
+          platform,
+          username: username.trim(),
+          password,
+          label: label.trim(),
+          serviceUrl: serviceUrl.trim(),
+        })
+      }
+      closeModal()
     } catch {
       // The data provider already reports the API error as a toast.
+    }
+  }
+
+  const removeAccount = async (account: Account) => {
+    setActionMenuId(null)
+    if (!window.confirm(`确认删除账号「${account.username}」？删除后无法恢复。`)) return
+    try {
+      await deleteAccount(account.id)
+    } catch {
+      // The data provider already reports the API error as a toast.
+    }
+  }
+
+  const openBuild = async (account: Account) => {
+    const requestId = ++buildRequestId.current
+    setActionMenuId(null)
+    setBuildAccount(account)
+    setBuildJob(null)
+    setBuildValues({})
+    setBuildResult(null)
+    setBuildError('')
+    setBuildLoading(true)
+    try {
+      const job = await api.getBuildJob(account.id)
+      if (requestId !== buildRequestId.current) return
+      setBuildJob(job)
+      setBuildValues(
+        Object.fromEntries(job.parameters.map((parameter) => [parameter.name, parameter.defaultValue])),
+      )
+    } catch (error) {
+      if (requestId !== buildRequestId.current) return
+      setBuildError(messageOf(error, '读取编译任务失败'))
+    } finally {
+      if (requestId === buildRequestId.current) setBuildLoading(false)
+    }
+  }
+
+  const closeBuild = () => {
+    buildRequestId.current += 1
+    setBuildAccount(null)
+    setBuildJob(null)
+    setBuildValues({})
+    setBuildError('')
+    setBuildResult(null)
+    setBuildStarting(false)
+  }
+
+  const submitBuild = async () => {
+    if (!buildAccount || !buildJob || buildStarting) return
+    const requestId = buildRequestId.current
+    setBuildStarting(true)
+    setBuildError('')
+    try {
+      const result = await api.triggerBuild(buildAccount.id, buildValues)
+      if (requestId !== buildRequestId.current) return
+      setBuildResult(result)
+      notify('内部编译已触发', `${result.jobName} 已进入 Jenkins 构建队列`)
+    } catch (error) {
+      if (requestId !== buildRequestId.current) return
+      setBuildError(messageOf(error, '触发内部编译失败'))
+    } finally {
+      if (requestId === buildRequestId.current) setBuildStarting(false)
     }
   }
 
@@ -136,7 +276,7 @@ export function Accounts() {
     }
     try {
       await importAccounts(parsed.rows)
-      setModalOpen(false)
+      closeModal()
     } catch {
       // The data provider already reports the API error as a toast.
     }
@@ -238,6 +378,16 @@ export function Accounts() {
                   </button>
                 </div>
               )}
+              {key === 'build' && items[0] && (
+                <div className="platform-external-links build-platform-actions">
+                  <button onClick={() => void openBuild(items[0])}>
+                    <Hammer size={12} /> 内部编译
+                  </button>
+                  <button onClick={() => openManual('build')}>
+                    <Plus size={12} /> 添加账号
+                  </button>
+                </div>
+              )}
               {key === 'feishu' ? (
                 <button
                   className="platform-add"
@@ -249,7 +399,7 @@ export function Accounts() {
                 >
                   <KeyRound size={14} /> 应用绑定
                 </button>
-              ) : (
+              ) : key === 'build' && items.length > 0 ? null : (
                 <button className="platform-add" onClick={() => openManual(key)}>
                   <Plus size={14} /> 添加账号
                 </button>
@@ -297,6 +447,7 @@ export function Accounts() {
                 <th>平台</th>
                 <th>账号</th>
                 <th>备注</th>
+                <th>服务地址</th>
                 <th>凭据</th>
                 <th>状态</th>
                 <th>绑定时间</th>
@@ -328,6 +479,21 @@ export function Accounts() {
                   </td>
                   <td>{account.label}</td>
                   <td>
+                    {account.serviceUrl ? (
+                      <a
+                        className="service-url-cell"
+                        href={account.serviceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={account.serviceUrl}
+                      >
+                        {account.serviceUrl}
+                      </a>
+                    ) : (
+                      <span className="muted-cell">未配置</span>
+                    )}
+                  </td>
+                  <td>
                     <span className="secret-cell">
                       <LockKeyhole size={13} /> {account.secretHint}
                     </span>
@@ -338,16 +504,54 @@ export function Accounts() {
                   <td>
                     <span className="muted-cell">{account.createdAt}</span>
                   </td>
-                  <td>
-                    <button className="icon-btn" aria-label="账号操作">
-                      <MoreHorizontal size={17} />
-                    </button>
+                  <td className="account-actions-cell">
+                    <div className="account-actions">
+                      <button
+                        className="icon-btn"
+                        aria-label={`${account.username} 账号操作`}
+                        aria-expanded={actionMenuId === account.id}
+                        onClick={() =>
+                          setActionMenuId((current) =>
+                            current === account.id ? null : account.id,
+                          )
+                        }
+                      >
+                        <MoreHorizontal size={17} />
+                      </button>
+                      {actionMenuId === account.id && (
+                        <div className="account-action-menu">
+                          {account.platform === 'build' && (
+                            <button onClick={() => void openBuild(account)}>
+                              <Hammer size={14} /> 内部编译
+                            </button>
+                          )}
+                          <button onClick={() => openEdit(account)}>
+                            <Pencil size={14} /> 编辑账号
+                          </button>
+                          {account.serviceUrl && (
+                            <a
+                              href={account.serviceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink size={14} /> 打开服务地址
+                            </a>
+                          )}
+                          <button
+                            className="account-action-danger"
+                            onClick={() => void removeAccount(account)}
+                          >
+                            <Trash2 size={14} /> 删除账号
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <div className="empty-state table-empty">
                       <h3>暂无平台账号</h3>
                       <p>绑定账号或批量导入后，账号会加密保存并显示在这里。</p>
@@ -362,10 +566,18 @@ export function Accounts() {
 
       <Modal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={mode === 'manual' ? '绑定平台账号' : '批量导入账号'}
+        onClose={closeModal}
+        title={
+          editingAccount
+            ? '编辑平台账号'
+            : mode === 'manual'
+              ? '绑定平台账号'
+              : '批量导入账号'
+        }
         subtitle={
-          mode === 'manual'
+          editingAccount
+            ? '可更新账号信息与服务地址；密码留空时保持原凭据不变'
+            : mode === 'manual'
             ? '账号密码将被加密保管，并仅用于自动化流水线'
             : '上传 CSV 或粘贴多行账号，平台将自动识别并批量绑定'
         }
@@ -376,16 +588,16 @@ export function Accounts() {
               <ShieldCheck size={15} /> 凭据传输全程加密
             </span>
             <div className="modal-footer-actions">
-              <button className="btn btn-secondary" onClick={() => setModalOpen(false)}>
+              <button className="btn btn-secondary" onClick={closeModal}>
                 取消
               </button>
               {mode === 'manual' ? (
                 <button
                   className="btn btn-primary"
                   onClick={submitManual}
-                  disabled={!username || !password}
+                  disabled={!username.trim() || (!editingAccount && !password.trim())}
                 >
-                  验证并绑定
+                  {editingAccount ? '保存修改' : '验证并绑定'}
                 </button>
               ) : (
                 <button
@@ -400,14 +612,16 @@ export function Accounts() {
           </>
         }
       >
-        <div className="account-modal-tabs">
-          <button className={mode === 'manual' ? 'active' : ''} onClick={() => setMode('manual')}>
-            <UserPlus size={15} /> 手动配置
-          </button>
-          <button className={mode === 'import' ? 'active' : ''} onClick={() => setMode('import')}>
-            <ClipboardPaste size={15} /> 批量导入
-          </button>
-        </div>
+        {!editingAccount && (
+          <div className="account-modal-tabs">
+            <button className={mode === 'manual' ? 'active' : ''} onClick={() => setMode('manual')}>
+              <UserPlus size={15} /> 手动配置
+            </button>
+            <button className={mode === 'import' ? 'active' : ''} onClick={() => setMode('import')}>
+              <ClipboardPaste size={15} /> 批量导入
+            </button>
+          </div>
+        )}
 
         {mode === 'manual' ? (
           <div className="manual-account-form">
@@ -441,15 +655,36 @@ export function Accounts() {
                   autoFocus
                 />
               </Field>
-              <Field label="密码 / Access Token" required>
+              <Field
+                label="密码 / Access Token"
+                required={!editingAccount}
+                hint={editingAccount ? '留空保持不变' : undefined}
+              >
                 <input
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  placeholder="输入平台密码或访问令牌"
+                  placeholder={
+                    editingAccount ? '留空则保留当前凭据' : '输入平台密码或访问令牌'
+                  }
                 />
               </Field>
             </div>
+            <Field
+              label="服务地址"
+              hint={platform === 'build' ? 'Jenkins 任务页面地址' : '可选，支持 http / https 链接'}
+            >
+              <input
+                type="url"
+                value={serviceUrl}
+                onChange={(event) => setServiceUrl(event.target.value)}
+                placeholder={
+                  platform === 'build'
+                    ? 'https://jenkins.example.com/job/your-project/'
+                    : 'https://git.example.com 或 https://build.example.com'
+                }
+              />
+            </Field>
             <Field label="账号备注">
               <input
                 value={label}
@@ -532,6 +767,181 @@ export function Accounts() {
               </div>
             )}
           </div>
+        )}
+      </Modal>
+      <Modal
+        open={Boolean(buildAccount)}
+        onClose={closeBuild}
+        title={
+          buildResult
+            ? '编译任务已触发'
+            : `内部编译${buildJob ? ` · ${buildJob.name}` : ''}`
+        }
+        subtitle={
+          buildResult
+            ? `${buildResult.jobName} 已进入 Jenkins 构建队列`
+            : buildLoading
+              ? '正在连接 Jenkins 并读取构建参数'
+              : '确认本次工程编译参数后提交至 Jenkins'
+        }
+        size="md"
+        footer={
+          <>
+            <span className="modal-footer-hint">
+              <ShieldCheck size={15} /> 编译凭据仅在服务端使用
+            </span>
+            <div className="modal-footer-actions">
+              <button className="btn btn-secondary" onClick={closeBuild}>
+                {buildResult ? '关闭' : '取消'}
+              </button>
+              {!buildResult && buildJob && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void submitBuild()}
+                  disabled={buildStarting || buildLoading || !buildJob.buildable}
+                >
+                  <Play size={15} /> {buildStarting ? '正在提交…' : '执行编译'}
+                </button>
+              )}
+              {!buildResult && !buildJob && !buildLoading && buildError && buildAccount && (
+                <button className="btn btn-primary" onClick={() => void openBuild(buildAccount)}>
+                  重新读取
+                </button>
+              )}
+            </div>
+          </>
+        }
+      >
+        {buildLoading ? (
+          <div className="build-state">
+            <Hammer size={21} />
+            <strong>正在读取 Jenkins 任务</strong>
+            <p>将自动加载任务地址与参数默认值。</p>
+          </div>
+        ) : buildResult ? (
+          <>
+            <div className="build-result-card">
+              <span className="build-result-icon">
+                <CheckCircle2 size={22} />
+              </span>
+              <div>
+                <strong>{buildResult.jobName} 已进入构建队列</strong>
+                <p>
+                  {new Date(buildResult.triggeredAt).toLocaleString('zh-CN')} · 已提交{' '}
+                  {buildResult.parameters.length} 个编译参数
+                </p>
+              </div>
+            </div>
+            <div className="build-result-links">
+              {buildResult.queueUrl && (
+                <a
+                  className="btn btn-secondary"
+                  href={buildResult.queueUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink size={14} /> 查看构建队列
+                </a>
+              )}
+              <a
+                className="btn btn-secondary"
+                href={buildResult.jobUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ExternalLink size={14} /> 打开 Jenkins 任务
+              </a>
+            </div>
+          </>
+        ) : !buildJob ? (
+          <div className="build-state build-state-error">
+            <TriangleAlert size={21} />
+            <strong>无法读取编译任务</strong>
+            <p>{buildError || '请检查编译账号服务地址和凭据配置。'}</p>
+          </div>
+        ) : (
+          <>
+            <div className="build-job-summary">
+              <span className="build-job-icon">
+                <Hammer size={18} />
+              </span>
+              <div>
+                <strong>{buildJob.name}</strong>
+                <small title={buildJob.jobUrl}>{buildJob.jobUrl}</small>
+              </div>
+              <span className="build-parameter-count">{buildJob.parameters.length} 个参数</span>
+            </div>
+            {buildJob.parameters.length === 0 ? (
+              <div className="form-note">
+                <Play size={14} /> <strong>该任务无需参数</strong>，可直接执行编译。
+              </div>
+            ) : (
+              buildJob.parameters.map((parameter) => (
+                <Field
+                  key={parameter.name}
+                  label={parameter.name}
+                  hint={parameter.description}
+                >
+                  {parameter.choices?.length ? (
+                    <select
+                      value={buildValues[parameter.name] ?? parameter.defaultValue}
+                      onChange={(event) =>
+                        setBuildValues((current) => ({
+                          ...current,
+                          [parameter.name]: event.target.value,
+                        }))
+                      }
+                    >
+                      {parameter.choices.map((choice) => (
+                        <option key={choice} value={choice}>
+                          {choice}
+                        </option>
+                      ))}
+                    </select>
+                  ) : parameter.type === 'BooleanParameterDefinition' ? (
+                    <select
+                      value={buildValues[parameter.name] ?? parameter.defaultValue}
+                      onChange={(event) =>
+                        setBuildValues((current) => ({
+                          ...current,
+                          [parameter.name]: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  ) : parameter.type === 'TextParameterDefinition' ? (
+                    <textarea
+                      rows={3}
+                      value={buildValues[parameter.name] ?? parameter.defaultValue}
+                      onChange={(event) =>
+                        setBuildValues((current) => ({
+                          ...current,
+                          [parameter.name]: event.target.value,
+                        }))
+                      }
+                    />
+                  ) : (
+                    <input
+                      type={parameter.type.toLowerCase().includes('password') ? 'password' : 'text'}
+                      value={buildValues[parameter.name] ?? parameter.defaultValue}
+                      onChange={(event) =>
+                        setBuildValues((current) => ({
+                          ...current,
+                          [parameter.name]: event.target.value,
+                        }))
+                      }
+                    />
+                  )}
+                </Field>
+              ))
+            )}
+            {buildError && <div className="form-error">{buildError}</div>}
+            {!buildJob.buildable && (
+              <div className="form-error">该 Jenkins 任务当前不可构建，请检查任务状态或权限。</div>
+            )}
+          </>
         )}
       </Modal>
       <FeishuImportDialog

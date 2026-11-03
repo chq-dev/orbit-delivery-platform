@@ -13,6 +13,7 @@ export interface Account {
   platform: PlatformKey
   username: string
   label: string
+  serviceUrl: string
   secretHint: string
   status: AccountStatus
   createdAt: string
