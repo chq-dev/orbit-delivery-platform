@@ -30,10 +30,15 @@ test('交付代码文件去重并兼容 Windows 路径分隔符', () => {
   assert.equal(normalizeDeliveryPath('.\\web\\a.ts'), 'web/a.ts')
 })
 
-test('交付提交标题使用工作项编号且保持单行', () => {
+test('交付提交标题遵循 AICR 前缀规范且保持单行', () => {
   assert.equal(
-    deliveryCommitMessage('REQ-1082', '  第三方纳管\n私有监控指标  '),
-    'REQ-1082: 第三方纳管 私有监控指标',
+    deliveryCommitMessage('REQ-1082', '  第三方纳管\n私有监控指标  ', 'requirement'),
+    '【需求实现】REQ-1082 第三方纳管 私有监控指标',
   )
-  assert.equal(deliveryCommitMessage('REQ-1', ''), 'REQ-1: 本地交付')
+  assert.equal(
+    deliveryCommitMessage('BUG-236', '修复临时上网状态', 'defect'),
+    '【缺陷修复】BUG-236 修复临时上网状态',
+  )
+  assert.equal(deliveryCommitMessage('REQ-1', ''), '【需求实现】REQ-1 本地交付')
+  assert.equal(deliveryCommitMessage('TASK-1', ''), '【工程】TASK-1 本地交付')
 })

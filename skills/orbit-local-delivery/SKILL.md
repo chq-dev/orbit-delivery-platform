@@ -90,6 +90,21 @@ local defect as closed and reuses the platform's Feishu close outbox.
   acceptance evidence, and do not use write operations without explicit approval.
 - Read the nearest `AGENTS.md` before editing `web/` or `lua/`.
 - Produce real design, integration and test reports. Never fabricate results.
+- Commit stage follows the sme-main `/aicr-commit` contract (`$aicr-commit` when
+  the Codex session exposes it). Read `.claude/skills-overlay/aicr-commit/SKILL.md`,
+  `.claude/skills/aicr-workflow/SKILL.md` and
+  `.claude/skills/aicr-pr/references/title-rules.md` before relying on it. The
+  staged AICR review must report `approved: true` for the current diff; never
+  commit secrets or `.env*`, and never use `--force` or an unauthorized amend.
+- Use the shared AICR commit title format: `【缺陷修复】{id} {description}` for
+  defects, `【需求实现】{id} {description}` for requirements, and an appropriate
+  `【工程】` / `【AI】` / `【国际化】` / `【样式】` / `【重构】` / `【性能】` /
+  `【文档】` / `【NA】` prefix when there is no work-item id.
+- Mode-switch work uses the LDD at
+  `web/docs/ldd/SME-模式切换-LDD.md`. Read it before design or coding and trace
+  the frontend (`web/components/views/modeSwitch`), Lua module
+  (`lua/luci/modules/mode_switch`), menu registration, confirmation and failure
+  states described by the LDD.
 - Codex must not create, stage, amend, or push Git commits; the runner owns commit
   creation after Codex exits. The runner fails when Codex changes no non-Markdown
   source file, even if design or report documents were generated. Build,

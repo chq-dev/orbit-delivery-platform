@@ -316,7 +316,11 @@ function commitDeliveredChanges(checkout: string, item: WorkItem): string {
   }
   const staged = requireGit(checkout, ['diff', '--cached', '--name-only'], '读取暂存变更')
   if (!staged) throw new Error('没有可提交的交付变更')
-  const commit = git(checkout, ['commit', '-m', deliveryCommitMessage(item.id, item.title)])
+  const commit = git(checkout, [
+    'commit',
+    '-m',
+    deliveryCommitMessage(item.id, item.title, item.type),
+  ])
   if (commit.status !== 0) {
     throw new Error(`创建本地交付提交失败：${commit.stderr || commit.stdout || `退出码 ${commit.status}`}`)
   }
@@ -584,7 +588,7 @@ function buildPrompt(
     runDescription,
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
-    'Do not create, amend, or stage any Git commit. The local delivery runner inspects the worktree, commits validated changes when enabled, and performs the optional push after Codex exits.',
+    'Do not create, amend, or stage any Git commit. The local delivery runner inspects the worktree, applies the /aicr-commit contract when committing validated changes, and performs the optional push after Codex exits.',
     `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
     'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages when the task needs them.',

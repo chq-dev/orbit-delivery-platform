@@ -537,6 +537,14 @@ SME 本地入口包含 `i18n-playwright-mcp-screenshot`、`performance-optimizat
 `rule-management-lua`、`sensitive-keyword-management`、`switch-lua-debug-deploy`。
 工作项详情生成的指令会同时包含官方阶段链与当前本地已安装链；未安装的 Skill 只能按阶段契约手工执行，不能声称为已调用。`$sdd` 仅作为本地可选编排器，不再作为 SME 权威流程。
 
+提交阶段按 sme-main 的 `/aicr-commit`（Codex 中为 `$aicr-commit`，未暴露时按契约手工执行）
+收口：读取 `.claude/skills-overlay/aicr-commit/SKILL.md`、`.claude/skills/aicr-workflow/SKILL.md`
+和 `.claude/skills/aicr-pr/references/title-rules.md`，暂存区 AICR 报告必须
+`approved: true`，提交文案使用 `【缺陷修复】` / `【需求实现】` / `【工程】` 等统一前缀。
+代码仍由客户端 runner 统一提交，Codex 不执行 Git 提交或推送，避免绕过工作区与报告校验。
+模式切换类需求的设计基线为 `web/docs/ldd/SME-模式切换-LDD.md`，交付指令会要求先读 LDD，
+再沿 `web/components/views/modeSwitch`、`lua/luci/modules/mode_switch`、菜单注册和接口文档核对实现。
+
 新安装的 Skill 从下一轮 Codex 对话开始进入可发现列表。
 
 技能源保留在 `~/.coding-skills/source`，后续更新命令：

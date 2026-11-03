@@ -73,6 +73,19 @@ test('交付提示词包含需求拆解与截图附件路径', () => {
   assert.match(instruction, /integration-test/)
   assert.match(instruction, /e2e-test/)
   assert.match(instruction, /aicr-workflow → aicr-commit \/ aicr-pr/)
+  assert.match(instruction, /Commit-stage skill: \/aicr-commit \(\$aicr-commit/)
+  assert.match(instruction, /runner owns the actual commit/)
+  assert.match(instruction, /The \/aicr-commit contract requires/)
+  assert.match(instruction, /approved: true/)
+  assert.match(instruction, /【缺陷修复】\{id\} \{description\}/)
+  assert.match(instruction, /\.claude\/skills-overlay\/aicr-commit\/SKILL\.md/)
+  assert.match(instruction, /\.claude\/skills\/aicr-pr\/references\/title-rules\.md/)
+  assert.match(
+    instruction,
+    /SME mode-switch LDD design reference: \/Users\/chenhuaqu\/sme\/sme-main\/web\/docs\/ldd\/SME-模式切换-LDD\.md/,
+  )
+  assert.match(instruction, /web\/components\/views\/modeSwitch/)
+  assert.match(instruction, /lua\/luci\/modules\/mode_switch/)
   assert.match(instruction, /never claim the skill ran/)
   assert.match(instruction, /never acceptance evidence/)
   assert.match(instruction, /Feishu MCP server named "feishu"/)

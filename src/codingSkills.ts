@@ -11,6 +11,32 @@ export const organizationSkillManual = {
   baseline: '2026-10-29',
 } as const
 
+export const smeCommitSkill = {
+  invocation: '/aicr-commit',
+  codexEntry: '$aicr-commit',
+  projectPaths: [
+    '.claude/skills-overlay/aicr-commit/SKILL.md',
+    '.claude/skills/aicr-commit/SKILL.md',
+    '.claude/skills/aicr-workflow/SKILL.md',
+    '.claude/skills/aicr-pr/references/title-rules.md',
+    '.claude/skills/aicr-pr/references/workflow.md',
+  ],
+} as const
+
+export const smeModeSwitchDesignReference = {
+  title: 'SME-模式切换-LDD',
+  relativePath: 'web/docs/ldd/SME-模式切换-LDD.md',
+  implementationPaths: [
+    'web/components/views/modeSwitch',
+    'lua/luci/modules/mode_switch',
+    'lua/luci/modules/mode_switch/doc/API.md',
+    'web/src/framework/capability/menus/deviceDetails.json',
+    'web/src/framework/capability/generated/deviceDetails.json',
+    'web/components/views/DeviceDetailsContainer/configs/menuConfig.js',
+    'web/src/framework/capability/deviceDetailsMaps.js',
+  ],
+} as const
+
 export interface CodingSkill {
   id: string
   stage: string

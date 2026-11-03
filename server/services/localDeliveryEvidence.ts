@@ -15,7 +15,15 @@ export function deliveryCodeFiles(files: readonly string[]): string[] {
   return [...new Set(files.map(normalizeDeliveryPath).filter(isDeliveryCodeFile))]
 }
 
-export function deliveryCommitMessage(workItemId: string, title: string): string {
+export function deliveryCommitMessage(
+  workItemId: string,
+  title: string,
+  type?: 'requirement' | 'defect',
+): string {
+  const normalizedId = workItemId.trim() || 'NA'
   const normalizedTitle = title.replace(/\s+/g, ' ').trim() || '本地交付'
-  return `${workItemId}: ${normalizedTitle}`.slice(0, 240)
+  const isDefect = type === 'defect' || /^BUG(?:[-_]|$)/i.test(normalizedId)
+  const isRequirement = type === 'requirement' || /^(?:REQ|STORY)(?:[-_]|$)/i.test(normalizedId)
+  const prefix = isDefect ? '【缺陷修复】' : isRequirement ? '【需求实现】' : '【工程】'
+  return `${prefix}${normalizedId} ${normalizedTitle}`.slice(0, 240)
 }
