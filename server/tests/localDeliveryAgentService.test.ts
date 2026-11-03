@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  buildFailedDeliveryPipelinePayload,
   buildCodexExecArgs,
   buildLocalDeliveryCommand,
   classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
   describeFetchError,
+  failedDeliveryStageIndex,
   fetchJsonWithRetry,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryBranch,
+  resolveLocalDeliveryFailureStep,
   resolveLocalDeliveryTarget,
   supportsLocalDeliveryContract,
   updateLocalDeliveryAgentStep,
@@ -206,6 +209,51 @@ test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', ()
     classifyLocalDeliveryFailure('平台已记录失败流水线 RUN-2411，但本次交付失败'),
     'writeback',
   )
+})
+
+test('提交失败会定位到提交阶段，并由本机代理生成失败流水线兜底载荷', () => {
+  const message =
+    '创建本地交付提交失败：提交者姓名检查失败：git user.name 必须为中文真实姓名'
+  const failedStepKey = resolveLocalDeliveryFailureStep(message, 'codex')
+  assert.equal(failedStepKey, 'commit')
+  assert.equal(failedDeliveryStageIndex(message, failedStepKey), 4)
+
+  const steps = createLocalDeliveryAgentSteps()
+  updateLocalDeliveryAgentStep(steps, 'platform', 'success', '平台已读取')
+  updateLocalDeliveryAgentStep(steps, 'contract', 'success', '契约版本 4')
+  updateLocalDeliveryAgentStep(steps, 'checkout', 'success', '工作区正常')
+  updateLocalDeliveryAgentStep(steps, 'codex', 'success', 'Codex 已完成')
+  const payload = buildFailedDeliveryPipelinePayload({
+    workItemId: 'REQ-1082',
+    repoId: 'repo-1',
+    branch: 'main-harvey',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    error: message,
+    failedStepKey,
+    autoCommit: true,
+    steps,
+  })
+  assert.equal(payload.outcome, 'failed')
+  assert.equal(payload.failedStageIndex, 4)
+  const stageResults = payload.stageResults as Array<{ index: number; status: string }>
+  assert.equal(stageResults[0].status, 'success')
+  assert.equal(stageResults[2].status, 'success')
+  assert.equal(stageResults[4].status, 'failed')
+  assert.equal(stageResults[5].status, 'pending')
+})
+
+test('失败流水线兜底载荷会截断超长错误并标记对应证据阶段', () => {
+  const message = `缺少 delivery-artifacts 中的设计报告：${'x'.repeat(5_000)}`
+  assert.equal(failedDeliveryStageIndex(message, 'evidence'), 1)
+  const payload = buildFailedDeliveryPipelinePayload({
+    workItemId: 'REQ-1082',
+    repoId: 'repo-1',
+    error: message,
+    failedStepKey: 'evidence',
+    autoCommit: true,
+  })
+  assert.equal(String(payload.error).length, 4_000)
+  assert.equal(payload.failedStageIndex, 1)
 })
 
 test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {

@@ -31,14 +31,15 @@ import {
   type MeegleMcpPublicStatus,
 } from '../services/meegleMcpService.js'
 import {
+  buildFailedDeliveryPipelinePayload,
   buildLocalDeliveryCommand,
-  classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
   fetchJsonWithRetry,
   LOCAL_DELIVERY_CONTRACT_VERSION,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryTarget,
   resolveLocalDeliveryBranch,
+  resolveLocalDeliveryFailureStep,
   supportsLocalDeliveryContract,
   updateLocalDeliveryAgentStep,
   type LocalDeliveryAgentRequest,
@@ -626,13 +627,23 @@ function commandFailureMessage(result: CommandResult): string {
     .split(/\r?\n/)
     .map((line) => line.trim())
   const errorIndex = lines.findIndex((line) => line.startsWith('LOCAL_DELIVERY_ERROR:'))
+  const recordErrorIndex = lines.findIndex((line) =>
+    line.startsWith('LOCAL_DELIVERY_RECORD_ERROR:'),
+  )
   if (errorIndex >= 0) {
-    return lines
+    const message = lines
       .slice(errorIndex)
       .join('\n')
       .slice('LOCAL_DELIVERY_ERROR:'.length)
       .trim()
-      .slice(0, 4_000)
+    const recordError = recordErrorIndex >= 0
+      ? lines[recordErrorIndex]
+          .slice('LOCAL_DELIVERY_RECORD_ERROR:'.length)
+          .trim()
+      : ''
+    if (!recordError) return message.slice(0, 4_000)
+    const suffix = `\n失败记录回写平台失败：${recordError}`
+    return `${message.slice(0, Math.max(0, 4_000 - suffix.length))}${suffix}`
   }
   const raw = result.stderr.trim() || result.stdout.trim()
   const message = raw
@@ -642,6 +653,50 @@ function commandFailureMessage(result: CommandResult): string {
     .slice(-30)
     .join('\n')
   return (message || `本地交付命令退出码 ${result.exitCode}`).slice(-4_000)
+}
+
+function recordedFailurePipelineId(result: CommandResult): string | undefined {
+  const output = `${result.stderr}\n${result.stdout}`
+  return output.match(/平台已记录失败流水线\s+(RUN-\d+)/)?.[1]
+}
+
+async function recordFailedDeliveryFallback(
+  job: LocalDeliveryJob,
+  config: FeishuAgentStoredConfig,
+  request: LocalDeliveryAgentRequest,
+  message: string,
+): Promise<string> {
+  const runningKey = job.steps.find((step) => step.status === 'running')?.key
+  const failedStepKey = resolveLocalDeliveryFailureStep(message, runningKey)
+  const body = buildFailedDeliveryPipelinePayload({
+    workItemId: request.workItemId,
+    repoId: request.repoId,
+    branch: job.branch,
+    localPath: job.localPath,
+    error: message,
+    failedStepKey,
+    autoCommit: request.autoCommit,
+    steps: job.steps,
+  })
+  const response = await fetch(`${config.platformBaseUrl}/api/pipelines/local`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      authorization: `Bearer ${config.syncToken}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!response.ok) {
+    const payload = await response.text().catch(() => '')
+    throw new Error(`HTTP ${response.status}${payload ? `：${payload.slice(0, 500)}` : ''}`)
+  }
+  const payload = (await response.json().catch(() => null)) as { id?: unknown } | null
+  if (!payload || typeof payload.id !== 'string' || !payload.id) {
+    throw new Error('平台未返回失败流水线记录')
+  }
+  return payload.id
 }
 
 const DELIVERY_STEP_ORDER = [
@@ -655,11 +710,8 @@ const DELIVERY_STEP_ORDER = [
 ]
 
 function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
-  let failedKey = classifyLocalDeliveryFailure(message)
   const runningKey = job.steps.find((step) => step.status === 'running')?.key
-  if (failedKey === 'codex' && runningKey && runningKey !== 'codex') {
-    failedKey = runningKey
-  }
+  const failedKey = resolveLocalDeliveryFailureStep(message, runningKey)
   const failedIndex = DELIVERY_STEP_ORDER.indexOf(failedKey)
   job.steps.forEach((step) => {
     const index = DELIVERY_STEP_ORDER.indexOf(step.key)
@@ -727,7 +779,18 @@ async function executeLocalDelivery(
       localDeliveryEnvironment(config.syncToken),
       deliveryTimeoutMs,
     )
-    if (result.exitCode !== 0) throw new Error(commandFailureMessage(result))
+    if (result.exitCode !== 0) {
+      let message = commandFailureMessage(result)
+      if (!recordedFailurePipelineId(result)) {
+        try {
+          const fallbackId = await recordFailedDeliveryFallback(job, config, request, message)
+          message = `${message}（本机代理已补录失败流水线 ${fallbackId}）`
+        } catch (fallbackError) {
+          message = `${message}\n本机代理补录失败流水线失败：${errorMessage(fallbackError)}`
+        }
+      }
+      throw new Error(message)
+    }
 
     const payload = parseJson(result.stdout)
     job.result = isRecord(payload) ? payload : { status: 'success' }

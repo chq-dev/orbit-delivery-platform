@@ -352,3 +352,92 @@ export function classifyLocalDeliveryFailure(message: string): string {
   }
   return 'codex'
 }
+
+const FAILED_STEP_STAGE_INDEX: Record<string, number> = {
+  platform: 0,
+  contract: 0,
+  checkout: 0,
+  codex: 2,
+  evidence: 2,
+  commit: 4,
+  writeback: 8,
+}
+
+export function resolveLocalDeliveryFailureStep(
+  message: string,
+  runningStepKey?: string,
+): string {
+  const failedKey = classifyLocalDeliveryFailure(message)
+  return failedKey === 'codex' && runningStepKey && runningStepKey !== 'codex'
+    ? runningStepKey
+    : failedKey
+}
+
+export function failedDeliveryStageIndex(message: string, failedStepKey: string): number {
+  if (/design-report|缺少 delivery-artifacts 中的设计报告/.test(message)) return 1
+  if (/integration-report|缺少 delivery-artifacts 中的集成报告/.test(message)) return 3
+  return FAILED_STEP_STAGE_INDEX[failedStepKey] ?? 2
+}
+
+export interface FailedDeliveryPipelineInput {
+  workItemId: string
+  repoId: string
+  branch?: string
+  localPath?: string
+  error: string
+  failedStepKey: string
+  autoCommit: boolean
+  steps?: LocalDeliveryAgentStep[]
+}
+
+export function buildFailedDeliveryPipelinePayload(
+  input: FailedDeliveryPipelineInput,
+): Record<string, unknown> {
+  const error = input.error.trim().slice(0, 4_000) || '本机交付失败，平台未收到客户端错误详情'
+  const failedStageIndex = failedDeliveryStageIndex(error, input.failedStepKey)
+  const stepStatus = (key: string): LocalDeliveryAgentStepStatus | undefined =>
+    input.steps?.find((step) => step.key === key)?.status
+  const stageResults: Array<{
+    index: number
+    status: LocalDeliveryAgentStepStatus
+    log: string
+  }> = Array.from({ length: 9 }, (_, index) => ({
+    index,
+    status: 'pending' as const,
+    log: '本机代理兜底记录：未检测到该阶段真实证据',
+  }))
+  if (
+    stepStatus('platform') === 'success' &&
+    stepStatus('contract') === 'success' &&
+    stepStatus('checkout') === 'success'
+  ) {
+    stageResults[0] = {
+      index: 0,
+      status: 'success',
+      log: '本机代理已读取工作项与仓库配置',
+    }
+  }
+  if (stepStatus('codex') === 'success') {
+    stageResults[2] = {
+      index: 2,
+      status: 'success',
+      log: 'Codex 已结束，失败阶段由本机代理兜底记录',
+    }
+  }
+  stageResults[failedStageIndex] = {
+    index: failedStageIndex,
+    status: 'failed',
+    log: error,
+  }
+  return {
+    outcome: 'failed',
+    workItemId: input.workItemId,
+    repoId: input.repoId,
+    ...(input.branch ? { branch: input.branch } : {}),
+    ...(input.localPath ? { localPath: input.localPath } : {}),
+    error,
+    failedStageIndex,
+    autoCommit: input.autoCommit,
+    stageResults,
+  }
+}

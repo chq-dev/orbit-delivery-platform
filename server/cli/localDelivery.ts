@@ -523,26 +523,48 @@ async function recordPlatformFailure(
       )
     }
   }
-  const response = await fetch(`${context.api}/api/pipelines/local`, {
+  const body = JSON.stringify({
+    outcome: 'failed',
+    workItemId: context.item.id,
+    repoId: context.repository.id,
+    branch: context.branch,
+    localPath: context.localPath,
+    ...(context.commit ? { commit: context.commit } : {}),
+    error: message.slice(0, 4_000),
+    failedStageIndex: failedIndex,
+    autoCommit: context.autoCommit,
+    stageResults: context.stageResults,
+    reports,
+  })
+  let lastError: unknown
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await postFailureRecord(context.api, body)
+    } catch (error) {
+      lastError = error
+      const text = error instanceof Error ? error.message : String(error)
+      const status = Number(text.match(/HTTP (\d{3})/)?.[1] ?? 0)
+      if ((status && status < 500 && status !== 408 && status !== 429) || attempt === 3) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 700))
+    }
+  }
+  throw lastError ?? new Error('回写失败流水线失败')
+}
+
+async function postFailureRecord(
+  api: string,
+  body: string,
+): Promise<{ id: string; status?: string }> {
+  const response = await fetch(`${api}/api/pipelines/local`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'application/json',
       ...platformHeaders(),
     },
-    body: JSON.stringify({
-      outcome: 'failed',
-      workItemId: context.item.id,
-      repoId: context.repository.id,
-      branch: context.branch,
-      localPath: context.localPath,
-      ...(context.commit ? { commit: context.commit } : {}),
-      error: message,
-      failedStageIndex: failedIndex,
-      autoCommit: context.autoCommit,
-      stageResults: context.stageResults,
-      reports,
-    }),
+    body,
     signal: AbortSignal.timeout(20_000),
   })
   if (!response.ok) {
@@ -849,6 +871,7 @@ async function main(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     let recordedPipelineId: string | undefined
+    let recordErrorMessage: string | undefined
     if (!attempt.failureRecorded) {
       if (!attempt.stageResults && attempt.evidence) {
         attempt.stageResults = deliveryStageResults(attempt.evidence, Boolean(attempt.commit))
@@ -863,14 +886,18 @@ async function main(): Promise<void> {
         recordedPipelineId = failure.id
         console.error(`平台已记录失败流水线 ${failure.id}`)
       } catch (recordError) {
-        console.error(
-          `LOCAL_DELIVERY_RECORD_ERROR: ${recordError instanceof Error ? recordError.message : String(recordError)}`,
-        )
+        recordErrorMessage =
+          recordError instanceof Error ? recordError.message : String(recordError)
+        console.error(`LOCAL_DELIVERY_RECORD_ERROR: ${recordErrorMessage}`)
       }
     }
-    throw recordedPipelineId
-      ? new Error(`${message}（平台已记录失败流水线 ${recordedPipelineId}）`)
-      : error
+    if (recordedPipelineId) {
+      throw new Error(`${message}（平台已记录失败流水线 ${recordedPipelineId}）`)
+    }
+    if (recordErrorMessage) {
+      throw new Error(`${message}（失败记录回写平台失败：${recordErrorMessage}）`)
+    }
+    throw error
   }
 }
 
