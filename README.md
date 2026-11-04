@@ -84,6 +84,18 @@ TRUST_PROXY=true REQUIRE_HTTPS=true npm run start:server
 
 生产环境不要关闭 `REQUIRE_HTTPS`。账号密码和会话 Cookie 只应通过 HTTPS 传输。
 
+### 编译系统网络
+
+账号中心的「内部编译」和交付流程中的编译阶段都由平台服务端直接请求 Jenkins，因此运行
+`npm run start:server` 的机器必须能访问编译账号里配置的服务地址。若 Jenkins 使用内网域名
+（例如 `ops.rj.link` 解析到 `172.30.255.114`），公网部署需要 VPN、内网部署或 HTTP 代理才能访问。
+
+- 仅能通过 HTTP(S) 代理访问时，在服务端环境变量配置 `BUILD_PROXY_URL=http://proxy.example.com:8080`
+  后重启服务；未配置时保持直连。
+- Jenkins 使用自签名证书或私有 CA 时，可通过 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 让 Node.js 信任。
+- 连接失败时接口会返回底层原因，例如 `ENOTFOUND`、`ECONNREFUSED`、`ETIMEDOUT`、`CERT_HAS_EXPIRED`，
+  「内部编译」弹窗会直接展示，便于区分 DNS、路由、代理和 TLS 问题。
+
 ### 页面驱动的本机飞书同步（推荐）
 
 平台服务器可以访问不到 `project.feishu.cn`，但用户当前电脑通常可以。此模式不暴露浏览器

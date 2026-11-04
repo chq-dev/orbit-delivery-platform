@@ -1,5 +1,7 @@
+import { ProxyAgent, fetch as undiciFetch, type Dispatcher } from 'undici'
 import type { AppDatabase } from '../db/database.js'
-import { AppError, errorMessage, notFound, unprocessable } from '../domain/errors.js'
+import { AppError, notFound, unprocessable } from '../domain/errors.js'
+import { describeFetchError } from '../domain/network.js'
 import { nowIso } from '../domain/time.js'
 import type { Account } from '../domain/types.js'
 import type { CredentialVault } from '../security/vault.js'
@@ -50,6 +52,27 @@ interface BuildCredentials {
   account: Account
   authorization: string
   jobUrl: URL
+}
+
+let proxyDispatcherCache: { proxyUrl: string; dispatcher: Dispatcher } | undefined
+
+function configuredProxyUrl(): string {
+  return process.env.BUILD_PROXY_URL?.trim() ?? ''
+}
+
+function proxyDispatcher(proxyUrl: string): Dispatcher {
+  if (proxyDispatcherCache?.proxyUrl === proxyUrl) return proxyDispatcherCache.dispatcher
+  try {
+    const dispatcher = new ProxyAgent(proxyUrl)
+    proxyDispatcherCache = { proxyUrl, dispatcher }
+    return dispatcher
+  } catch (error) {
+    throw new AppError(
+      500,
+      'BUILD_PROXY_INVALID',
+      `BUILD_PROXY_URL 配置无效：${describeFetchError(error)}`,
+    )
+  }
 }
 
 function valueAsString(value: unknown): string {
@@ -103,22 +126,35 @@ async function jenkinsFetch(
   url: URL,
   init: RequestInit = {},
 ): Promise<Response> {
+  const proxyUrl = configuredProxyUrl()
   try {
-    return await fetch(url, {
+    const options = {
       ...init,
-      redirect: 'manual',
+      redirect: 'manual' as const,
       signal: AbortSignal.timeout(15_000),
       headers: {
         authorization: credentials.authorization,
         accept: 'application/json',
         ...init.headers,
       },
-    })
+    }
+    if (proxyUrl) {
+      const fetchViaProxy = undiciFetch as unknown as (
+        input: URL,
+        init: Record<string, unknown>,
+      ) => Promise<Response>
+      return await fetchViaProxy(url, {
+        ...options,
+        dispatcher: proxyDispatcher(proxyUrl),
+      })
+    }
+    return await fetch(url, options)
   } catch (error) {
+    if (error instanceof AppError) throw error
     throw new AppError(
       502,
       'BUILD_SYSTEM_UNREACHABLE',
-      `无法连接编译系统：${errorMessage(error)}`,
+      `无法连接编译系统 ${url.origin}：${describeFetchError(error)}。请确认平台服务端可访问该地址；如仅能通过代理访问，请配置 BUILD_PROXY_URL`,
     )
   }
 }

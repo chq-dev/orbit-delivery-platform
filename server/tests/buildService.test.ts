@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { createServer, request as httpRequest } from 'node:http'
+import { connect as netConnect, type AddressInfo } from 'node:net'
 import { after, afterEach, before, test } from 'node:test'
 import { createDatabase, type AppDatabase } from '../db/database.js'
 import { AppError } from '../domain/errors.js'
@@ -148,4 +150,110 @@ test('非编译系统账号不能触发内部编译', async () => {
     () => getBuildJob(db, vault, gitAccount.id),
     (error: unknown) => error instanceof AppError && error.statusCode === 422,
   )
+})
+
+test('网络不可达时返回底层原因，便于定位 DNS、路由或 TLS 问题', async () => {
+  globalThis.fetch = (async () => {
+    throw new TypeError('fetch failed', {
+      cause: { code: 'ENOTFOUND', hostname: 'ops.rj.link', syscall: 'getaddrinfo' },
+    })
+  }) as typeof fetch
+
+  await assert.rejects(
+    () => getBuildJob(db, vault, buildAccountId),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.statusCode === 502 &&
+      error.code === 'BUILD_SYSTEM_UNREACHABLE' &&
+      /无法连接编译系统 https:\/\/jenkins\.example\.com/.test(error.message) &&
+      /DNS 解析失败（ENOTFOUND）/.test(error.message) &&
+      /ops\.rj\.link/.test(error.message),
+  )
+})
+
+test('BUILD_PROXY_URL 非法时返回明确的代理配置错误', async () => {
+  process.env.BUILD_PROXY_URL = 'not-a-url'
+  try {
+    await assert.rejects(
+      () => getBuildJob(db, vault, buildAccountId),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 500 &&
+        error.code === 'BUILD_PROXY_INVALID' &&
+        /BUILD_PROXY_URL 配置无效/.test(error.message),
+    )
+  } finally {
+    delete process.env.BUILD_PROXY_URL
+  }
+})
+
+test('配置 BUILD_PROXY_URL 后通过 HTTP 代理访问 Jenkins', async () => {
+  const jenkins = createServer((request, response) => {
+    if (request.url?.startsWith('/job/PROXY_TEST/api/json')) {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ name: 'PROXY_TEST', buildable: true, property: [] }))
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  const proxied: string[] = []
+  const proxy = createServer((request, response) => {
+    if (!request.url) {
+      response.writeHead(400)
+      response.end()
+      return
+    }
+    proxied.push(request.url)
+    const upstream = httpRequest(
+      new URL(request.url),
+      { method: request.method, headers: request.headers },
+      (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers)
+        upstreamResponse.pipe(response)
+      },
+    )
+    upstream.on('error', () => {
+      response.writeHead(502)
+      response.end('proxy error')
+    })
+    request.pipe(upstream)
+  })
+  proxy.on('connect', (request, clientSocket, head) => {
+    proxied.push(request.url ?? '')
+    const [host, port] = (request.url ?? '').split(':')
+    const upstream = netConnect(Number(port), host, () => {
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      if (head.length > 0) upstream.write(head)
+      upstream.pipe(clientSocket)
+      clientSocket.pipe(upstream)
+    })
+    upstream.on('error', () => clientSocket.destroy())
+  })
+  const listen = (server: typeof jenkins) =>
+    new Promise<number>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port))
+    })
+
+  try {
+    const jenkinsPort = await listen(jenkins)
+    const proxyPort = await listen(proxy)
+    const accountId = createAccount(db, vault, {
+      platform: 'build',
+      username: 'proxy.jenkins',
+      password: 'proxy-token',
+      label: '代理 Jenkins 账号',
+      serviceUrl: `http://127.0.0.1:${jenkinsPort}/job/PROXY_TEST/`,
+    }).id
+    process.env.BUILD_PROXY_URL = `http://127.0.0.1:${proxyPort}`
+
+    const job = await getBuildJob(db, vault, accountId)
+    assert.equal(job.name, 'PROXY_TEST')
+    assert.equal(proxied.length, 1)
+    assert.match(proxied[0], /^(?:http:\/\/127\.0\.0\.1:\d+\/job\/PROXY_TEST\/api\/json|127\.0\.0\.1:\d+)/)
+  } finally {
+    delete process.env.BUILD_PROXY_URL
+    await new Promise<void>((resolve) => jenkins.close(() => resolve()))
+    await new Promise<void>((resolve) => proxy.close(() => resolve()))
+  }
 })

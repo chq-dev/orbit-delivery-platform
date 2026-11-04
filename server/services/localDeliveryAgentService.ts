@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path'
+import { describeFetchError } from '../domain/network.js'
 
 export const LOCAL_DELIVERY_CONTRACT_VERSION = 4
 
@@ -55,24 +56,7 @@ export interface FetchJsonOptions {
   onRetry?: (context: { attempt: number; attempts: number; error: string; delayMs: number }) => void
 }
 
-function errorCause(error: unknown): Record<string, unknown> | undefined {
-  if (!(error instanceof Error)) return undefined
-  const cause = (error as Error & { cause?: unknown }).cause
-  return typeof cause === 'object' && cause !== null
-    ? (cause as Record<string, unknown>)
-    : undefined
-}
-
-export function describeFetchError(error: unknown): string {
-  if (!(error instanceof Error)) return String(error)
-  const cause = errorCause(error)
-  const parts = [error.name === 'TimeoutError' ? '请求超时' : error.message]
-  for (const value of [cause?.code, cause?.message, cause?.errno]) {
-    const detail = typeof value === 'string' || typeof value === 'number' ? String(value) : ''
-    if (detail && !parts.includes(detail)) parts.push(detail)
-  }
-  return parts.filter(Boolean).join('；')
-}
+export { describeFetchError }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
