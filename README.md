@@ -90,6 +90,12 @@ TRUST_PROXY=true REQUIRE_HTTPS=true npm run start:server
 `npm run start:server` 的机器必须能访问编译账号里配置的服务地址。若 Jenkins 使用内网域名
 （例如 `ops.rj.link` 解析到 `172.30.255.114`），公网部署需要 VPN、内网部署或 HTTP 代理才能访问。
 
+- 平台会先尝试服务端直连；出现 `BUILD_SYSTEM_UNREACHABLE` 时会自动把读取/触发编译下发到页面
+  选中的本机执行客户端，由客户端在能访问 Jenkins 的网络中执行。未指定客户端时，只有在线的客户端
+  恰好一个才会自动选择；多个在线客户端必须在页面明确选择。
+- Jenkins 账号密码只在服务端解密，并通过心跳响应下发给选中的本机代理，不返回浏览器，也不写入
+  代理命令表；生产环境应使用 HTTPS 保护平台与代理之间的通道。
+- `BUILD_AGENT_TIMEOUT_MS` 可调整等待本机代理返回编译结果的超时，默认 60000 毫秒。
 - 仅能通过 HTTP(S) 代理访问时，在服务端环境变量配置 `BUILD_PROXY_URL=http://proxy.example.com:8080`
   后重启服务；未配置时保持直连。
 - Jenkins 使用自签名证书或私有 CA 时，可通过 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` 让 Node.js 信任。

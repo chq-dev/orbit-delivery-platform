@@ -488,6 +488,7 @@ async function requestDeliveryBuild(
   api: string,
   workItemId: string,
   repoId: string,
+  clientId?: string,
 ): Promise<DeliveryBuildOutcome> {
   const response = await fetch(`${api}/api/pipelines/local/build`, {
     method: 'POST',
@@ -496,7 +497,11 @@ async function requestDeliveryBuild(
       accept: 'application/json',
       ...platformHeaders(),
     },
-    body: JSON.stringify({ workItemId, repoId }),
+    body: JSON.stringify({
+      workItemId,
+      repoId,
+      ...(clientId ? { clientId } : {}),
+    }),
     signal: AbortSignal.timeout(45_000),
   })
   const payload = (await response.json().catch(() => null)) as
@@ -864,7 +869,12 @@ async function main(): Promise<void> {
       if (push.status !== 0) {
         throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)
       }
-      internalBuild = await requestDeliveryBuild(args.api, item.id, repository.id)
+      internalBuild = await requestDeliveryBuild(
+        args.api,
+        item.id,
+        repository.id,
+        process.env.ORBIT_AGENT_CLIENT_ID?.trim() || undefined,
+      )
       const buildStage = stageResults.find((result) => result.index === 5)
       if (internalBuild.triggered && internalBuild.build) {
         evidence.buildReport = true

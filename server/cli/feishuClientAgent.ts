@@ -31,6 +31,11 @@ import {
   type MeegleMcpPublicStatus,
 } from '../services/meegleMcpService.js'
 import {
+  readJenkinsJob,
+  triggerJenkinsJob,
+  type JenkinsBuildSpec,
+} from '../services/jenkinsService.js'
+import {
   buildFailedDeliveryPipelinePayload,
   buildLocalDeliveryCommand,
   createLocalDeliveryAgentSteps,
@@ -609,8 +614,12 @@ async function validateClientCheckout(
   return { checkout, branch: resolved.branch }
 }
 
-function localDeliveryEnvironment(syncToken: string): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, PLATFORM_SYNC_TOKEN: syncToken }
+function localDeliveryEnvironment(config: FeishuAgentStoredConfig): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    PLATFORM_SYNC_TOKEN: config.syncToken,
+    ORBIT_AGENT_CLIENT_ID: config.clientId,
+  }
   for (const key of [
     'FEISHU_INGEST_TOKEN',
     'FEISHU_ACCESS_TOKEN',
@@ -776,7 +785,7 @@ async function executeLocalDelivery(
     const result = await runCommand(
       npmCommand,
       args,
-      localDeliveryEnvironment(config.syncToken),
+      localDeliveryEnvironment(config),
       deliveryTimeoutMs,
     )
     if (result.exitCode !== 0) {
@@ -958,7 +967,13 @@ async function reportCommandResult(
 
 async function executeCommand(command: {
   id: string
-  type: 'login_start' | 'sync' | 'rotate_token' | 'delivery_start'
+  type:
+    | 'login_start'
+    | 'sync'
+    | 'rotate_token'
+    | 'delivery_start'
+    | 'build_job_read'
+    | 'build_trigger'
   payload?: unknown
 }): Promise<void> {
   try {
@@ -969,6 +984,16 @@ async function executeCommand(command: {
       result = await runSync()
     } else if (command.type === 'delivery_start') {
       result = { job: deliveryJobSummary(startLocalDelivery(command.payload, command.id)) }
+    } else if (command.type === 'build_job_read') {
+      result = { job: await readJenkinsJob(buildSpecFromCommandPayload(command.payload)) }
+    } else if (command.type === 'build_trigger') {
+      const payload = isRecord(command.payload) ? command.payload : {}
+      result = {
+        build: await triggerJenkinsJob(
+          buildSpecFromCommandPayload(command.payload),
+          payload.parameters,
+        ),
+      }
     } else {
       result = await rotateToken()
     }
@@ -984,6 +1009,21 @@ async function executeCommand(command: {
   } finally {
     activeCommandIds.delete(command.id)
   }
+}
+
+function buildSpecFromCommandPayload(value: unknown): JenkinsBuildSpec {
+  if (!isRecord(value) || !isRecord(value.spec)) {
+    throw new Error('编译命令缺少 Jenkins 执行凭据')
+  }
+  const spec = value.spec
+  const accountId = text(spec.accountId)
+  const jobUrl = text(spec.jobUrl)
+  const username = text(spec.username)
+  const secret = text(spec.secret)
+  if (!accountId || !jobUrl || !username || !secret) {
+    throw new Error('编译命令缺少完整的 Jenkins 执行凭据')
+  }
+  return { accountId, jobUrl, username, secret }
 }
 
 function runningCommandIds(): string[] {
@@ -1031,7 +1071,9 @@ async function sendHeartbeat(): Promise<void> {
         (type !== 'login_start' &&
           type !== 'sync' &&
           type !== 'rotate_token' &&
-          type !== 'delivery_start')
+          type !== 'delivery_start' &&
+          type !== 'build_job_read' &&
+          type !== 'build_trigger')
       ) {
         continue
       }

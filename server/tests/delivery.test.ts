@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { createDatabase, type AppDatabase } from '../db/database.js'
+import { SCHEMA_VERSION } from '../db/schema.js'
 import { AppError } from '../domain/errors.js'
 import { CredentialVault } from '../security/vault.js'
 import { createAccount, listAccounts } from '../services/accountService.js'
@@ -100,7 +101,7 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 17)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), SCHEMA_VERSION)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_access_tokens') as { count: number }
@@ -133,7 +134,7 @@ test('版本 6 数据库升级后会创建飞书同步密钥表', () => {
   oldDb.close()
 
   const upgraded = createDatabase({ filename })
-  assert.equal(upgraded.pragma('user_version', { simple: true }), 17)
+  assert.equal(upgraded.pragma('user_version', { simple: true }), SCHEMA_VERSION)
   const table = upgraded
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_sync_credentials') as { count: number }

@@ -96,6 +96,8 @@ export function Accounts() {
     deleteAccount,
     importAccounts,
     feishuIntegration,
+    feishuAgentClients,
+    selectedFeishuAgentClientId,
     notify,
   } = useData()
   const [search, setSearch] = useState('')
@@ -122,6 +124,9 @@ export function Accounts() {
   const [buildResult, setBuildResult] = useState<BuildTriggerResult | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const buildRequestId = useRef(0)
+  const buildClientName = feishuAgentClients.find(
+    (client) => client.clientId === selectedFeishuAgentClientId,
+  )?.clientName
 
   const filtered = useMemo(
     () =>
@@ -227,7 +232,7 @@ export function Accounts() {
     setBuildError('')
     setBuildLoading(true)
     try {
-      const job = await api.getBuildJob(account.id)
+      const job = await api.getBuildJob(account.id, selectedFeishuAgentClientId)
       if (requestId !== buildRequestId.current) return
       setBuildJob(job)
       setBuildValues(
@@ -257,7 +262,11 @@ export function Accounts() {
     setBuildStarting(true)
     setBuildError('')
     try {
-      const result = await api.triggerBuild(buildAccount.id, buildValues)
+      const result = await api.triggerBuild(
+        buildAccount.id,
+        buildValues,
+        selectedFeishuAgentClientId,
+      )
       if (requestId !== buildRequestId.current) return
       setBuildResult(result)
       notify('内部编译已触发', `${result.jobName} 已进入 Jenkins 构建队列`)
@@ -788,7 +797,9 @@ export function Accounts() {
         footer={
           <>
             <span className="modal-footer-hint">
-              <ShieldCheck size={15} /> 编译凭据仅在服务端使用
+              <ShieldCheck size={15} /> 编译凭据仅由平台与受信执行客户端使用
+              {' · '}
+              {buildClientName ?? selectedFeishuAgentClientId ?? '直连失败时自动选择在线客户端'}
             </span>
             <div className="modal-footer-actions">
               <button className="btn btn-secondary" onClick={closeBuild}>

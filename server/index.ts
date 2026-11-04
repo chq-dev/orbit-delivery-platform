@@ -112,8 +112,8 @@ function shutdown(exitCode = 0): void {
   server.close(finish)
 }
 
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
+process.on('SIGINT', () => shutdown(0))
+process.on('SIGTERM', () => shutdown(0))
 process.on('SIGHUP', () => {
   console.info('收到 SIGHUP；生产环境由 systemd/launchd 托管，服务保持运行')
 })

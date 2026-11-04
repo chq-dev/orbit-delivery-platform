@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { config } from '../config.js'
 import { createDatabase } from '../db/database.js'
+import { SCHEMA_VERSION } from '../db/schema.js'
 import { AppError } from '../domain/errors.js'
 import { assertFeishuIngestAuthorized } from '../security/ingestAuth.js'
 import {
@@ -83,7 +84,7 @@ test('平台同步密钥只保存哈希，支持验证和轮换且旧密钥立�
         .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get('feishu_sync_credentials') as { count: number }
       assert.equal(table.count, 1)
-      assert.equal(db.pragma('user_version', { simple: true }), 17)
+      assert.equal(db.pragma('user_version', { simple: true }), SCHEMA_VERSION)
     } finally {
       db.close()
     }

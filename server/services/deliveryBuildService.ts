@@ -3,11 +3,13 @@ import { notFound } from '../domain/errors.js'
 import { requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
 import { listAccounts } from './accountService.js'
-import { triggerBuild, type BuildTriggerResult } from './buildService.js'
+import { triggerBuildWithFallback } from './buildAgentService.js'
+import type { BuildTriggerResult } from './buildService.js'
 
 export interface DeliveryBuildInput {
   workItemId?: unknown
   repoId?: unknown
+  clientId?: unknown
 }
 
 export interface DeliveryBuildOutcome {
@@ -41,7 +43,13 @@ export async function triggerDeliveryBuild(
     }
   }
 
-  const build = await triggerBuild(db, vault, account.id, undefined)
+  const build = await triggerBuildWithFallback(
+    db,
+    vault,
+    account.id,
+    undefined,
+    input.clientId,
+  )
   return {
     configured: true,
     triggered: true,

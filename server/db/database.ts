@@ -86,9 +86,11 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'feishu_agent_commands'")
     .get() as { sql: string } | undefined
   if (!table) return
-  if (table.sql.includes("'delivery_start'")) {
-    ensureColumn(db, 'feishu_agent_commands', 'payload_json', 'TEXT')
-    ensureColumn(db, 'feishu_agent_commands', 'client_id', "TEXT NOT NULL DEFAULT 'primary'")
+  ensureColumn(db, 'feishu_agent_commands', 'payload_json', 'TEXT')
+  ensureColumn(db, 'feishu_agent_commands', 'client_id', "TEXT NOT NULL DEFAULT 'primary'")
+  ensureColumn(db, 'feishu_agent_commands', 'claimed_at', 'TEXT')
+  ensureColumn(db, 'feishu_agent_commands', 'completed_at', 'TEXT')
+  if (table.sql.includes("'delivery_start'") && table.sql.includes("'build_trigger'")) {
     return
   }
 
@@ -98,7 +100,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
     CREATE TABLE feishu_agent_commands (
       id TEXT PRIMARY KEY,
       client_id TEXT NOT NULL DEFAULT 'primary',
-      command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start')),
+      command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start', 'build_job_read', 'build_trigger')),
       status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
       payload_json TEXT,
       result_json TEXT,
@@ -112,7 +114,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
   db.exec(`
     INSERT INTO feishu_agent_commands
       (id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at, claimed_at, completed_at)
-    SELECT id, 'primary', command_type, status, NULL, result_json, error, created_at, updated_at, claimed_at, completed_at
+    SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at, claimed_at, completed_at
     FROM feishu_agent_commands_legacy
   `)
   db.exec('DROP TABLE feishu_agent_commands_legacy')

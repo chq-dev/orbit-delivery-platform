@@ -27,7 +27,7 @@ import {
   listAccounts,
   updateAccount,
 } from './services/accountService.js'
-import { getBuildJob, triggerBuild } from './services/buildService.js'
+import { getBuildJobWithFallback, triggerBuildWithFallback } from './services/buildAgentService.js'
 import { triggerDeliveryBuild } from './services/deliveryBuildService.js'
 import {
   connectFeishu,
@@ -263,12 +263,20 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.get('/accounts/:id/build-job', async (request, response) => {
-    response.json(await getBuildJob(db, vault, request.params.id))
+    response.json(
+      await getBuildJobWithFallback(db, vault, request.params.id, request.query.clientId),
+    )
   })
 
   router.post('/accounts/:id/build', async (request, response) => {
     response.status(202).json(
-      await triggerBuild(db, vault, request.params.id, request.body?.parameters),
+      await triggerBuildWithFallback(
+        db,
+        vault,
+        request.params.id,
+        request.body?.parameters,
+        request.body?.clientId,
+      ),
     )
   })
 
@@ -316,7 +324,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     assertSyncTokenAuthorized(request)
     response.json({
       ok: true,
-      ...recordFeishuAgentHeartbeat(db, request.body),
+      ...recordFeishuAgentHeartbeat(db, request.body, vault),
     })
   })
 

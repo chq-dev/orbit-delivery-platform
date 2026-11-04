@@ -185,12 +185,16 @@ export const api = {
     }),
   deleteAccount: (id: string) =>
     request<{ ok: true }>(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  getBuildJob: (id: string) =>
-    request<BuildJobInfo>(`/accounts/${encodeURIComponent(id)}/build-job`),
-  triggerBuild: (id: string, parameters: Record<string, string>) =>
+  getBuildJob: (id: string, clientId?: string) =>
+    request<BuildJobInfo>(
+      `/accounts/${encodeURIComponent(id)}/build-job${
+        clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
+      }`,
+    ),
+  triggerBuild: (id: string, parameters: Record<string, string>, clientId?: string) =>
     request<BuildTriggerResult>(`/accounts/${encodeURIComponent(id)}/build`, {
       method: 'POST',
-      body: JSON.stringify({ parameters }),
+      body: JSON.stringify({ parameters, ...(clientId ? { clientId } : {}) }),
     }),
   importAccounts: (accounts: AccountInput[]) =>
     request<ImportResult<Account>>('/accounts/import', {

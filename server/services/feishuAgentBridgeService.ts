@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
-import { notFound, unprocessable } from '../domain/errors.js'
+import { errorMessage, notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
+import type { CredentialVault } from '../security/vault.js'
+import {
+  buildAgentCommandPayload,
+  parseBuildAgentCommandRequest,
+} from './buildService.js'
 import { parseLocalDeliveryAgentRequest } from './localDeliveryAgentService.js'
 
 export const DEFAULT_FEISHU_AGENT_CLIENT_ID = 'primary'
@@ -16,6 +21,8 @@ export type FeishuAgentCommandType =
   | 'sync'
   | 'rotate_token'
   | 'delivery_start'
+  | 'build_job_read'
+  | 'build_trigger'
 export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'
 
 export interface FeishuAgentDeliveryStep {
@@ -364,7 +371,11 @@ function renewRunningCommands(
   ).run(now, clientId, ...ids)
 }
 
-function claimPendingCommands(db: AppDatabase, clientId: string): FeishuAgentCommand[] {
+function claimPendingCommands(
+  db: AppDatabase,
+  clientId: string,
+  vault?: CredentialVault,
+): FeishuAgentCommand[] {
   return db.transaction(() => {
     const now = nowIso()
     const staleBefore = new Date(Date.now() - RUNNING_COMMAND_LEASE_MS).toISOString()
@@ -388,15 +399,34 @@ function claimPendingCommands(db: AppDatabase, clientId: string): FeishuAgentCom
        SET status = 'running', claimed_at = ?, updated_at = ?
        WHERE id = ? AND client_id = ? AND status = 'pending'`,
     )
-    return rows
-      .filter((row) => update.run(now, now, row.id, clientId).changes === 1)
-      .map((row) => publicCommand({ ...row, status: 'running', updated_at: now }))
+    const commands: FeishuAgentCommand[] = []
+    for (const row of rows) {
+      if (update.run(now, now, row.id, clientId).changes !== 1) continue
+      const command = publicCommand({ ...row, status: 'running', updated_at: now })
+      if (command.type === 'build_job_read' || command.type === 'build_trigger') {
+        try {
+          if (!vault) throw new Error('缺少编译凭据解密上下文')
+          const request = parseBuildAgentCommandRequest(command.payload)
+          command.payload = buildAgentCommandPayload(db, vault, request)
+        } catch (error) {
+          db.prepare(
+            `UPDATE feishu_agent_commands
+             SET status = 'failed', error = ?, updated_at = ?, completed_at = ?
+             WHERE id = ?`,
+          ).run(errorMessage(error).slice(0, 4_000), now, now, row.id)
+          continue
+        }
+      }
+      commands.push(command)
+    }
+    return commands
   })()
 }
 
 export function recordFeishuAgentHeartbeat(
   db: AppDatabase,
   input: unknown,
+  vault?: CredentialVault,
 ): {
   clientId: string
   clientName: string
@@ -448,7 +478,7 @@ export function recordFeishuAgentHeartbeat(
     clientName,
     machineName: storedMachineName || undefined,
     lastSeenAt: now,
-    commands: claimPendingCommands(db, clientId),
+    commands: claimPendingCommands(db, clientId, vault),
   }
 }
 
@@ -457,7 +487,7 @@ function onlineAt(lastSeenAt: string, now = Date.now()): boolean {
   return Number.isFinite(lastSeen) && now - lastSeen <= FEISHU_AGENT_ONLINE_WINDOW_MS
 }
 
-function resolveCommandClientId(db: AppDatabase, requestedClientId: unknown): string {
+export function resolveCommandClientId(db: AppDatabase, requestedClientId: unknown): string {
   const requested = agentClientId(requestedClientId)
   if (text(requestedClientId, 128) && !requested) {
     throw unprocessable('执行客户端标识格式不正确')
@@ -487,31 +517,41 @@ export function enqueueFeishuAgentCommand(
   payload?: unknown,
   requestedClientId?: unknown,
 ): FeishuAgentCommand {
-  if (
-    type !== 'login_start' &&
-    type !== 'sync' &&
-    type !== 'rotate_token' &&
-    type !== 'delivery_start'
-  ) {
+  const supportedTypes: FeishuAgentCommandType[] = [
+    'login_start',
+    'sync',
+    'rotate_token',
+    'delivery_start',
+    'build_job_read',
+    'build_trigger',
+  ]
+  if (!supportedTypes.includes(type as FeishuAgentCommandType)) {
     throw unprocessable('不支持的代理命令')
   }
+  const commandType = type as FeishuAgentCommandType
+  const isBuildCommand = commandType === 'build_job_read' || commandType === 'build_trigger'
   const clientId = resolveCommandClientId(db, requestedClientId)
-  const request = type === 'delivery_start' ? parseLocalDeliveryAgentRequest(payload) : undefined
-  const payloadJson = request ? JSON.stringify(request) : null
-  const existing = db
-    .prepare(
-      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
-       FROM feishu_agent_commands
-       WHERE client_id = ? AND command_type = ? AND status IN ('pending', 'running')
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT 1`,
-    )
-    .get(clientId, type) as CommandRow | undefined
-  if (existing) {
-    if (type === 'delivery_start' && existing.payload_json !== payloadJson) {
-      throw unprocessable('该执行客户端已有其他交付正在执行，请等待完成后再启动')
+  const deliveryRequest =
+    commandType === 'delivery_start' ? parseLocalDeliveryAgentRequest(payload) : undefined
+  const buildRequest = isBuildCommand ? parseBuildAgentCommandRequest(payload) : undefined
+  const commandPayload = deliveryRequest ?? buildRequest
+  const payloadJson = commandPayload ? JSON.stringify(commandPayload) : null
+  if (!isBuildCommand) {
+    const existing = db
+      .prepare(
+        `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+         FROM feishu_agent_commands
+         WHERE client_id = ? AND command_type = ? AND status IN ('pending', 'running')
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT 1`,
+      )
+      .get(clientId, commandType) as CommandRow | undefined
+    if (existing) {
+      if (commandType === 'delivery_start' && existing.payload_json !== payloadJson) {
+        throw unprocessable('该执行客户端已有其他交付正在执行，请等待完成后再启动')
+      }
+      return publicCommand(existing)
     }
-    return publicCommand(existing)
   }
 
   const now = nowIso()
@@ -520,16 +560,27 @@ export function enqueueFeishuAgentCommand(
     `INSERT INTO feishu_agent_commands
       (id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at)
      VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
-  ).run(id, clientId, type, payloadJson, now, now)
+  ).run(id, clientId, commandType, payloadJson, now, now)
   return {
     id,
     clientId,
-    type,
+    type: commandType,
     status: 'pending',
-    payload: request,
+    payload: commandPayload,
     createdAt: now,
     updatedAt: now,
   }
+}
+
+export function getFeishuAgentCommand(db: AppDatabase, id: string): FeishuAgentCommand {
+  const row = db
+    .prepare(
+      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+       FROM feishu_agent_commands WHERE id = ?`,
+    )
+    .get(id) as CommandRow | undefined
+  if (!row) throw notFound('代理命令')
+  return publicCommand(row)
 }
 
 export function completeFeishuAgentCommand(
