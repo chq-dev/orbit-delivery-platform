@@ -79,7 +79,14 @@ test('读取 Jenkins 参数并规范化视图地址中的任务路径', async ()
 })
 
 test('内部编译按参数默认值触发 buildWithParameters 并返回构建队列地址', async () => {
-  const requests: Array<{ url: URL; method: string; body?: string; authorization?: string }> = []
+  const requests: Array<{
+    url: URL
+    method: string
+    body?: string
+    authorization?: string
+    cookie?: string
+    crumb?: string
+  }> = []
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     const headers = new Headers(init?.headers)
@@ -88,12 +95,17 @@ test('内部编译按参数默认值触发 buildWithParameters 并返回构建�
       method: init?.method ?? 'GET',
       body: typeof init?.body === 'string' ? init.body : undefined,
       authorization: headers.get('authorization') ?? undefined,
+      cookie: headers.get('cookie') ?? undefined,
+      crumb: headers.get('jenkins-crumb') ?? undefined,
     })
 
-    if (url.pathname.endsWith('/api/json')) return Response.json(jobResponse())
     if (url.pathname === '/crumbIssuer/api/json') {
-      return Response.json({ crumb: 'crumb-value', crumbRequestField: 'Jenkins-Crumb' })
+      return Response.json(
+        { crumb: 'crumb-value', crumbRequestField: 'Jenkins-Crumb' },
+        { headers: { 'set-cookie': 'JSESSIONID=jenkins-session-42; Path=/; HttpOnly' } },
+      )
     }
+    if (url.pathname.endsWith('/api/json')) return Response.json(jobResponse())
     if (url.pathname.endsWith('/buildWithParameters')) {
       return new Response(null, { status: 201, headers: { location: '/queue/item/42/' } })
     }
@@ -114,6 +126,8 @@ test('内部编译按参数默认值触发 buildWithParameters 并返回构建�
   assert.equal(new URLSearchParams(trigger.body).get('SERIES'), 'AC')
   assert.equal(new URLSearchParams(trigger.body).get('BRANCHES'), 'main')
   assert.match(trigger.authorization ?? '', /^Basic /)
+  assert.equal(trigger.crumb, 'crumb-value')
+  assert.equal(trigger.cookie, 'JSESSIONID=jenkins-session-42')
   assert.equal(trigger.body?.includes('jenkins-api-token'), false)
 })
 

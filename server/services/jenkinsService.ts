@@ -207,14 +207,29 @@ function resolvedParameters(
   return values
 }
 
-async function crumbHeaders(spec: JenkinsBuildSpec): Promise<Record<string, string>> {
+function responseCookies(response: Response): string | undefined {
+  const header = response.headers as Headers & { getSetCookie?: () => string[] }
+  const cookies = header.getSetCookie?.() ?? []
+  const pairs = cookies
+    .map((cookie) => cookie.split(';', 1)[0]?.trim() ?? '')
+    .filter(Boolean)
+  return pairs.length > 0 ? pairs.join('; ') : undefined
+}
+
+async function crumbCredentials(
+  spec: JenkinsBuildSpec,
+): Promise<{ headers: Record<string, string>; cookie?: string }> {
   const crumbUrl = new URL('/crumbIssuer/api/json', spec.jobUrl)
   const response = await jenkinsFetch(spec, crumbUrl)
-  if (response.status === 404) return {}
+  if (response.status === 404) return { headers: {} }
+  const cookie = responseCookies(response)
   assertJenkinsReadable(response, '获取 CSRF Token')
   const body = (await response.json()) as { crumb?: string; crumbRequestField?: string }
-  if (!body.crumb || !body.crumbRequestField) return {}
-  return { [body.crumbRequestField]: body.crumb }
+  if (!body.crumb || !body.crumbRequestField) return { headers: {}, ...(cookie ? { cookie } : {}) }
+  return {
+    headers: { [body.crumbRequestField]: body.crumb },
+    ...(cookie ? { cookie } : {}),
+  }
 }
 
 export async function readJenkinsJob(spec: JenkinsBuildSpec): Promise<BuildJobInfo> {
@@ -260,11 +275,12 @@ export async function triggerJenkinsJob(
     jobUrl,
   )
   const body = new URLSearchParams(values).toString()
-  const headers = await crumbHeaders(spec)
+  const crumb = await crumbCredentials(spec)
   const response = await jenkinsFetch(spec, target, {
     method: 'POST',
     headers: {
-      ...headers,
+      ...crumb.headers,
+      ...(crumb.cookie ? { cookie: crumb.cookie } : {}),
       ...(body ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
     },
     ...(body ? { body } : {}),
