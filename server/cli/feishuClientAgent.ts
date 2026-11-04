@@ -52,6 +52,16 @@ import {
   type LocalDeliveryBootstrap,
   type LocalDeliveryAgentStep,
 } from '../services/localDeliveryAgentService.js'
+import {
+  DELIVERY_CODEX_PHASES,
+  deliveryDesignReportExists,
+  inferDeliveryCodexPhase,
+  nextDeliveryCodexPhase,
+  parseGitStatusPaths,
+  readDeliveryCodexPhaseMarker,
+  resetDeliveryCodexPhaseMarker,
+  type DeliveryCodexPhase,
+} from '../services/localDeliveryPhase.js'
 
 interface CommandResult {
   stdout: string
@@ -803,9 +813,6 @@ function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
   job.stage = `本机交付失败：${failedStep?.name ?? '未知步骤'}`
 }
 
-const DELIVERY_CODEX_PHASES = ['analysis', 'ldd', 'coding'] as const
-type DeliveryCodexPhase = (typeof DELIVERY_CODEX_PHASES)[number]
-
 const DELIVERY_CODEX_PHASE_LOGS: Record<DeliveryCodexPhase, { running: string; success: string }> = {
   analysis: {
     running: 'Codex 正在分析需求、验收条件与影响模块',
@@ -821,16 +828,64 @@ const DELIVERY_CODEX_PHASE_LOGS: Record<DeliveryCodexPhase, { running: string; s
   },
 }
 
+function currentDeliveryCodexPhase(job: LocalDeliveryJob): DeliveryCodexPhase | undefined {
+  return [...DELIVERY_CODEX_PHASES]
+    .reverse()
+    .find((phase) => ['running', 'success'].includes(
+      job.steps.find((step) => step.key === phase)?.status ?? '',
+    ))
+}
+
 function advanceDeliveryCodexPhase(job: LocalDeliveryJob, phase: DeliveryCodexPhase): void {
-  const phaseIndex = DELIVERY_CODEX_PHASES.indexOf(phase)
+  const detected = nextDeliveryCodexPhase(currentDeliveryCodexPhase(job), phase)
+  if (!detected) return
+  const phaseIndex = DELIVERY_CODEX_PHASES.indexOf(detected)
   for (let index = 0; index < phaseIndex; index += 1) {
     const key = DELIVERY_CODEX_PHASES[index]
     if (job.steps.find((step) => step.key === key)?.status !== 'success') {
       setStep(job, key, 'success', DELIVERY_CODEX_PHASE_LOGS[key].success)
     }
   }
-  if (job.steps.find((step) => step.key === phase)?.status !== 'success') {
-    setStep(job, phase, 'running', DELIVERY_CODEX_PHASE_LOGS[phase].running)
+  if (job.steps.find((step) => step.key === detected)?.status !== 'success') {
+    setStep(job, detected, 'running', DELIVERY_CODEX_PHASE_LOGS[detected].running)
+  }
+}
+
+function startDeliveryCodexPhaseTracker(
+  job: LocalDeliveryJob,
+  checkout: string,
+  workItemId: string,
+  env: NodeJS.ProcessEnv,
+): () => void {
+  let stopped = false
+  let inFlight = false
+  const tick = async (): Promise<void> => {
+    if (stopped || inFlight) return
+    inFlight = true
+    try {
+      const marker = readDeliveryCodexPhaseMarker(checkout, workItemId)
+      if (marker) advanceDeliveryCodexPhase(job, marker)
+      if (marker === 'coding') return
+      const status = await runCommand(
+        'git',
+        ['-C', checkout, 'status', '--porcelain=v1', '-z'],
+        env,
+        10_000,
+      )
+      if (stopped || status.exitCode !== 0) return
+      const detected = inferDeliveryCodexPhase(parseGitStatusPaths(status.stdout), {
+        designReport: deliveryDesignReportExists(checkout, workItemId),
+      })
+      if (detected) advanceDeliveryCodexPhase(job, detected)
+    } finally {
+      inFlight = false
+    }
+  }
+  void tick().catch(() => undefined)
+  const timer = setInterval(() => void tick().catch(() => undefined), 5_000)
+  return () => {
+    stopped = true
+    clearInterval(timer)
   }
 }
 
@@ -865,6 +920,8 @@ async function executeLocalDelivery(
     job.branch = checkout.branch
     setStep(job, 'analysis', 'running', DELIVERY_CODEX_PHASE_LOGS.analysis.running)
     job.stage = 'Codex 正在执行需求分析、业务 LDD 与编码'
+    resetDeliveryCodexPhaseMarker(checkout.checkout, request.workItemId)
+    let stopPhaseTracker: (() => void) | undefined
 
     const args = buildLocalDeliveryCommand({
       platformBaseUrl: config.platformBaseUrl,
@@ -872,18 +929,31 @@ async function executeLocalDelivery(
       localPath: checkout.checkout,
       branch: checkout.branch,
     })
-    const result = await runCommand(
-      npmCommand,
-      args,
-      localDeliveryEnvironment(config),
-      deliveryTimeoutMs,
-      (line) => {
-        const phase = line.match(/LOCAL_DELIVERY_PHASE:(analysis|ldd|coding)/)?.[1] as
-          | DeliveryCodexPhase
-          | undefined
-        if (phase) advanceDeliveryCodexPhase(job, phase)
-      },
-    )
+    let result: CommandResult
+    try {
+      result = await runCommand(
+        npmCommand,
+        args,
+        localDeliveryEnvironment(config),
+        deliveryTimeoutMs,
+        (line) => {
+          if (line.includes('LOCAL_DELIVERY_STAGE:codex') && !stopPhaseTracker) {
+            stopPhaseTracker = startDeliveryCodexPhaseTracker(
+              job,
+              checkout.checkout,
+              request.workItemId,
+              localDeliveryEnvironment(config),
+            )
+          }
+          const phase = line.match(/LOCAL_DELIVERY_PHASE:(analysis|ldd|coding)/)?.[1] as
+            | DeliveryCodexPhase
+            | undefined
+          if (phase) advanceDeliveryCodexPhase(job, phase)
+        },
+      )
+    } finally {
+      stopPhaseTracker?.()
+    }
     if (result.exitCode !== 0) {
       let message = commandFailureMessage(result)
       if (!recordedFailurePipelineId(result)) {

@@ -28,6 +28,7 @@ import {
   deliveryCodeFiles,
   normalizeDeliveryPath,
 } from '../services/localDeliveryEvidence.js'
+import { resetDeliveryCodexPhaseMarker } from '../services/localDeliveryPhase.js'
 import {
   buildDeliveryCommitPrompt,
   deliveryCommitMessageFor,
@@ -756,6 +757,7 @@ function buildPrompt(
   runDescription: string,
   screenshotPaths: string[],
 ): string {
+  const phaseMarkerPath = join(localPath, 'delivery-artifacts', item.id, '.phase-current')
   return [
     buildLocalSkillInstruction(
       item,
@@ -772,7 +774,7 @@ function buildPrompt(
     `Expected branch: ${branch}`,
     `Platform work item: ${item.id}`,
     runDescription,
-    'Work in three explicit phases and print a progress marker before each phase by running these shell commands: `echo LOCAL_DELIVERY_PHASE:analysis`, then `echo LOCAL_DELIVERY_PHASE:ldd`, then `echo LOCAL_DELIVERY_PHASE:coding`.',
+    `Work in three explicit phases: requirement analysis, business LDD, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. This file is progress telemetry only; never treat it as design or test evidence.`,
     'Phase 2 must generate or update the business LDD affected by this work item under the project LDD convention (for mode-switch work use web/docs/ldd/SME-模式切换-LDD.md). Record the LDD path and key decisions in design-report.md; do not invent an LDD that the code does not follow.',
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
@@ -926,6 +928,7 @@ async function main(): Promise<void> {
         ...buildFeishuMcpCodexArgs(feishuMcp),
         ...buildMeegleMcpCodexArgs(meegleMcp),
       ]
+      resetDeliveryCodexPhaseMarker(checkout.checkout, item.id)
       console.log('LOCAL_DELIVERY_STAGE:codex')
       const result = spawnSync(
         codexCommand,

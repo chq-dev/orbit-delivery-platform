@@ -34,9 +34,11 @@ The runner writes screenshots under `delivery-artifacts/<work-item>/requirement-
 and passes every image to `codex exec --image`. The agent reports seven step states through
 `POST /api/integrations/feishu/agent/commands/:id/progress`: connectivity
 (platform + contract + checkout), requirement analysis, business LDD, business
-coding, evidence, commit/push and platform write-back. Codex prints
-`LOCAL_DELIVERY_PHASE:analysis|ldd|coding` before each phase so the agent can move
-the live step state. Inspect the failed step and its log instead of treating
+coding, evidence, commit/push and platform write-back. At the start of each phase
+Codex writes `delivery-artifacts/<work-item>/.phase-current` with
+`analysis|ldd|coding` and prints the matching `LOCAL_DELIVERY_PHASE` marker. The
+agent polls that marker and infers the phase from real workspace changes, so the
+live step state can move even while `codex exec` buffers its output. Inspect the failed step and its log instead of treating
 `fetch failed` as a Codex error. Platform health/bootstrap reads retry transient
 network failures automatically.
 

@@ -28,6 +28,7 @@ export function buildLocalSkillInstruction(
     deliveryContext.designReference?.trim() || item.designReference?.trim() || ''
   const screenshotPaths = (deliveryContext.screenshotPaths ?? []).filter(Boolean)
   const localCheckout = repository?.localPath?.replace(/[\\/]+$/, '') || '/Users/chenhuaqu/sme/sme-main'
+  const phaseMarkerPath = `${localCheckout}/delivery-artifacts/${item.id}/.phase-current`
   const modeSwitchLddPath = `${localCheckout}/${smeModeSwitchDesignReference.relativePath}`
   const projectSkillPaths = smeCommitSkill.projectPaths
     .map((path) => `${localCheckout}/${path}`)
@@ -85,7 +86,7 @@ export function buildLocalSkillInstruction(
     '',
     'Work only in the configured local checkout. For web/ changes read web/AGENTS.md first; for lua/ changes read lua/AGENTS.md and preserve the api -> service -> middle -> utils layering.',
     'Keep the whole workflow local. First analyze the requirement and produce a development design report covering requirement interpretation, affected modules, implementation plan, compatibility, and test strategy.',
-    'Run the delivery in three visible phases: requirement analysis, business LDD generation (generate or update the LDD affected by this work item), then business coding. Before each phase run `echo LOCAL_DELIVERY_PHASE:analysis`, `echo LOCAL_DELIVERY_PHASE:ldd`, and `echo LOCAL_DELIVERY_PHASE:coding` respectively so the local runner can report progress.',
+    `Run the delivery in three visible phases: requirement analysis, business LDD generation (generate or update the LDD affected by this work item), then business coding. At the start of each phase write its name to ${phaseMarkerPath}: \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. The marker is progress telemetry only and is never delivery evidence.`,
     'Then implement the code changes and targeted unit tests according to that design.',
     'Run integration validation next: project-native type checks, Lua module tests, static analysis, firmware/web build checks, and the narrowest useful regression. Produce an integration report with actual results, compatibility findings, and remaining risks.',
     'Do not create, stage, amend, or push Git commits. Leave validated code changes in the working tree; after checking the reports and real code changes, the local delivery runner runs a separate Codex pass that follows the /aicr-commit contract and creates the work-item commit.',
