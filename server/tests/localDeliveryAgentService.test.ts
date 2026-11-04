@@ -6,6 +6,7 @@ import {
   buildLocalDeliveryCommand,
   classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
+  deliveryTimeoutFailureMessage,
   describeFetchError,
   failedDeliveryStageIndex,
   fetchJsonWithRetry,
@@ -312,4 +313,31 @@ test('平台请求遇到瞬时连接失败会重试并返回成功结果', async
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('交付超时按已进入的阶段生成可分类的失败信息', () => {
+  const coding = deliveryTimeoutFailureMessage('LOCAL_DELIVERY_STAGE:codex\n', 45 * 60_000)
+  assert.match(coding, /Codex 执行失败：本机交付执行超时/)
+  assert.equal(classifyLocalDeliveryFailure(coding), 'codex')
+
+  const commit = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:codex\nLOCAL_DELIVERY_STAGE:commit\n',
+    45 * 60_000,
+  )
+  assert.match(commit, /创建本地交付提交失败.*aicr-commit 未完成/)
+  assert.equal(classifyLocalDeliveryFailure(commit), 'commit')
+
+  const push = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:commit\nLOCAL_DELIVERY_STAGE:push\n',
+    45 * 60_000,
+  )
+  assert.match(push, /推送失败：本机交付执行超时/)
+  assert.equal(classifyLocalDeliveryFailure(push), 'commit')
+
+  const writeback = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:push\nLOCAL_DELIVERY_STAGE:writeback\n',
+    45 * 60_000,
+  )
+  assert.match(writeback, /回写平台超时/)
+  assert.equal(classifyLocalDeliveryFailure(writeback), 'writeback')
 })

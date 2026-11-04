@@ -337,6 +337,24 @@ export function classifyLocalDeliveryFailure(message: string): string {
   return 'codex'
 }
 
+export function deliveryTimeoutFailureMessage(stdout: string, timeoutMs: number): string {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000))
+  const stage = Array.from(
+    stdout.matchAll(/LOCAL_DELIVERY_STAGE:(codex|commit|push|writeback)/g),
+  ).at(-1)?.[1]
+  const suffix = '；代码变更可能仍保留在客户端工作区，请检查 delivery-artifacts 与 Codex 日志'
+  if (stage === 'commit') {
+    return `创建本地交付提交失败：本机交付执行超时（超过 ${minutes} 分钟），/aicr-commit 未完成${suffix}`
+  }
+  if (stage === 'push') {
+    return `推送失败：本机交付执行超时（超过 ${minutes} 分钟）${suffix}`
+  }
+  if (stage === 'writeback') {
+    return `回写平台超时（超过 ${minutes} 分钟）${suffix}`
+  }
+  return `Codex 执行失败：本机交付执行超时（超过 ${minutes} 分钟），编码阶段未完成${suffix}`
+}
+
 const FAILED_STEP_STAGE_INDEX: Record<string, number> = {
   platform: 0,
   contract: 0,

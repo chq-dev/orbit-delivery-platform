@@ -246,7 +246,7 @@ export async function waitForLocalDelivery(
   commandId: string,
   clientId: string,
   onUpdate: (job: LocalDeliveryJob) => void,
-  timeoutMs = 45 * 60_000,
+  timeoutMs = 210 * 60_000,
   signal?: AbortSignal,
 ): Promise<LocalDeliveryJob> {
   const deadline = Date.now() + timeoutMs

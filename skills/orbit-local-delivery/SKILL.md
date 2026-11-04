@@ -125,4 +125,11 @@ local defect as closed and reuses the platform's Feishu close outbox.
 - The runner commits only after validating real source changes and the design and
   integration reports. Do not push unless the runner was invoked with `--push`
   and the user authorized the external write.
+- Delivery has independent budgets: coding Codex defaults to 150 minutes
+  (`LOCAL_DELIVERY_CODEX_TIMEOUT_MS`), `/aicr-commit` defaults to 30 minutes
+  (`LOCAL_DELIVERY_COMMIT_TIMEOUT_MS`), and the agent outer budget defaults to
+  210 minutes (`FEISHU_AGENT_DELIVERY_TIMEOUT_MS`). The runner prints
+  `LOCAL_DELIVERY_STAGE:codex|commit|push|writeback` markers and writes
+  `codex.log` / `codex-commit.log` under `delivery-artifacts/<work-item>/` so a
+  timeout is attributed to the real stage instead of the initial JSON output.
 - Keep credentials and Feishu/Git tokens out of prompts, logs and reports.

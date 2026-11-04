@@ -294,6 +294,10 @@ export function DeliveryDialog({
   const selectedClient = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
   )
+  const deliveryWaitTimeoutMs = Math.max(
+    60 * 60_000,
+    (selectedClient?.health?.deliveryTimeoutMs ?? 210 * 60_000) + 5 * 60_000,
+  )
   const localRepoPath = localAgent.repoPaths[repoId]
   const effectiveLocalPath = localRepoPath || selectedRepo?.localPath
   const savedScreenshotCount = selectedItem?.requirementScreenshotCount ?? 0
@@ -555,7 +559,7 @@ export function DeliveryDialog({
         started.id,
         clientId,
         setDeliveryJob,
-        45 * 60_000,
+        deliveryWaitTimeoutMs,
         controller.signal,
       )
       setDeliveryJob(completed)

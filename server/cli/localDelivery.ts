@@ -31,6 +31,7 @@ import {
 import {
   buildDeliveryCommitPrompt,
   deliveryCommitMessageFor,
+  forbiddenDeliveryCommitFiles,
   validateDeliveryCommit,
 } from '../services/localDeliveryCommitService.js'
 import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
@@ -42,6 +43,33 @@ import {
 } from '../services/localDeliveryAgentService.js'
 import type { DeliveryBuildOutcome } from '../services/deliveryBuildService.js'
 import type { Repository, WorkItem, WorkItemScreenshot } from '../../src/types'
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
+const codexTimeoutMs = positiveInteger(
+  process.env.LOCAL_DELIVERY_CODEX_TIMEOUT_MS,
+  150 * 60_000,
+)
+const commitTimeoutMs = positiveInteger(
+  process.env.LOCAL_DELIVERY_COMMIT_TIMEOUT_MS,
+  30 * 60_000,
+)
+
+function writeDeliveryLog(
+  path: string,
+  stdout: string | null | undefined,
+  stderr: string | null | undefined,
+): void {
+  try {
+    const content = `[stdout]\n${stdout ?? ''}\n[stderr]\n${stderr ?? ''}\n`
+    writeFileSync(path, content.slice(-2_000_000), 'utf8')
+  } catch {
+    // Logging must not change the delivery outcome.
+  }
+}
 
 interface BootstrapData {
   repositories: Repository[]
@@ -62,6 +90,7 @@ interface LocalDeliveryArgs {
   path?: string
   branch?: string
   run: boolean
+  commitOnly: boolean
   push: boolean
   noCommit: boolean
   close: boolean
@@ -125,6 +154,7 @@ Options:
   --path <dir>         Client checkout path (default: repository localPath)
   --branch <name>      Platform default branch (local checkout branch wins when different)
   --run                Start Codex in the client checkout after generating the prompt
+  --commit-only        Skip coding Codex and resume /aicr-commit on existing changes
   --no-commit          Leave validated changes uncommitted for human review
   --push               Push the resulting commit after Codex succeeds (requires confirmation)
   --close              Mark a local defect closed after delivery is recorded
@@ -134,7 +164,8 @@ Options:
 The script only reads platform work-item metadata. Code editing and tests run in a
 first Codex pass; the runner then starts a second Codex pass that executes the
 repository /aicr-commit skill (staged AICR review + local commit). Only --push
-writes the resulting commit to origin.`
+writes the resulting commit to origin. Use --commit-only to resume a timed-out
+delivery and commit existing verified changes without rerunning coding.`
 }
 
 function parseArgs(argv: string[]): LocalDeliveryArgs {
@@ -142,6 +173,7 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
     api: process.env.PLATFORM_BASE_URL?.trim() || 'https://127.0.0.1:8787',
     workItem: '',
     run: false,
+    commitOnly: false,
     push: false,
     noCommit: false,
     close: false,
@@ -162,6 +194,10 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
     else if (flag === '--path') args.path = value()
     else if (flag === '--branch') args.branch = value()
     else if (flag === '--run') args.run = true
+    else if (flag === '--commit-only') {
+      args.commitOnly = true
+      args.run = true
+    }
     else if (flag === '--no-commit') args.noCommit = true
     else if (flag === '--push') args.push = true
     else if (flag === '--close') args.close = true
@@ -333,6 +369,7 @@ function commitDeliveredChanges(input: {
     commitMessage: expectedMessage,
   })
   const lastMessagePath = join(input.artifactDir, 'codex-commit-last-message.md')
+  console.log('LOCAL_DELIVERY_STAGE:commit')
   const result = spawnSync(
     input.codexCommand,
     buildCodexExecArgs({
@@ -346,9 +383,19 @@ function commitDeliveredChanges(input: {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
+      timeout: commitTimeoutMs,
+      killSignal: 'SIGKILL',
     },
   )
-  if (result.error) throw result.error
+  writeDeliveryLog(join(input.artifactDir, 'codex-commit.log'), result.stdout, result.stderr)
+  if (result.error) {
+    if ((result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+      throw new Error(
+        `创建本地交付提交失败：/aicr-commit 超过 ${Math.round(commitTimeoutMs / 60_000)} 分钟未完成`,
+      )
+    }
+    throw result.error
+  }
   if (result.stdout) process.stdout.write(result.stdout)
   if (result.stderr) process.stderr.write(result.stderr)
   if (result.status !== 0) {
@@ -749,6 +796,7 @@ async function main(): Promise<void> {
   if (!args.workItem) throw new Error(`缺少 --work-item\n\n${usage()}`)
   if (args.push && !args.run) throw new Error('--push 必须与 --run 一起使用')
   if (args.push && args.noCommit) throw new Error('--push 不能与 --no-commit 同时使用')
+  if (args.commitOnly && args.noCommit) throw new Error('--commit-only 不能与 --no-commit 同时使用')
 
   const bootstrap = await fetchBootstrap(args.api)
   const context = await fetchDeliveryContext(args.api, args.workItem)
@@ -827,9 +875,12 @@ async function main(): Promise<void> {
       promptFile: promptPath,
       screenshotFiles: screenshotPaths,
       run: args.run,
+      commitOnly: args.commitOnly,
       push: args.push,
       autoCommit: !args.noCommit,
       close: args.close,
+      codexTimeoutMs,
+      commitTimeoutMs,
       feishuMcp: feishuMcp.status,
       meegleMcp: meegleMcp.status,
     }, null, 2))
@@ -840,45 +891,73 @@ async function main(): Promise<void> {
       return
     }
 
-    assertCleanDeliveryWorktree(checkout.checkout)
+    if (!args.commitOnly) assertCleanDeliveryWorktree(checkout.checkout)
 
     const codexCommand = resolveCodexBinary()
     if (!codexCommand) throw new Error(codexBinaryError())
-    if (feishuMcpRequired() && !feishuMcp.status.available) {
-      throw new Error(`FEISHU_MCP_REQUIRED=true，但飞书 MCP 不可用：${feishuMcp.status.reason ?? '未知原因'}`)
-    }
-    if (feishuMcp.status.configured && !feishuMcp.status.available) {
-      console.warn(`提示：飞书 MCP 已配置但不可用：${feishuMcp.status.reason ?? '未知原因'}`)
-    }
-    if (meegleMcpRequired() && !meegleMcp.status.available) {
-      throw new Error(`MEEGLE_MCP_REQUIRED=true，但 Meegle MCP 不可用：${meegleMcp.status.reason ?? '未知原因'}`)
-    }
-    if (meegleMcp.status.configured && !meegleMcp.status.available) {
-      console.warn(`提示：Meegle MCP 已配置但不可用：${meegleMcp.status.reason ?? '未知原因'}`)
-    }
-    const mcpArgs = [
-      ...buildFeishuMcpCodexArgs(feishuMcp),
-      ...buildMeegleMcpCodexArgs(meegleMcp),
-    ]
+    let mcpArgs: string[] = []
     const lastMessagePath = join(artifactDir, 'codex-last-message.md')
-    const result = spawnSync(
-      codexCommand,
-      buildCodexExecArgs({
-        checkout: checkout.checkout,
-        prompt,
-        lastMessagePath,
-        imagePaths: screenshotPaths,
-        mcpArgs,
-      }),
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        encoding: 'utf8',
-        maxBuffer: 32 * 1024 * 1024,
-      },
-    )
-    if (result.error) throw result.error
-    if (result.stdout) process.stdout.write(result.stdout)
-    if (result.stderr) process.stderr.write(result.stderr)
+    if (!args.commitOnly) {
+      if (feishuMcpRequired() && !feishuMcp.status.available) {
+        throw new Error(`FEISHU_MCP_REQUIRED=true，但飞书 MCP 不可用：${feishuMcp.status.reason ?? '未知原因'}`)
+      }
+      if (feishuMcp.status.configured && !feishuMcp.status.available) {
+        console.warn(`提示：飞书 MCP 已配置但不可用：${feishuMcp.status.reason ?? '未知原因'}`)
+      }
+      if (meegleMcpRequired() && !meegleMcp.status.available) {
+        throw new Error(`MEEGLE_MCP_REQUIRED=true，但 Meegle MCP 不可用：${meegleMcp.status.reason ?? '未知原因'}`)
+      }
+      if (meegleMcp.status.configured && !meegleMcp.status.available) {
+        console.warn(`提示：Meegle MCP 已配置但不可用：${meegleMcp.status.reason ?? '未知原因'}`)
+      }
+      mcpArgs = [
+        ...buildFeishuMcpCodexArgs(feishuMcp),
+        ...buildMeegleMcpCodexArgs(meegleMcp),
+      ]
+      console.log('LOCAL_DELIVERY_STAGE:codex')
+      const result = spawnSync(
+        codexCommand,
+        buildCodexExecArgs({
+          checkout: checkout.checkout,
+          prompt,
+          lastMessagePath,
+          imagePaths: screenshotPaths,
+          mcpArgs,
+        }),
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8',
+          maxBuffer: 32 * 1024 * 1024,
+          timeout: codexTimeoutMs,
+          killSignal: 'SIGKILL',
+        },
+      )
+      writeDeliveryLog(join(artifactDir, 'codex.log'), result.stdout, result.stderr)
+      if (result.error) {
+        if ((result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+          throw new Error(
+            `Codex 执行失败：编码阶段超过 ${Math.round(codexTimeoutMs / 60_000)} 分钟未完成`,
+          )
+        }
+        throw result.error
+      }
+      if (result.stdout) process.stdout.write(result.stdout)
+      if (result.stderr) process.stderr.write(result.stderr)
+      if (result.status !== 0) {
+        const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`
+          .trim()
+          .slice(-4_000)
+        throw new Error(
+          `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
+        )
+      }
+      const headAfterCoding = requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取编码后 HEAD')
+      if (headAfterCoding !== checkout.head) {
+        throw new Error(
+          'Codex 执行失败：编码阶段创建了 Git 提交，违反客户端执行契约；提交只能由 /aicr-commit 阶段完成',
+        )
+      }
+    }
 
     const evidence = artifactEvidence(artifactDir)
     try {
@@ -888,23 +967,17 @@ async function main(): Promise<void> {
     }
     attempt.evidence = evidence
 
-    if (result.status !== 0) {
-      const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`
-        .trim()
-        .slice(-4_000)
-      throw new Error(
-        `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
-      )
-    }
-    const headAfterCoding = requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取编码后 HEAD')
-    if (headAfterCoding !== checkout.head) {
-      throw new Error(
-        'Codex 执行失败：编码阶段创建了 Git 提交，违反客户端执行契约；提交只能由 /aicr-commit 阶段完成',
-      )
+    if (args.commitOnly) {
+      const forbidden = forbiddenDeliveryCommitFiles(workTreeFiles(checkout.checkout))
+      if (forbidden.length > 0) {
+        throw new Error(`工作区包含禁止提交的敏感文件，请先处理：${forbidden.slice(0, 8).join(', ')}`)
+      }
     }
     if (evidence.changedFiles.length === 0) {
       throw new Error(
-        'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
+        args.commitOnly
+          ? '没有检测到可提交的非 Markdown 代码文件变更；--commit-only 需要已有代码改动'
+          : 'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
       )
     }
     if (!args.noCommit && (!evidence.designReport || !evidence.integrationReport)) {
@@ -928,7 +1001,7 @@ async function main(): Promise<void> {
       branch,
       item: deliveryItem,
       codexCommand,
-      mcpArgs,
+      mcpArgs: [],
       artifactDir,
     })
     attempt.commit = finalHead
@@ -939,6 +1012,7 @@ async function main(): Promise<void> {
 
     let internalBuild: DeliveryBuildOutcome | undefined
     if (args.push) {
+      console.log('LOCAL_DELIVERY_STAGE:push')
       await confirmPush(branch, args.yes)
       if (!checkout.remote) throw new Error('本地仓库没有 origin 远端，无法推送')
       const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${branch}`])
@@ -972,6 +1046,7 @@ async function main(): Promise<void> {
 
     let platformPipeline: unknown = null
     try {
+      console.log('LOCAL_DELIVERY_STAGE:writeback')
       platformPipeline = await recordPlatformDelivery(
         args.api,
         args,

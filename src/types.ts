@@ -245,6 +245,7 @@ export interface FeishuClientAgentHealth {
   ok: true
   version: number
   config: FeishuClientAgentConfigStatus
+  deliveryTimeoutMs?: number
   meegle: {
     available: boolean
     authenticated: boolean

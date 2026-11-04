@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
   chmodSync,
@@ -40,6 +40,7 @@ import {
   buildLocalDeliveryCommand,
   createLocalDeliveryAgentSteps,
   fetchJsonWithRetry,
+  deliveryTimeoutFailureMessage,
   LOCAL_DELIVERY_CONTRACT_VERSION,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryTarget,
@@ -56,6 +57,7 @@ interface CommandResult {
   stdout: string
   stderr: string
   exitCode: number
+  timedOut?: boolean
 }
 
 interface LoginChallenge {
@@ -134,7 +136,7 @@ const loginPollIntervalMs = positiveInteger(
 )
 const deliveryTimeoutMs = positiveInteger(
   process.env.FEISHU_AGENT_DELIVERY_TIMEOUT_MS,
-  45 * 60_000,
+  210 * 60_000,
 )
 const meegleCommand = process.env.MEEGLE_BIN?.trim() || 'meegle'
 const meegleHost = process.env.MEEGLE_HOST?.trim() || 'project.feishu.cn'
@@ -284,28 +286,62 @@ function runCommand(
   timeout = 60_000,
 ): Promise<CommandResult> {
   return new Promise((resolvePromise) => {
-    const child = execFile(
+    const child = spawn(
       command,
       args,
       {
         cwd: workspaceRoot,
         env,
-        timeout,
-        maxBuffer: 32 * 1024 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
         windowsHide: true,
       },
-      (error, stdout, stderr) => {
-        const code = (error as { code?: unknown } | null)?.code
-        resolvePromise({
-          stdout: String(stdout ?? ''),
-          stderr: String(stderr ?? ''),
-          exitCode: typeof code === 'number' ? code : code ? 1 : 0,
-        })
-      },
     )
+    const maxOutput = 32 * 1024 * 1024
+    const append = (current: string, chunk: unknown): string => {
+      const next = `${current}${String(chunk)}`
+      return next.length > maxOutput ? next.slice(-maxOutput) : next
+    }
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const finish = (exitCode: number): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolvePromise({ stdout, stderr, exitCode, timedOut })
+    }
+    timer = setTimeout(() => {
+      timedOut = true
+      if (process.platform !== 'win32' && child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL')
+        } catch {
+          child.kill('SIGKILL')
+        }
+      } else {
+        child.kill('SIGKILL')
+      }
+    }, timeout)
+    child.stdout?.on('data', (chunk) => {
+      stdout = append(stdout, chunk)
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr = append(stderr, chunk)
+    })
+    child.on('error', (error) => {
+      stderr = append(stderr, `\n${error.message}`)
+      finish(1)
+    })
+    child.on('close', (code, signal) => {
+      finish(typeof code === 'number' ? code : signal ? 1 : 0)
+    })
     // Codex reads piped stdin until EOF before starting a non-interactive run.
     // Close it immediately so a long-running agent never waits for input.
     child.stdin?.end()
+    child.stdin?.on('error', () => undefined)
   })
 }
 
@@ -379,6 +415,7 @@ async function currentHealth(): Promise<{
   lastRun: LastRun | null
   pendingLogin: LoginChallenge | null
   delivery: LocalDeliveryJob | null
+  deliveryTimeoutMs: number
   feishuMcp: FeishuMcpPublicStatus
   meegleMcp: MeegleMcpPublicStatus
   codex: {
@@ -400,6 +437,7 @@ async function currentHealth(): Promise<{
     lastRun,
     pendingLogin,
     delivery: deliveryJob ? deliveryJobSummary(deliveryJob) : null,
+    deliveryTimeoutMs,
     feishuMcp,
     meegleMcp: meegleMcp.status,
     codex: {
@@ -632,6 +670,9 @@ function localDeliveryEnvironment(config: FeishuAgentStoredConfig): NodeJS.Proce
 }
 
 function commandFailureMessage(result: CommandResult): string {
+  if (result.timedOut) {
+    return deliveryTimeoutFailureMessage(result.stdout, deliveryTimeoutMs)
+  }
   const lines = `${result.stderr}\n${result.stdout}`
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -653,6 +694,9 @@ function commandFailureMessage(result: CommandResult): string {
     if (!recordError) return message.slice(0, 4_000)
     const suffix = `\n失败记录回写平台失败：${recordError}`
     return `${message.slice(0, Math.max(0, 4_000 - suffix.length))}${suffix}`
+  }
+  if (/"workItem"\s*:/.test(result.stdout)) {
+    return `本机交付执行中断（退出码 ${result.exitCode}），未收到阶段错误；请检查客户端代理与 delivery-artifacts 下的 codex.log / codex-commit.log`
   }
   const raw = result.stderr.trim() || result.stdout.trim()
   const message = raw
