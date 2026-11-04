@@ -138,3 +138,9 @@ local defect as closed and reuses the platform's Feishu close outbox.
   `codex.log` / `codex-commit.log` under `delivery-artifacts/<work-item>/` so a
   timeout is attributed to the real stage instead of the initial JSON output.
 - Keep credentials and Feishu/Git tokens out of prompts, logs and reports.
+- The local agent exposes the authoritative live job at `GET /status` (and
+  `GET /delivery/status/<job-id>`). A job is still running only while
+  `status=running` and `processAlive=true`; `running` with `processAlive=false`
+  is a stale state that needs agent restart or cleanup. `POST /delivery/cancel`
+  kills the local delivery process group; closing the delivery dialog only stops
+  browser polling and must not be described as terminating the task.

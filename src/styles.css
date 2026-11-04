@@ -819,6 +819,23 @@ p {
   background: #fbfbfd;
 }
 
+.btn-danger {
+  color: #b42318;
+  border: 1px solid #f3c6c2;
+  background: #fff7f6;
+  box-shadow: 0 1px 2px rgba(25, 31, 57, 0.02);
+}
+
+.btn-danger:hover {
+  border-color: #e9a8a2;
+  background: #fff0ee;
+}
+
+.btn-danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .btn-quiet {
   height: 32px;
   padding: 0 9px;
@@ -2729,6 +2746,46 @@ p {
   gap: 6px;
   padding-top: 10px;
   border-top: 1px solid #eceef4;
+}
+
+.delivery-local-process {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0;
+  padding: 9px 11px;
+  border: 1px solid #dfe3ee;
+  border-radius: 8px;
+  background: #f8f9fd;
+}
+
+.delivery-local-process > div {
+  display: grid;
+  gap: 3px;
+}
+
+.delivery-local-process strong {
+  color: #333a52;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.delivery-local-process span,
+.delivery-local-process p {
+  margin: 0;
+  color: #6f7590;
+  font-size: 9px;
+}
+
+.delivery-local-process.failed {
+  border-color: #f0cfcc;
+  background: #fff8f7;
+}
+
+.delivery-local-process.succeeded {
+  border-color: #cfe9d8;
+  background: #f7fdf9;
 }
 
 .delivery-progress-log {

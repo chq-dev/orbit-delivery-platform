@@ -35,6 +35,7 @@ import {
   waitForLocalDelivery,
   type LocalDeliveryAgentReadiness,
 } from '../localDeliveryAgent'
+import { cancelLocalDeliveryJob, fetchLocalDeliveryJob } from '../feishuAgent'
 import { prepareScreenshot } from '../screenshotCompression'
 import { useData } from '../store'
 import type { LocalDeliveryJob, PipelineRun, WorkItem } from '../types'
@@ -49,6 +50,16 @@ function deliveryStatusLabel(job: LocalDeliveryJob | null, error: string): strin
   if (job?.status === 'succeeded') return '客户端执行完成'
   if (job?.status === 'running') return '客户端执行中'
   return '等待客户端执行'
+}
+
+function activityLabel(value?: string): string {
+  if (!value) return '未知'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return '未知'
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000))
+  if (seconds < 60) return `${seconds} 秒前`
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)} 分钟前`
+  return `${Math.floor(seconds / 3_600)} 小时前`
 }
 
 function WorkItemPicker({
@@ -268,11 +279,32 @@ export function DeliveryDialog({
   const [launching, setLaunching] = useState(false)
   const [deliveryJob, setDeliveryJob] = useState<LocalDeliveryJob | null>(null)
   const [deliveryError, setDeliveryError] = useState('')
+  const [localDeliveryJob, setLocalDeliveryJob] = useState<LocalDeliveryJob | null>(null)
+  const [terminatingLocal, setTerminatingLocal] = useState(false)
   const progressRef = useRef<HTMLDivElement | null>(null)
   const waitAbortRef = useRef<AbortController | null>(null)
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
-  const progressVisible = Boolean(deliveryJob || deliveryError)
+  const canControlLocalAgent = Boolean(
+    localFeishuAgentClientId &&
+      selectedFeishuAgentClientId === localFeishuAgentClientId,
+  )
+  const localJobInScope =
+    localDeliveryJob && localDeliveryJob.workItemId === workItemId
+      ? localDeliveryJob
+      : null
+  const localJobRunning = localJobInScope?.status === 'running'
+  const localJobIsNewer = Boolean(
+    localJobInScope &&
+      (!deliveryJob ||
+        Date.parse(localJobInScope.startedAt) >= Date.parse(deliveryJob.startedAt)),
+  )
+  const effectiveDeliveryJob = localJobIsNewer ? localJobInScope : deliveryJob
+  const effectiveDeliveryError =
+    localJobIsNewer && localJobInScope && localJobInScope.status !== 'running'
+      ? localJobInScope.error ?? ''
+      : deliveryError
+  const progressVisible = Boolean(deliveryJob || deliveryError || localJobInScope)
   const [localAgent, setLocalAgent] = useState<
     LocalDeliveryAgentReadiness & { checking: boolean }
   >({
@@ -313,14 +345,14 @@ export function DeliveryDialog({
       : undefined
   const deliveryStages = useMemo(
     () =>
-      (deliveryJob?.steps ?? []).map((step) => ({
+      (effectiveDeliveryJob?.steps ?? []).map((step) => ({
         key: step.key,
         name: step.name,
         description: step.description,
         status: step.status,
         log: step.log,
       })),
-    [deliveryJob?.steps],
+    [effectiveDeliveryJob?.steps],
   )
 
   useEffect(() => {
@@ -387,6 +419,28 @@ export function DeliveryDialog({
       cancelled = true
     }
   }, [open, selectedFeishuAgentClientId])
+
+  useEffect(() => {
+    if (!open || !canControlLocalAgent) {
+      setLocalDeliveryJob(null)
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const job = await fetchLocalDeliveryJob()
+        if (!cancelled) setLocalDeliveryJob(job)
+      } catch {
+        if (!cancelled) setLocalDeliveryJob(null)
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 3_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [open, canControlLocalAgent])
 
   useEffect(() => {
     if (open) return
@@ -519,6 +573,14 @@ export function DeliveryDialog({
       )
       return
     }
+    if (canControlLocalAgent && localDeliveryJob?.status === 'running') {
+      notify(
+        '本机已有执行中的任务',
+        `当前本机代理仍报告 ${localDeliveryJob.workItemId} 正在执行（PID ${localDeliveryJob.processId ?? '未知'}），请先等待完成或终止该任务`,
+        'warning',
+      )
+      return
+    }
     const controller = new AbortController()
     waitAbortRef.current = controller
     setLaunching(true)
@@ -587,6 +649,25 @@ export function DeliveryDialog({
         )
         return
       }
+      try {
+        const localJob = await fetchLocalDeliveryJob()
+        if (
+          localJob?.status === 'running' &&
+          localJob.workItemId === workItemId &&
+          localJob.processAlive !== false
+        ) {
+          setLocalDeliveryJob(localJob)
+          setDeliveryError('')
+          notify(
+            '平台状态已中断，但本机仍在执行',
+            `本机 Codex 进程 PID ${localJob.processId ?? '未知'} 仍存活，最近活动于 ${activityLabel(localJob.lastActivityAt)}；可在弹窗中查看或终止`,
+            'warning',
+          )
+          return
+        }
+      } catch {
+        // The platform error remains authoritative when the local agent cannot be reached.
+      }
       const message = error instanceof Error ? error.message : '本机交付执行失败'
       setDeliveryJob((current) => {
         if (!current || current.status === 'failed') return current
@@ -607,6 +688,28 @@ export function DeliveryDialog({
   const stopWaitingAndClose = () => {
     waitAbortRef.current?.abort()
     onClose()
+  }
+
+  const terminateLocalTask = async () => {
+    if (!localJobInScope || terminatingLocal) return
+    setTerminatingLocal(true)
+    try {
+      const job = await cancelLocalDeliveryJob(localJobInScope.id)
+      setLocalDeliveryJob(job)
+      setDeliveryJob(job)
+      setDeliveryError('')
+      notify(
+        '已终止本机任务',
+        '已向本机 Codex 进程组发送终止信号；未提交的代码变更会保留在工作区',
+        'info',
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '终止本机任务失败'
+      setDeliveryError(message)
+      notify('终止本机任务失败', message, 'warning')
+    } finally {
+      setTerminatingLocal(false)
+    }
   }
 
   return (
@@ -643,15 +746,26 @@ export function DeliveryDialog({
                   ? '执行客户端已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
                   : !localAgent.codexAvailable
                     ? '未检测到 Codex CLI，请设置 CODEX_BIN 为可执行文件绝对路径后重启代理'
+                    : localJobRunning
+                      ? `本机任务仍在执行${localJobInScope?.processId ? `（PID ${localJobInScope.processId}）` : ''}；最近活动 ${activityLabel(localJobInScope?.lastActivityAt)}`
                     : '点击后由所选执行客户端在配置路径直接执行 Codex，只有真实代码变更才会创建提交'}
           </span>
           <div className="modal-footer-actions">
+            {canControlLocalAgent && localJobInScope?.status === 'running' && (
+              <button
+                className="btn btn-danger"
+                onClick={() => void terminateLocalTask()}
+                disabled={terminatingLocal}
+              >
+                {terminatingLocal ? '正在终止…' : '终止本机执行'}
+              </button>
+            )}
             <button
               className="btn btn-secondary"
               onClick={launching ? stopWaitingAndClose : onClose}
-              title={launching ? '停止页面轮询，本机交付会在后台继续执行' : undefined}
+              title={launching ? '只停止页面轮询并关闭弹窗，本机 Codex 进程会继续执行；需要停止请点“终止本机执行”' : undefined}
             >
-              {launching ? '停止等待并关闭' : '取消'}
+              {launching ? '后台运行并关闭' : '取消'}
             </button>
             <button
               className="btn btn-primary"
@@ -662,6 +776,7 @@ export function DeliveryDialog({
                 Boolean(requirementContextIssue) ||
                 compressingScreenshots ||
                 launching ||
+                localJobRunning ||
                 !selectedFeishuAgentClientId ||
                 localAgent.checking ||
                 !localAgent.online ||
@@ -678,41 +793,61 @@ export function DeliveryDialog({
     >
       <div className="delivery-dialog-grid">
         <div className="delivery-form">
-          {(deliveryJob || deliveryError) && (
+          {(effectiveDeliveryJob || effectiveDeliveryError || localJobInScope) && (
             <div
               ref={progressRef}
-              className={`delivery-progress-panel ${deliveryJob?.status ?? 'failed'}`}
+              className={`delivery-progress-panel ${effectiveDeliveryJob?.status ?? 'failed'}`}
             >
               <div className="delivery-progress-head">
                 <div>
                   <span className="eyebrow">
                     <Terminal size={13} /> LOCAL EXECUTION
                   </span>
-                  <h3>{deliveryStatusLabel(deliveryJob, deliveryError)}</h3>
+                  <h3>{deliveryStatusLabel(effectiveDeliveryJob, effectiveDeliveryError)}</h3>
                 </div>
-                {deliveryJob && (
-                  <span className={`delivery-progress-status ${deliveryJob.status}`}>
-                    {deliveryJob.status === 'running'
+                {effectiveDeliveryJob && (
+                  <span className={`delivery-progress-status ${effectiveDeliveryJob.status}`}>
+                    {effectiveDeliveryJob.status === 'running'
                       ? '执行中'
-                      : deliveryJob.status === 'succeeded'
+                      : effectiveDeliveryJob.status === 'succeeded'
                         ? '已完成'
                         : '已失败'}
                   </span>
                 )}
               </div>
+              {localJobInScope && (
+                <div className={`delivery-local-process ${localJobInScope.status}`}>
+                  <div>
+                    <strong>
+                      本机代理：{localJobInScope.status === 'running'
+                        ? localJobInScope.processAlive === false
+                          ? '进程已退出，代理状态尚未收尾'
+                          : 'Codex 仍在执行'
+                        : localJobInScope.status === 'succeeded'
+                          ? '已执行完成'
+                          : '已执行失败'}
+                    </strong>
+                    <span>
+                      PID {localJobInScope.processId ?? '未知'} · 最近活动{' '}
+                      {activityLabel(localJobInScope.lastActivityAt)}
+                    </span>
+                  </div>
+                  {localJobInScope.stage && <p>{localJobInScope.stage}</p>}
+                </div>
+              )}
               {deliveryStages.length > 0 && <PipelineSteps stages={deliveryStages} compact />}
               <div className="delivery-progress-logs">
-                {(deliveryJob?.steps ?? []).map((step) => (
+                {(effectiveDeliveryJob?.steps ?? []).map((step) => (
                   <div className={`delivery-progress-log ${step.status}`} key={step.key}>
                     <span className="delivery-progress-log-dot" />
                     <strong>{step.name}</strong>
                     <span>{step.log ?? step.description}</span>
                   </div>
                 ))}
-                {deliveryError && (
+                {effectiveDeliveryError && (
                   <div className="delivery-progress-error">
                     <AlertTriangle size={15} />
-                    <span>{deliveryError}</span>
+                    <span>{effectiveDeliveryError}</span>
                   </div>
                 )}
               </div>
@@ -999,7 +1134,7 @@ export function DeliveryDialog({
             </label>
           </div>
 
-          {(deliveryJob || deliveryError) && (
+          {(effectiveDeliveryJob || effectiveDeliveryError) && (
             <Field
               label={`${selectedClient?.clientName ?? '执行客户端'}状态`}
               hint={`执行客户端 ${
@@ -1015,26 +1150,32 @@ export function DeliveryDialog({
               <div className="credential-note">
                 <Terminal size={16} />
                 <div>
-                  <strong>{deliveryStatusLabel(deliveryJob, deliveryError)}</strong>
-                  <p>{deliveryError || deliveryJob?.error || deliveryJob?.stage || '正在准备执行'}</p>
-                  {deliveryJob?.localPath && (
+                  <strong>{deliveryStatusLabel(effectiveDeliveryJob, effectiveDeliveryError)}</strong>
+                  <p>{effectiveDeliveryError || effectiveDeliveryJob?.error || effectiveDeliveryJob?.stage || '正在准备执行'}</p>
+                  {localJobInScope && (
                     <p>
-                      <code>{deliveryJob.localPath}</code>
-                      {deliveryJob.branch ? ` · ${deliveryJob.branch}` : ''}
+                      本机代理 PID <code>{localJobInScope.processId ?? '未知'}</code> · 最近活动 {activityLabel(localJobInScope.lastActivityAt)}
+                      {localJobInScope.processAlive === false ? ' · 进程已退出' : ''}
                     </p>
                   )}
-                  {deliveryJob?.result?.commit && (
+                  {effectiveDeliveryJob?.localPath && (
                     <p>
-                      提交 <code>{deliveryJob.result.commit.slice(0, 12)}</code>
-                      {deliveryJob.result.changedFiles?.length
-                        ? ` · ${deliveryJob.result.changedFiles.length} 个代码文件有变更`
+                      <code>{effectiveDeliveryJob.localPath}</code>
+                      {effectiveDeliveryJob.branch ? ` · ${effectiveDeliveryJob.branch}` : ''}
+                    </p>
+                  )}
+                  {effectiveDeliveryJob?.result?.commit && (
+                    <p>
+                      提交 <code>{effectiveDeliveryJob.result.commit.slice(0, 12)}</code>
+                      {effectiveDeliveryJob.result.changedFiles?.length
+                        ? ` · ${effectiveDeliveryJob.result.changedFiles.length} 个代码文件有变更`
                         : ''}
                     </p>
                   )}
-                  {deliveryJob?.result?.changedFiles && deliveryJob.result.changedFiles.length > 0 && (
+                  {effectiveDeliveryJob?.result?.changedFiles && effectiveDeliveryJob.result.changedFiles.length > 0 && (
                     <p>
-                      {deliveryJob.result.changedFiles.slice(0, 8).join(', ')}
-                      {deliveryJob.result.changedFiles.length > 8 ? ' …' : ''}
+                      {effectiveDeliveryJob.result.changedFiles.slice(0, 8).join(', ')}
+                      {effectiveDeliveryJob.result.changedFiles.length > 8 ? ' …' : ''}
                     </p>
                   )}
                 </div>

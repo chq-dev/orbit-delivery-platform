@@ -321,6 +321,9 @@ export interface LocalDeliveryJob {
   branch?: string
   steps?: LocalDeliveryStep[]
   startedAt: string
+  lastActivityAt?: string
+  processId?: number
+  processAlive?: boolean
   finishedAt?: string
   result?: LocalDeliveryResult
   error?: string

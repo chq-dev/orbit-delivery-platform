@@ -3,6 +3,7 @@ import type {
   FeishuAgentCommand,
   FeishuAgentCommandType,
   FeishuClientAgentHealth,
+  LocalDeliveryJob,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
@@ -70,6 +71,22 @@ async function requestLocalAgent<T>(path: string, init?: RequestInit): Promise<T
 
 export function fetchLocalFeishuAgentHealth(): Promise<FeishuClientAgentHealth> {
   return requestLocalAgent<FeishuClientAgentHealth>('/health')
+}
+
+export async function fetchLocalDeliveryJob(): Promise<LocalDeliveryJob | null> {
+  const health = await fetchLocalFeishuAgentHealth()
+  return health.delivery ?? null
+}
+
+export async function cancelLocalDeliveryJob(jobId?: string): Promise<LocalDeliveryJob> {
+  const payload = await requestLocalAgent<{ ok: true; job: LocalDeliveryJob }>(
+    '/delivery/cancel',
+    {
+      method: 'POST',
+      body: JSON.stringify(jobId ? { jobId } : {}),
+    },
+  )
+  return payload.job
 }
 
 export function configureLocalFeishuAgent(input: {

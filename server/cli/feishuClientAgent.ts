@@ -68,6 +68,7 @@ interface CommandResult {
   stderr: string
   exitCode: number
   timedOut?: boolean
+  aborted?: boolean
 }
 
 interface LoginChallenge {
@@ -111,9 +112,22 @@ interface LocalDeliveryJob {
   branch?: string
   steps: LocalDeliveryAgentStep[]
   startedAt: string
+  lastActivityAt?: string
+  processId?: number
+  processAlive?: boolean
   finishedAt?: string
   result?: unknown
   error?: string
+}
+
+function processGroupAlive(pid: number | undefined): boolean | undefined {
+  if (!pid) return undefined
+  try {
+    process.kill(process.platform === 'win32' ? pid : -pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
@@ -128,6 +142,10 @@ function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
     branch: job.branch,
     steps: job.steps,
     startedAt: job.startedAt,
+    lastActivityAt: job.lastActivityAt,
+    processId: job.processId,
+    processAlive:
+      job.status === 'running' ? processGroupAlive(job.processId) : undefined,
     finishedAt: job.finishedAt,
     result: job.result,
     error: job.error,
@@ -185,6 +203,7 @@ let pendingLogin: PendingLogin | null = null
 let running = false
 let lastRun: LastRun | null = null
 let deliveryJob: LocalDeliveryJob | null = null
+let deliveryAbortController: AbortController | null = null
 let heartbeatInFlight = false
 let loginPollInFlight = false
 let lastHeartbeatError = ''
@@ -289,12 +308,18 @@ function writeConfig(config: FeishuAgentStoredConfig): void {
   }
 }
 
+interface RunCommandOptions {
+  signal?: AbortSignal
+  onSpawn?: (pid: number | undefined) => void
+}
+
 function runCommand(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeout = 60_000,
   onStdoutLine?: (line: string) => void,
+  options: RunCommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise((resolvePromise) => {
     const child = spawn(
@@ -317,26 +342,40 @@ function runCommand(
     let stderr = ''
     let stdoutLineBuffer = ''
     let timedOut = false
+    let aborted = false
     let settled = false
     let timer: NodeJS.Timeout | undefined
+    const killChild = (): void => {
+      if (process.platform !== 'win32' && child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL')
+          return
+        } catch {
+          // Fall back to killing the direct child when the process group is gone.
+        }
+      }
+      child.kill('SIGKILL')
+    }
+    const onAbort = (): void => {
+      if (settled) return
+      aborted = true
+      killChild()
+      finish(130)
+    }
     const finish = (exitCode: number): void => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      resolvePromise({ stdout, stderr, exitCode, timedOut })
+      options.signal?.removeEventListener('abort', onAbort)
+      resolvePromise({ stdout, stderr, exitCode, timedOut, aborted })
     }
     timer = setTimeout(() => {
       timedOut = true
-      if (process.platform !== 'win32' && child.pid) {
-        try {
-          process.kill(-child.pid, 'SIGKILL')
-        } catch {
-          child.kill('SIGKILL')
-        }
-      } else {
-        child.kill('SIGKILL')
-      }
+      killChild()
     }, timeout)
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    options.onSpawn?.(child.pid)
+    if (options.signal?.aborted) onAbort()
     child.stdout?.on('data', (chunk) => {
       const text = String(chunk)
       stdout = append(stdout, text)
@@ -554,6 +593,7 @@ function setStep(
   log?: string,
 ): void {
   updateLocalDeliveryAgentStep(job.steps, key, status, log)
+  job.lastActivityAt = new Date().toISOString()
   if (status === 'running') {
     job.stage = job.steps.find((step) => step.key === key)?.name ?? job.stage
   }
@@ -691,6 +731,9 @@ function localDeliveryEnvironment(config: FeishuAgentStoredConfig): NodeJS.Proce
 }
 
 function commandFailureMessage(result: CommandResult): string {
+  if (result.aborted) {
+    return '本机交付已由用户终止；Codex 及其子进程已停止，未提交的代码变更保留在工作区'
+  }
   if (result.timedOut) {
     return deliveryTimeoutFailureMessage(result.stdout, deliveryTimeoutMs)
   }
@@ -863,6 +906,8 @@ function startDeliveryCodexPhaseTracker(
     if (stopped || inFlight) return
     inFlight = true
     try {
+      job.lastActivityAt = new Date().toISOString()
+      scheduleDeliveryProgress(job)
       const marker = readDeliveryCodexPhaseMarker(checkout, workItemId)
       if (marker) advanceDeliveryCodexPhase(job, marker)
       if (marker === 'coding') return
@@ -893,6 +938,7 @@ async function executeLocalDelivery(
   job: LocalDeliveryJob,
   config: FeishuAgentStoredConfig,
   request: LocalDeliveryAgentRequest,
+  signal: AbortSignal,
 ): Promise<void> {
   try {
     job.steps = createLocalDeliveryAgentSteps()
@@ -950,10 +996,19 @@ async function executeLocalDelivery(
             | undefined
           if (phase) advanceDeliveryCodexPhase(job, phase)
         },
+        {
+          signal,
+          onSpawn: (pid) => {
+            if (pid) job.processId = pid
+            job.lastActivityAt = new Date().toISOString()
+            scheduleDeliveryProgress(job)
+          },
+        },
       )
     } finally {
       stopPhaseTracker?.()
     }
+    if (signal.aborted) throw new Error('本机交付已由用户终止')
     if (result.exitCode !== 0) {
       let message = commandFailureMessage(result)
       if (!recordedFailurePipelineId(result)) {
@@ -1016,7 +1071,9 @@ async function executeLocalDelivery(
     job.status = 'succeeded'
     job.stage = '本机交付完成'
   } catch (error) {
-    const message = errorMessage(error)
+    const message = signal.aborted
+      ? '本机交付已由用户终止；Codex 及其子进程已停止，未提交的代码变更保留在工作区'
+      : errorMessage(error)
     markDeliveryFailure(job, message)
     job.status = 'failed'
     job.error = message
@@ -1031,6 +1088,7 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     throw new Error('本机已有交付正在执行，请等待完成后再启动')
   }
   const raw = isRecord(input) ? input : {}
+  const controller = new AbortController()
   const job: LocalDeliveryJob = {
     id: `delivery-${randomUUID()}`,
     commandId,
@@ -1040,8 +1098,10 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     repoId: text(raw.repoId),
     steps: createLocalDeliveryAgentSteps(),
     startedAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
   }
   deliveryJob = job
+  deliveryAbortController = controller
   try {
     const config = readConfig()
     if (!config) throw new Error('本机代理尚未绑定平台同步密钥')
@@ -1049,8 +1109,11 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     const request = parseLocalDeliveryAgentRequest(input)
     job.workItemId = request.workItemId
     job.repoId = request.repoId
-    void executeLocalDelivery(job, config, request)
+    void executeLocalDelivery(job, config, request, controller.signal).finally(() => {
+      if (deliveryAbortController === controller) deliveryAbortController = null
+    })
   } catch (error) {
+    if (deliveryAbortController === controller) deliveryAbortController = null
     const message = errorMessage(error)
     markDeliveryFailure(job, message)
     job.status = 'failed'
@@ -1058,6 +1121,28 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     job.finishedAt = new Date().toISOString()
   }
   return job
+}
+
+function cancelLocalDelivery(input?: unknown): LocalDeliveryJob {
+  if (!deliveryJob || deliveryJob.status !== 'running') {
+    throw new Error('当前没有运行中的本机交付')
+  }
+  const requestedJobId = isRecord(input) ? text(input.jobId) : ''
+  if (
+    requestedJobId &&
+    requestedJobId !== deliveryJob.id &&
+    requestedJobId !== deliveryJob.commandId
+  ) {
+    throw new Error('指定任务不是当前运行中的本机交付')
+  }
+  if (!deliveryAbortController) {
+    throw new Error('当前本机交付没有可终止的进程句柄，请重启本机代理后检查残留进程')
+  }
+  deliveryJob.stage = '正在终止本机 Codex 进程'
+  deliveryJob.lastActivityAt = new Date().toISOString()
+  scheduleDeliveryProgress(deliveryJob)
+  deliveryAbortController.abort()
+  return deliveryJobSummary(deliveryJob)
 }
 
 async function postAgentJson(
@@ -1478,6 +1563,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === 'POST' && path === '/delivery/start') {
     sendJson(response, 202, { ok: true, job: startLocalDelivery(await readBody(request)) })
+    return
+  }
+  if (request.method === 'POST' && path === '/delivery/cancel') {
+    sendJson(response, 200, { ok: true, job: cancelLocalDelivery(await readBody(request)) })
     return
   }
   const deliveryStatusMatch = path.match(/^\/delivery\/status\/([^/]+)$/)
