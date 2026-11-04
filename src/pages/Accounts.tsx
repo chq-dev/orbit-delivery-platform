@@ -88,6 +88,19 @@ function messageOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+function jenkinsSubpageUrl(baseUrl: string, subpath: string): string {
+  if (!baseUrl.trim()) return ''
+  try {
+    const url = new URL(baseUrl)
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}/${subpath.replace(/^\/+/, '')}`
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
 export function Accounts() {
   const {
     accounts,
@@ -127,6 +140,10 @@ export function Accounts() {
   const buildClientName = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
   )?.clientName
+  const buildWebUrl = buildAccount?.serviceUrl?.trim() ?? ''
+  const buildJobDisplayUrl = buildWebUrl || buildResult?.jobUrl || buildJob?.jobUrl || ''
+  const latestBuildUrl = jenkinsSubpageUrl(buildWebUrl, 'lastBuild/')
+  const buildQueueOrHistoryUrl = latestBuildUrl || buildResult?.queueUrl || ''
 
   const filtered = useMemo(
     () =>
@@ -844,19 +861,19 @@ export function Accounts() {
               </div>
             </div>
             <div className="build-result-links">
-              {buildResult.queueUrl && (
+              {buildQueueOrHistoryUrl && (
                 <a
                   className="btn btn-secondary"
-                  href={buildResult.queueUrl}
+                  href={buildQueueOrHistoryUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  <ExternalLink size={14} /> 查看构建队列
+                  <ExternalLink size={14} /> {latestBuildUrl ? '查看最新构建' : '查看构建队列'}
                 </a>
               )}
               <a
                 className="btn btn-secondary"
-                href={buildResult.jobUrl}
+                href={buildJobDisplayUrl || buildResult.jobUrl}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -878,7 +895,9 @@ export function Accounts() {
               </span>
               <div>
                 <strong>{buildJob.name}</strong>
-                <small title={buildJob.jobUrl}>{buildJob.jobUrl}</small>
+                <small title={buildJobDisplayUrl || buildJob.jobUrl}>
+                  {buildJobDisplayUrl || buildJob.jobUrl}
+                </small>
               </div>
               <span className="build-parameter-count">{buildJob.parameters.length} 个参数</span>
             </div>

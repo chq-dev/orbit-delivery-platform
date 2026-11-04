@@ -26,9 +26,13 @@ import { buildLocalSkillInstruction } from '../../src/skillInstruction'
 import { requirementDeliveryContextIssue } from '../../src/deliveryContext'
 import {
   deliveryCodeFiles,
-  deliveryCommitMessage,
   normalizeDeliveryPath,
 } from '../services/localDeliveryEvidence.js'
+import {
+  buildDeliveryCommitPrompt,
+  deliveryCommitMessageFor,
+  validateDeliveryCommit,
+} from '../services/localDeliveryCommitService.js'
 import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
 import {
   buildCodexExecArgs,
@@ -127,8 +131,10 @@ Options:
   --yes                Skip the --push confirmation
   --help               Show this help
 
-The script only reads platform work-item metadata. Code editing, tests, commits and
-pushes run on this client against the configured checkout.`
+The script only reads platform work-item metadata. Code editing and tests run in a
+first Codex pass; the runner then starts a second Codex pass that executes the
+repository /aicr-commit skill (staged AICR review + local commit). Only --push
+writes the resulting commit to origin.`
 }
 
 function parseArgs(argv: string[]): LocalDeliveryArgs {
@@ -310,22 +316,73 @@ function assertCleanDeliveryWorktree(checkout: string): void {
   )
 }
 
-function commitDeliveredChanges(checkout: string, item: WorkItem): string {
-  const add = git(checkout, ['add', '--all'])
-  if (add.status !== 0) {
-    throw new Error(`暂存交付变更失败：${add.stderr || add.stdout || `退出码 ${add.status}`}`)
+function commitDeliveredChanges(input: {
+  checkout: string
+  branch: string
+  item: WorkItem
+  codexCommand: string
+  mcpArgs: string[]
+  artifactDir: string
+}): string {
+  const expectedMessage = deliveryCommitMessageFor(input.item)
+  const previousHead = requireGit(input.checkout, ['rev-parse', 'HEAD'], '读取提交前 HEAD')
+  const prompt = buildDeliveryCommitPrompt({
+    checkout: input.checkout,
+    branch: input.branch,
+    item: input.item,
+    commitMessage: expectedMessage,
+  })
+  const lastMessagePath = join(input.artifactDir, 'codex-commit-last-message.md')
+  const result = spawnSync(
+    input.codexCommand,
+    buildCodexExecArgs({
+      checkout: input.checkout,
+      prompt,
+      lastMessagePath,
+      imagePaths: [],
+      mcpArgs: input.mcpArgs,
+    }),
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  )
+  if (result.error) throw result.error
+  if (result.stdout) process.stdout.write(result.stdout)
+  if (result.stderr) process.stderr.write(result.stderr)
+  if (result.status !== 0) {
+    const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim().slice(-4_000)
+    throw new Error(
+      `创建本地交付提交失败：/aicr-commit 执行失败，退出码 ${result.status ?? 1}${
+        detail ? `：${detail}` : ''
+      }`,
+    )
   }
-  const staged = requireGit(checkout, ['diff', '--cached', '--name-only'], '读取暂存变更')
-  if (!staged) throw new Error('没有可提交的交付变更')
-  const commit = git(checkout, [
-    'commit',
-    '-m',
-    deliveryCommitMessage(item.id, item.title, item.type),
-  ])
-  if (commit.status !== 0) {
-    throw new Error(`创建本地交付提交失败：${commit.stderr || commit.stdout || `退出码 ${commit.status}`}`)
+  const head = requireGit(input.checkout, ['rev-parse', 'HEAD'], '读取交付提交')
+  const files = requireGit(
+    input.checkout,
+    ['show', '--name-only', '--format=', 'HEAD'],
+    '读取交付提交文件',
+  )
+    .split(/\r?\n/)
+    .map(normalizeDeliveryPath)
+    .filter(Boolean)
+  const message = requireGit(input.checkout, ['log', '-1', '--format=%B'], '读取交付提交信息')
+  try {
+    validateDeliveryCommit({
+      previousHead,
+      head,
+      message,
+      files,
+      expectedMessage,
+    })
+  } catch (error) {
+    throw new Error(
+      `创建本地交付提交失败：${error instanceof Error ? error.message : String(error)}`,
+    )
   }
-  return requireGit(checkout, ['rev-parse', 'HEAD'], '读取交付提交')
+  return head
 }
 
 function readReportFile(path: string, title: string): DeliveryReportInput | undefined {
@@ -382,7 +439,9 @@ function deliveryStageResults(
     {
       index: 4,
       status: autoCommit ? 'success' : 'pending',
-      log: autoCommit ? '已创建本地提交' : '未启用自动提交，代码保留在工作区',
+      log: autoCommit
+        ? '已按 /aicr-commit 完成暂存区 AICR 审查并创建本地提交'
+        : '未启用自动提交，代码保留在工作区',
     },
     {
       index: 5,
@@ -534,7 +593,11 @@ function failureStageIndex(
   if (/design-report|缺少 delivery-artifacts 中的设计报告/.test(message)) return 1
   if (/integration-report|缺少 delivery-artifacts 中的集成报告/.test(message)) return 3
   if (/推送失败|已取消推送|没有 origin 远端/.test(message)) return 4
-  if (/创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|HEAD 没有变化/.test(message)) {
+  if (
+    /创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|HEAD 没有变化|AICR.*审查|aicr-commit|未创建新的提交/.test(
+      message,
+    )
+  ) {
     return 4
   }
   if (/未启用自动提交/.test(message)) return 4
@@ -655,7 +718,7 @@ function buildPrompt(
     runDescription,
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
-    'Do not create, amend, or stage any Git commit. The local delivery runner inspects the worktree, applies the /aicr-commit contract when committing validated changes, and performs the optional push after Codex exits.',
+    'Do not create, amend, stage, or push any Git commit. After this coding run, a separate Codex invocation executes the repository /aicr-commit skill to review the staged diff, write the AICR gate report, and create the local commit. Leave the code changes in the working tree; do not run git add.',
     `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
     'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages when the task needs them.',
@@ -833,6 +896,12 @@ async function main(): Promise<void> {
         `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
       )
     }
+    const headAfterCoding = requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取编码后 HEAD')
+    if (headAfterCoding !== checkout.head) {
+      throw new Error(
+        'Codex 执行失败：编码阶段创建了 Git 提交，违反客户端执行契约；提交只能由 /aicr-commit 阶段完成',
+      )
+    }
     if (evidence.changedFiles.length === 0) {
       throw new Error(
         'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
@@ -854,7 +923,14 @@ async function main(): Promise<void> {
       throw new Error(`${message}。平台已记录失败流水线 ${failure.id}`)
     }
 
-    const finalHead = commitDeliveredChanges(checkout.checkout, deliveryItem)
+    const finalHead = commitDeliveredChanges({
+      checkout: checkout.checkout,
+      branch,
+      item: deliveryItem,
+      codexCommand,
+      mcpArgs,
+      artifactDir,
+    })
     attempt.commit = finalHead
     const stageResults = deliveryStageResults(evidence, true)
     attempt.stageResults = stageResults

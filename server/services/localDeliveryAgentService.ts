@@ -319,7 +319,7 @@ export function classifyLocalDeliveryFailure(message: string): string {
     return 'codex'
   }
   if (
-    /HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败|未启用自动提交/.test(
+    /HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败|未启用自动提交|AICR.*审查|aicr-commit|未创建新的提交/.test(
       message,
     )
   ) {

@@ -105,9 +105,15 @@ local defect as closed and reuses the platform's Feishu close outbox.
   the frontend (`web/components/views/modeSwitch`), Lua module
   (`lua/luci/modules/mode_switch`), menu registration, confirmation and failure
   states described by the LDD.
-- Codex must not create, stage, amend, or push Git commits; the runner owns commit
-  creation after Codex exits. The runner fails when Codex changes no non-Markdown
-  source file, even if design or report documents were generated. Build,
+- The coding Codex pass must not create, stage, amend, or push Git commits. After it
+  exits, the runner starts a second Codex pass in the same checkout that executes
+  `/aicr-commit` (staged AICR review + `.git/aicr-ai-review-latest.json` gate +
+  AICR-compliant commit title) and never pushes; only an authorized runner `--push` writes the
+  remote branch. The runner fails when Codex changes no non-Markdown source file,
+  even if design or report documents were generated, and it fails instead of
+  creating a commit when AICR review is missing, stale, or not `approved: true`.
+  The commit pass must never stage `.env*`, secrets, `delivery-artifacts/**`, logs,
+  build output, or unrelated files. Build,
   device-upgrade and test stages stay `pending` unless `build-report.md`/`build.log`,
   `upgrade-report.md`/`upgrade.log`, and `test-report.md` actually exist.
 - The server rejects `POST /api/pipelines` and `/advance`; only
