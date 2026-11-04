@@ -73,6 +73,8 @@ test('交付提示词包含需求拆解与截图附件路径', () => {
   assert.match(instruction, /integration-test/)
   assert.match(instruction, /e2e-test/)
   assert.match(instruction, /aicr-workflow → aicr-commit \/ aicr-pr/)
+  assert.match(instruction, /LOCAL_DELIVERY_PHASE:analysis/)
+  assert.match(instruction, /business LDD/)
   assert.match(instruction, /Commit-stage skill: \/aicr-commit \(\$aicr-commit/)
   assert.match(instruction, /separate Codex pass that executes the commit skill/)
   assert.match(instruction, /The \/aicr-commit contract requires/)

@@ -18,6 +18,9 @@ export function Modal({
   children,
   footer,
   size = 'md',
+  closeOnBackdrop = true,
+  closeOnEscape = true,
+  closeDisabled = false,
 }: {
   open: boolean
   onClose: () => void
@@ -26,11 +29,14 @@ export function Modal({
   children: ReactNode
   footer?: ReactNode
   size?: 'sm' | 'md' | 'lg'
+  closeOnBackdrop?: boolean
+  closeOnEscape?: boolean
+  closeDisabled?: boolean
 }) {
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape' && closeOnEscape) onClose()
     }
     document.addEventListener('keydown', onKeyDown)
     document.body.classList.add('modal-open')
@@ -38,12 +44,12 @@ export function Modal({
       document.removeEventListener('keydown', onKeyDown)
       document.body.classList.remove('modal-open')
     }
-  }, [onClose, open])
+  }, [closeOnEscape, onClose, open])
 
   if (!open) return null
 
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop" onMouseDown={closeOnBackdrop ? onClose : undefined}>
       <div
         className={`modal modal-${size}`}
         role="dialog"
@@ -56,7 +62,13 @@ export function Modal({
             <h2>{title}</h2>
             {subtitle && <p>{subtitle}</p>}
           </div>
-          <button className="icon-btn modal-close" onClick={onClose} aria-label="关闭">
+          <button
+            className="icon-btn modal-close"
+            onClick={onClose}
+            aria-label="关闭"
+            disabled={closeDisabled}
+            title={closeDisabled ? '当前操作进行中，请先手动停止' : undefined}
+          >
             <X size={18} />
           </button>
         </div>

@@ -284,6 +284,7 @@ function runCommand(
   args: string[],
   env: NodeJS.ProcessEnv,
   timeout = 60_000,
+  onStdoutLine?: (line: string) => void,
 ): Promise<CommandResult> {
   return new Promise((resolvePromise) => {
     const child = spawn(
@@ -304,6 +305,7 @@ function runCommand(
     }
     let stdout = ''
     let stderr = ''
+    let stdoutLineBuffer = ''
     let timedOut = false
     let settled = false
     let timer: NodeJS.Timeout | undefined
@@ -326,7 +328,15 @@ function runCommand(
       }
     }, timeout)
     child.stdout?.on('data', (chunk) => {
-      stdout = append(stdout, chunk)
+      const text = String(chunk)
+      stdout = append(stdout, text)
+      if (!onStdoutLine) return
+      stdoutLineBuffer += text
+      for (let newline = stdoutLineBuffer.indexOf('\n'); newline >= 0; newline = stdoutLineBuffer.indexOf('\n')) {
+        const line = stdoutLineBuffer.slice(0, newline).replace(/\r$/, '')
+        stdoutLineBuffer = stdoutLineBuffer.slice(newline + 1)
+        onStdoutLine(line)
+      }
     })
     child.stderr?.on('data', (chunk) => {
       stderr = append(stderr, chunk)
@@ -336,6 +346,7 @@ function runCommand(
       finish(1)
     })
     child.on('close', (code, signal) => {
+      if (onStdoutLine && stdoutLineBuffer) onStdoutLine(stdoutLineBuffer)
       finish(typeof code === 'number' ? code : signal ? 1 : 0)
     })
     // Codex reads piped stdin until EOF before starting a non-interactive run.
@@ -550,7 +561,7 @@ async function fetchPlatformHealth(
     onRetry: ({ attempt, attempts, error, delayMs }) => {
       setStep(
         job,
-        'platform',
+        'connectivity',
         'running',
         `第 ${attempt}/${attempts} 次连接平台失败：${error}；${delayMs}ms 后重试`,
       )
@@ -574,7 +585,7 @@ async function fetchDeliveryBootstrap(
       onRetry: ({ attempt, attempts, error }) => {
         setStep(
           job,
-          'platform',
+          'connectivity',
           'running',
           `第 ${attempt}/${attempts} 次读取平台配置失败：${error}；准备重试`,
         )
@@ -609,7 +620,7 @@ async function validateClientCheckout(
   localPath: string,
   configuredBranch?: string,
 ): Promise<{ checkout: string; branch: string }> {
-  setStep(job, 'checkout', 'running', '正在校验绝对路径、Git 根目录与目标分支')
+  setStep(job, 'connectivity', 'running', '正在校验绝对路径、Git 根目录与目标分支')
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
   if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
     throw new Error(
@@ -643,7 +654,7 @@ async function validateClientCheckout(
   const resolved = resolveLocalDeliveryBranch(actualBranch, configuredBranch)
   setStep(
     job,
-    'checkout',
+    'connectivity',
     'success',
     resolved.adapted
       ? `${checkout} · ${resolved.branch}（平台配置 ${resolved.configuredBranch}，已按本机实际分支执行）`
@@ -753,10 +764,10 @@ async function recordFailedDeliveryFallback(
 }
 
 const DELIVERY_STEP_ORDER = [
-  'platform',
-  'contract',
-  'checkout',
-  'codex',
+  'connectivity',
+  'analysis',
+  'ldd',
+  'coding',
   'evidence',
   'commit',
   'writeback',
@@ -792,6 +803,37 @@ function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
   job.stage = `本机交付失败：${failedStep?.name ?? '未知步骤'}`
 }
 
+const DELIVERY_CODEX_PHASES = ['analysis', 'ldd', 'coding'] as const
+type DeliveryCodexPhase = (typeof DELIVERY_CODEX_PHASES)[number]
+
+const DELIVERY_CODEX_PHASE_LOGS: Record<DeliveryCodexPhase, { running: string; success: string }> = {
+  analysis: {
+    running: 'Codex 正在分析需求、验收条件与影响模块',
+    success: '需求分析与影响范围已确认',
+  },
+  ldd: {
+    running: 'Codex 正在生成本次业务涉及的 LDD',
+    success: '业务 LDD 已生成',
+  },
+  coding: {
+    running: 'Codex 正在按 LDD 实现业务代码与单元测试',
+    success: '业务编码与单元测试已完成',
+  },
+}
+
+function advanceDeliveryCodexPhase(job: LocalDeliveryJob, phase: DeliveryCodexPhase): void {
+  const phaseIndex = DELIVERY_CODEX_PHASES.indexOf(phase)
+  for (let index = 0; index < phaseIndex; index += 1) {
+    const key = DELIVERY_CODEX_PHASES[index]
+    if (job.steps.find((step) => step.key === key)?.status !== 'success') {
+      setStep(job, key, 'success', DELIVERY_CODEX_PHASE_LOGS[key].success)
+    }
+  }
+  if (job.steps.find((step) => step.key === phase)?.status !== 'success') {
+    setStep(job, phase, 'running', DELIVERY_CODEX_PHASE_LOGS[phase].running)
+  }
+}
+
 async function executeLocalDelivery(
   job: LocalDeliveryJob,
   config: FeishuAgentStoredConfig,
@@ -799,26 +841,30 @@ async function executeLocalDelivery(
 ): Promise<void> {
   try {
     job.steps = createLocalDeliveryAgentSteps()
-    setStep(job, 'platform', 'running', '正在连接平台健康检查接口')
+    setStep(job, 'connectivity', 'running', '正在连接平台健康检查接口')
     const health = await fetchPlatformHealth(job, config)
-    setStep(job, 'platform', 'running', '平台连接成功，正在校验真实交付契约')
-    setStep(job, 'contract', 'running', '检查 deliveryContractVersion')
+    setStep(job, 'connectivity', 'running', '平台连接成功，正在校验真实交付契约')
     if (!supportsLocalDeliveryContract(health)) {
       throw new Error(
         '平台服务端尚未部署真实交付契约，无法保证代码变更、提交和阶段证据；请先升级服务器后重试',
       )
     }
-    setStep(job, 'contract', 'success', `交付契约版本 ${LOCAL_DELIVERY_CONTRACT_VERSION}`)
+    setStep(
+      job,
+      'connectivity',
+      'running',
+      `交付契约版本 ${LOCAL_DELIVERY_CONTRACT_VERSION}，正在读取工作项与仓库配置`,
+    )
 
     job.stage = '读取平台工作项与仓库配置'
     const bootstrap = await fetchDeliveryBootstrap(job, config)
-    setStep(job, 'platform', 'success', '已读取工作项与仓库配置')
+    setStep(job, 'connectivity', 'running', '已读取工作项与仓库配置，正在校验客户端仓库')
     const target = resolveLocalDeliveryTarget(bootstrap, request, config.repoPaths)
     const checkout = await validateClientCheckout(job, target.localPath, target.branch)
     job.localPath = checkout.checkout
     job.branch = checkout.branch
-    setStep(job, 'codex', 'running', 'Codex 正在分析需求、生成设计与代码')
-    job.stage = 'Codex 正在执行需求解析、编码与验证'
+    setStep(job, 'analysis', 'running', DELIVERY_CODEX_PHASE_LOGS.analysis.running)
+    job.stage = 'Codex 正在执行需求分析、业务 LDD 与编码'
 
     const args = buildLocalDeliveryCommand({
       platformBaseUrl: config.platformBaseUrl,
@@ -831,6 +877,12 @@ async function executeLocalDelivery(
       args,
       localDeliveryEnvironment(config),
       deliveryTimeoutMs,
+      (line) => {
+        const phase = line.match(/LOCAL_DELIVERY_PHASE:(analysis|ldd|coding)/)?.[1] as
+          | DeliveryCodexPhase
+          | undefined
+        if (phase) advanceDeliveryCodexPhase(job, phase)
+      },
     )
     if (result.exitCode !== 0) {
       let message = commandFailureMessage(result)
@@ -854,13 +906,15 @@ async function executeLocalDelivery(
     const commit = isRecord(payload) && typeof payload.commit === 'string' ? payload.commit : ''
     const platformPipeline =
       isRecord(payload) && isRecord(payload.platformPipeline) ? payload.platformPipeline : undefined
+    setStep(job, 'analysis', 'success', DELIVERY_CODEX_PHASE_LOGS.analysis.success)
+    setStep(job, 'ldd', 'success', DELIVERY_CODEX_PHASE_LOGS.ldd.success)
     setStep(
       job,
-      'codex',
+      'coding',
       'success',
       changedFiles.length > 0
-        ? `Codex 完成，修改 ${changedFiles.length} 个代码文件`
-        : 'Codex 已完成执行',
+        ? `业务编码完成，修改 ${changedFiles.length} 个代码文件`
+        : '业务编码已完成',
     )
     const reportCount = ['designReport', 'integrationReport', 'testReport', 'buildReport', 'upgradeReport']
       .filter((key) => evidence[key] === true).length

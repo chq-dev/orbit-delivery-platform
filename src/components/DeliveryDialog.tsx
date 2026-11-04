@@ -604,12 +604,20 @@ export function DeliveryDialog({
     }
   }
 
+  const stopWaitingAndClose = () => {
+    waitAbortRef.current?.abort()
+    onClose()
+  }
+
   return (
     <Modal
       open={open}
       onClose={onClose}
+      closeOnBackdrop={false}
+      closeOnEscape={!launching}
+      closeDisabled={launching}
       title="启动一键交付"
-      subtitle="在本机真实执行需求解析、设计、编码、集成验证、提交与推送；推送后触发已配置的 Jenkins 内部编译，升级与测试仍仅在真实证据时完成"
+      subtitle="在本机真实执行需求分析、业务 LDD、编码、集成验证、提交与推送；推送后触发已配置的 Jenkins 内部编译，升级与测试仍仅在真实证据时完成"
       size="lg"
       footer={
         <>
@@ -640,10 +648,10 @@ export function DeliveryDialog({
           <div className="modal-footer-actions">
             <button
               className="btn btn-secondary"
-              onClick={onClose}
+              onClick={launching ? stopWaitingAndClose : onClose}
               title={launching ? '停止页面轮询，本机交付会在后台继续执行' : undefined}
             >
-              {launching ? '停止等待' : '取消'}
+              {launching ? '停止等待并关闭' : '取消'}
             </button>
             <button
               className="btn btn-primary"
@@ -1064,8 +1072,8 @@ export function DeliveryDialog({
             </div>
             <div>
               <FileText size={15} />
-              <span>解析 · 设计报告 · 自动编码</span>
-              <small>生成技术方案、改动范围与测试策略</small>
+              <span>需求分析 · 业务 LDD · 自动编码</span>
+              <small>确认影响范围、生成本次业务 LDD 并实现代码</small>
             </div>
             <div>
               <GitMerge size={15} />

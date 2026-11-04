@@ -71,6 +71,12 @@ function writeDeliveryLog(
   }
 }
 
+function lastCodexPhase(output: string): 'analysis' | 'ldd' | 'coding' | undefined {
+  return Array.from(
+    output.matchAll(/LOCAL_DELIVERY_PHASE:(analysis|ldd|coding)/g),
+  ).at(-1)?.[1] as 'analysis' | 'ldd' | 'coding' | undefined
+}
+
 interface BootstrapData {
   repositories: Repository[]
   workItems: WorkItem[]
@@ -463,18 +469,18 @@ function deliveryStageResults(
 ): DeliveryStageResult[] {
   const changed = evidence.changedFiles.length
   return [
-    { index: 0, status: 'success', log: 'Codex 已实际读取需求、检查代码并完成影响分析' },
+    { index: 0, status: 'success', log: 'Codex 已实际读取需求、检查代码并完成需求分析' },
     {
       index: 1,
       status: evidence.designReport ? 'success' : 'pending',
       log: evidence.designReport
-        ? '已生成 delivery-artifacts/<work-item>/design-report.md'
-        : '未检测到 design-report.md，不能标记设计报告完成',
+        ? '已生成 delivery-artifacts/<work-item>/design-report.md（含业务 LDD 路径与设计决策）'
+        : '未检测到 design-report.md，不能标记设计报告与业务 LDD 完成',
     },
     {
       index: 2,
       status: changed > 0 ? 'success' : 'failed',
-      log: `Codex 实际修改代码文件 ${changed} 个：${evidence.changedFiles.slice(0, 8).join(', ') || '无'}`,
+      log: `Codex 实际完成业务编码，修改代码文件 ${changed} 个：${evidence.changedFiles.slice(0, 8).join(', ') || '无'}`,
     },
     {
       index: 3,
@@ -637,6 +643,9 @@ function failureStageIndex(
   message: string,
   stageResults?: DeliveryStageResult[],
 ): number {
+  if (/LOCAL_DELIVERY_PHASE:analysis/.test(message)) return 0
+  if (/LOCAL_DELIVERY_PHASE:ldd/.test(message)) return 1
+  if (/LOCAL_DELIVERY_PHASE:coding/.test(message)) return 2
   if (/design-report|缺少 delivery-artifacts 中的设计报告/.test(message)) return 1
   if (/integration-report|缺少 delivery-artifacts 中的集成报告/.test(message)) return 3
   if (/推送失败|已取消推送|没有 origin 远端/.test(message)) return 4
@@ -763,6 +772,8 @@ function buildPrompt(
     `Expected branch: ${branch}`,
     `Platform work item: ${item.id}`,
     runDescription,
+    'Work in three explicit phases and print a progress marker before each phase by running these shell commands: `echo LOCAL_DELIVERY_PHASE:analysis`, then `echo LOCAL_DELIVERY_PHASE:ldd`, then `echo LOCAL_DELIVERY_PHASE:coding`.',
+    'Phase 2 must generate or update the business LDD affected by this work item under the project LDD convention (for mode-switch work use web/docs/ldd/SME-模式切换-LDD.md). Record the LDD path and key decisions in design-report.md; do not invent an LDD that the code does not follow.',
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
     'Do not create, amend, stage, or push any Git commit. After this coding run, a separate Codex invocation executes the repository /aicr-commit skill to review the staged diff, write the AICR gate report, and create the local commit. Leave the code changes in the working tree; do not run git add.',
@@ -797,6 +808,7 @@ async function main(): Promise<void> {
   if (args.push && !args.run) throw new Error('--push 必须与 --run 一起使用')
   if (args.push && args.noCommit) throw new Error('--push 不能与 --no-commit 同时使用')
   if (args.commitOnly && args.noCommit) throw new Error('--commit-only 不能与 --no-commit 同时使用')
+  console.log('LOCAL_DELIVERY_STAGE:connectivity')
 
   const bootstrap = await fetchBootstrap(args.api)
   const context = await fetchDeliveryContext(args.api, args.workItem)
@@ -933,10 +945,12 @@ async function main(): Promise<void> {
         },
       )
       writeDeliveryLog(join(artifactDir, 'codex.log'), result.stdout, result.stderr)
+    const codexPhase = lastCodexPhase(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
+    const phaseSuffix = codexPhase ? `（LOCAL_DELIVERY_PHASE:${codexPhase}）` : ''
       if (result.error) {
         if ((result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
           throw new Error(
-            `Codex 执行失败：编码阶段超过 ${Math.round(codexTimeoutMs / 60_000)} 分钟未完成`,
+          `Codex 执行失败：Codex 阶段超过 ${Math.round(codexTimeoutMs / 60_000)} 分钟未完成${phaseSuffix}`,
           )
         }
         throw result.error
@@ -948,7 +962,7 @@ async function main(): Promise<void> {
           .trim()
           .slice(-4_000)
         throw new Error(
-          `Codex 执行失败，退出码 ${result.status ?? 1}${detail ? `：${detail}` : ''}`,
+          `Codex 执行失败，退出码 ${result.status ?? 1}${phaseSuffix}${detail ? `：${detail}` : ''}`,
         )
       }
       const headAfterCoding = requireGit(checkout.checkout, ['rev-parse', 'HEAD'], '读取编码后 HEAD')

@@ -381,10 +381,10 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
     assert.equal(getFeishuAgentBridgeStatus(db).activeCommand?.id, command.id)
 
     const steps = [
-      'platform',
-      'contract',
-      'checkout',
-      'codex',
+      'connectivity',
+      'analysis',
+      'ldd',
+      'coding',
       'evidence',
       'commit',
       'writeback',

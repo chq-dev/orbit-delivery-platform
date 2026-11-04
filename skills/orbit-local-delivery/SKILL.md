@@ -32,10 +32,13 @@ the following is mandatory: a requirement breakdown of 20+ characters, a design
 reference, or 1-3 screenshots (max 500KB each, 1.2MB total). Defects are exempt.
 The runner writes screenshots under `delivery-artifacts/<work-item>/requirement-assets/`
 and passes every image to `codex exec --image`. The agent reports seven step states through
-`POST /api/integrations/feishu/agent/commands/:id/progress`: platform, contract,
-checkout, Codex, evidence, commit/push and platform write-back. Inspect the failed
-step and its log instead of treating `fetch failed` as a Codex error. Platform
-health/bootstrap reads retry transient network failures automatically.
+`POST /api/integrations/feishu/agent/commands/:id/progress`: connectivity
+(platform + contract + checkout), requirement analysis, business LDD, business
+coding, evidence, commit/push and platform write-back. Codex prints
+`LOCAL_DELIVERY_PHASE:analysis|ldd|coding` before each phase so the agent can move
+the live step state. Inspect the failed step and its log instead of treating
+`fetch failed` as a Codex error. Platform health/bootstrap reads retry transient
+network failures automatically.
 
 Set `CODEX_BIN` to the absolute Codex executable when launchd/systemd does not
 inherit the user's shell `PATH`. The agent health endpoint must show

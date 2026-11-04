@@ -19,12 +19,12 @@ export interface LocalDeliveryAgentStep extends LocalDeliveryAgentStepDefinition
 }
 
 export const LOCAL_DELIVERY_AGENT_STEPS: readonly LocalDeliveryAgentStepDefinition[] = [
-  { key: 'platform', name: '读取平台', description: '加载工作项、仓库路径与目标分支' },
-  { key: 'contract', name: '校验契约', description: '确认服务端支持真实阶段证据' },
-  { key: 'checkout', name: '校验仓库', description: '校验客户端路径、Git 根目录与分支' },
-  { key: 'codex', name: 'Codex 执行', description: '分析、设计、编码并生成执行证据' },
-  { key: 'evidence', name: '检查证据', description: '确认代码变更、报告与提交' },
-  { key: 'commit', name: '提交推送', description: '记录本地提交并按授权推送' },
+  { key: 'connectivity', name: '连通性校验', description: '读取平台、校验契约并确认客户端仓库与分支' },
+  { key: 'analysis', name: '需求分析', description: '识别需求意图、验收条件与影响模块' },
+  { key: 'ldd', name: '业务 LDD', description: '生成或更新本次业务涉及的 LDD 设计' },
+  { key: 'coding', name: '业务编码', description: '按 LDD 与设计实现代码变更和单元测试' },
+  { key: 'evidence', name: '检查证据', description: '确认代码变更、设计报告与集成报告' },
+  { key: 'commit', name: '提交推送', description: 'AICR 审查、本地提交并按授权推送' },
   { key: 'writeback', name: '回写平台', description: '写入真实 commit 与阶段结果' },
 ]
 
@@ -340,9 +340,12 @@ export function classifyLocalDeliveryFailure(message: string): string {
 export function deliveryTimeoutFailureMessage(stdout: string, timeoutMs: number): string {
   const minutes = Math.max(1, Math.round(timeoutMs / 60_000))
   const stage = Array.from(
-    stdout.matchAll(/LOCAL_DELIVERY_STAGE:(codex|commit|push|writeback)/g),
+    stdout.matchAll(/LOCAL_DELIVERY_STAGE:(connectivity|codex|commit|push|writeback)/g),
   ).at(-1)?.[1]
   const suffix = '；代码变更可能仍保留在客户端工作区，请检查 delivery-artifacts 与 Codex 日志'
+  if (stage === 'connectivity') {
+    return `读取平台失败：本机交付执行超时（超过 ${minutes} 分钟），平台连接或仓库校验未完成${suffix}`
+  }
   if (stage === 'commit') {
     return `创建本地交付提交失败：本机交付执行超时（超过 ${minutes} 分钟），/aicr-commit 未完成${suffix}`
   }
@@ -352,27 +355,32 @@ export function deliveryTimeoutFailureMessage(stdout: string, timeoutMs: number)
   if (stage === 'writeback') {
     return `回写平台超时（超过 ${minutes} 分钟）${suffix}`
   }
-  return `Codex 执行失败：本机交付执行超时（超过 ${minutes} 分钟），编码阶段未完成${suffix}`
+  return `Codex 执行失败：本机交付执行超时（超过 ${minutes} 分钟），需求分析/LDD/编码阶段未完成${suffix}`
 }
 
 const FAILED_STEP_STAGE_INDEX: Record<string, number> = {
-  platform: 0,
-  contract: 0,
-  checkout: 0,
-  codex: 2,
-  evidence: 2,
+  connectivity: 0,
+  analysis: 0,
+  ldd: 1,
+  coding: 2,
+  evidence: 3,
   commit: 4,
   writeback: 8,
 }
+
+const CONNECTIVITY_FAILURE_KEYS = new Set(['platform', 'contract', 'checkout'])
+const CODEX_PHASE_KEYS = new Set(['analysis', 'ldd', 'coding'])
 
 export function resolveLocalDeliveryFailureStep(
   message: string,
   runningStepKey?: string,
 ): string {
   const failedKey = classifyLocalDeliveryFailure(message)
-  return failedKey === 'codex' && runningStepKey && runningStepKey !== 'codex'
-    ? runningStepKey
-    : failedKey
+  if (CONNECTIVITY_FAILURE_KEYS.has(failedKey)) return 'connectivity'
+  if (failedKey !== 'codex') return failedKey
+  if (runningStepKey && CODEX_PHASE_KEYS.has(runningStepKey)) return runningStepKey
+  if (runningStepKey === 'connectivity' || runningStepKey === 'evidence') return runningStepKey
+  return 'coding'
 }
 
 export function failedDeliveryStageIndex(message: string, failedStepKey: string): number {
@@ -408,22 +416,32 @@ export function buildFailedDeliveryPipelinePayload(
     status: 'pending' as const,
     log: '本机代理兜底记录：未检测到该阶段真实证据',
   }))
-  if (
-    stepStatus('platform') === 'success' &&
-    stepStatus('contract') === 'success' &&
-    stepStatus('checkout') === 'success'
-  ) {
+  if (stepStatus('connectivity') === 'success' || stepStatus('analysis') === 'success') {
     stageResults[0] = {
       index: 0,
       status: 'success',
       log: '本机代理已读取工作项与仓库配置',
     }
   }
-  if (stepStatus('codex') === 'success') {
+  if (stepStatus('ldd') === 'success') {
+    stageResults[1] = {
+      index: 1,
+      status: 'success',
+      log: 'Codex 已生成本次业务涉及的 LDD 与开发设计',
+    }
+  }
+  if (stepStatus('coding') === 'success') {
     stageResults[2] = {
       index: 2,
       status: 'success',
-      log: 'Codex 已结束，失败阶段由本机代理兜底记录',
+      log: 'Codex 已完成业务编码，失败阶段由本机代理兜底记录',
+    }
+  }
+  if (stepStatus('evidence') === 'success') {
+    stageResults[3] = {
+      index: 3,
+      status: 'success',
+      log: '本机代理已确认代码变更与交付报告',
     }
   }
   stageResults[failedStageIndex] = {

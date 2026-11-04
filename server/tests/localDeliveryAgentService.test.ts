@@ -212,6 +212,20 @@ test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', ()
   )
 })
 
+test('连通性、需求分析、LDD 与编码失败会落到新步骤和对应平台阶段', () => {
+  assert.equal(
+    resolveLocalDeliveryFailureStep('deliveryContractVersion 不支持', 'connectivity'),
+    'connectivity',
+  )
+  assert.equal(failedDeliveryStageIndex('契约失败', 'connectivity'), 0)
+  assert.equal(resolveLocalDeliveryFailureStep('Codex 执行失败：超时', 'analysis'), 'analysis')
+  assert.equal(failedDeliveryStageIndex('Codex 执行失败', 'analysis'), 0)
+  assert.equal(resolveLocalDeliveryFailureStep('Codex 执行失败：超时', 'ldd'), 'ldd')
+  assert.equal(failedDeliveryStageIndex('Codex 执行失败', 'ldd'), 1)
+  assert.equal(resolveLocalDeliveryFailureStep('Codex 执行失败：超时', 'coding'), 'coding')
+  assert.equal(failedDeliveryStageIndex('Codex 执行失败', 'coding'), 2)
+})
+
 test('提交失败会定位到提交阶段，并由本机代理生成失败流水线兜底载荷', () => {
   const message =
     '创建本地交付提交失败：提交者姓名检查失败：git user.name 必须为中文真实姓名'
@@ -220,10 +234,10 @@ test('提交失败会定位到提交阶段，并由本机代理生成失败流�
   assert.equal(failedDeliveryStageIndex(message, failedStepKey), 4)
 
   const steps = createLocalDeliveryAgentSteps()
-  updateLocalDeliveryAgentStep(steps, 'platform', 'success', '平台已读取')
-  updateLocalDeliveryAgentStep(steps, 'contract', 'success', '契约版本 4')
-  updateLocalDeliveryAgentStep(steps, 'checkout', 'success', '工作区正常')
-  updateLocalDeliveryAgentStep(steps, 'codex', 'success', 'Codex 已完成')
+  updateLocalDeliveryAgentStep(steps, 'connectivity', 'success', '平台与仓库校验通过')
+  updateLocalDeliveryAgentStep(steps, 'analysis', 'success', '需求分析完成')
+  updateLocalDeliveryAgentStep(steps, 'ldd', 'success', '业务 LDD 已生成')
+  updateLocalDeliveryAgentStep(steps, 'coding', 'success', '业务编码完成')
   const payload = buildFailedDeliveryPipelinePayload({
     workItemId: 'REQ-1082',
     repoId: 'repo-1',
@@ -271,11 +285,15 @@ test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {
 test('本机交付步骤会记录运行、成功、失败与日志', () => {
   const steps = createLocalDeliveryAgentSteps()
   assert.equal(steps.length, 7)
+  assert.deepEqual(
+    steps.map((step) => step.name),
+    ['连通性校验', '需求分析', '业务 LDD', '业务编码', '检查证据', '提交推送', '回写平台'],
+  )
   assert.equal(steps.every((step) => step.status === 'pending'), true)
-  const running = updateLocalDeliveryAgentStep(steps, 'platform', 'running', '连接平台')
+  const running = updateLocalDeliveryAgentStep(steps, 'connectivity', 'running', '连接平台')
   assert.equal(running?.status, 'running')
   assert.ok(running?.startedAt)
-  const failed = updateLocalDeliveryAgentStep(steps, 'platform', 'failed', '连接超时')
+  const failed = updateLocalDeliveryAgentStep(steps, 'connectivity', 'failed', '连接超时')
   assert.equal(failed?.status, 'failed')
   assert.equal(failed?.log, '连接超时')
   assert.ok(failed?.finishedAt)
@@ -316,6 +334,14 @@ test('平台请求遇到瞬时连接失败会重试并返回成功结果', async
 })
 
 test('交付超时按已进入的阶段生成可分类的失败信息', () => {
+  const connectivity = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:connectivity\n',
+    45 * 60_000,
+  )
+  assert.match(connectivity, /读取平台失败：本机交付执行超时/)
+  assert.equal(classifyLocalDeliveryFailure(connectivity), 'platform')
+  assert.equal(resolveLocalDeliveryFailureStep(connectivity, 'connectivity'), 'connectivity')
+
   const coding = deliveryTimeoutFailureMessage('LOCAL_DELIVERY_STAGE:codex\n', 45 * 60_000)
   assert.match(coding, /Codex 执行失败：本机交付执行超时/)
   assert.equal(classifyLocalDeliveryFailure(coding), 'codex')
