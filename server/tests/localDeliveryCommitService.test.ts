@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import {
   buildDeliveryCommitPrompt,
   clearStaleGitIndexLock,
+  committedDeliveryFiles,
   deliveryCommitMessageFor,
   forbiddenDeliveryCommitFiles,
   isForbiddenDeliveryCommitFile,
@@ -126,7 +127,7 @@ test('提交校验拒绝只有报告没有源码的提交', () => {
   )
 })
 
-test('暂存计划只允许项目规则内的源码、LDD、测试和 zh 词条', () => {
+test('暂存计划只允许源码、测试和 zh 词条，不提交 LDD 设计文档', () => {
   const checkout = mkdtempSync(join(tmpdir(), 'orbit-commit-plan-'))
   try {
     const ruleDir = join(checkout, 'web', 'scripts', 'git', 'husky')
@@ -147,6 +148,8 @@ test('暂存计划只允许项目规则内的源码、LDD、测试和 zh 词条'
       'web/components/views/Dashboard.vue',
       'web/components/views/__tests__/privateMetrics.test.ts',
       'web/docs/ldd/SME-私有指标-LDD.md',
+      'docs/design/PPPoE账号管理-LDD.md',
+      'web/docs/requirements/SME-模式切换-LLD.md',
       'web/components/i18n/lang/zh.json',
       'web/components/i18n/lang/en.json',
       'delivery-artifacts/REQ-1082/design-report.md',
@@ -161,20 +164,26 @@ test('暂存计划只允许项目规则内的源码、LDD、测试和 zh 词条'
       'web/components/i18n/lang/zh.json',
       'web/components/views/Dashboard.vue',
       'web/components/views/__tests__/privateMetrics.test.ts',
-      'web/docs/ldd/SME-私有指标-LDD.md',
       'web/src/api/privateMetrics.ts',
     ])
     assert.deepEqual(
       plan.excludedFiles.map((file) => file.path),
       [
         'delivery-artifacts/REQ-1082/design-report.md',
+        'docs/design/PPPoE账号管理-LDD.md',
         'web/.env.development',
         'web/build.log',
         'web/certs/server.pem',
         'web/components/i18n/lang/en.json',
         'web/dist/app.js',
+        'web/docs/ldd/SME-私有指标-LDD.md',
+        'web/docs/requirements/SME-模式切换-LLD.md',
         'web/vite.config.js',
       ],
+    )
+    assert.equal(
+      plan.excludedFiles.find((file) => file.path === 'web/docs/ldd/SME-私有指标-LDD.md')?.reason,
+      'LDD/设计文档仅作交付证据，不提交',
     )
   } finally {
     rmSync(checkout, { recursive: true, force: true })
@@ -195,6 +204,46 @@ test('提交校验拒绝提交文件超出项目允许清单', () => {
       }),
     /未按项目规则暂存的文件：web\/src\/unrelated\.ts/,
   )
+})
+
+test('读取提交文件时保留中文路径而不使用 Git 八进制转义', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'orbit-commit-paths-'))
+  try {
+    const init = spawnSync('git', ['init', '--quiet', directory], { encoding: 'utf8' })
+    assert.equal(init.status, 0)
+    spawnSync('git', ['-C', directory, 'config', 'user.name', 'test'], { encoding: 'utf8' })
+    spawnSync('git', ['-C', directory, 'config', 'user.email', 'test@example.com'], {
+      encoding: 'utf8',
+    })
+    mkdirSync(join(directory, 'docs', 'design'), { recursive: true })
+    writeFileSync(join(directory, 'docs', 'design', 'PPPoE账号管理-LDD.md'), '# LDD\n')
+    writeFileSync(join(directory, 'source.ts'), 'export const value = 1\n')
+    const added = spawnSync('git', ['-C', directory, 'add', '.'], { encoding: 'utf8' })
+    assert.equal(added.status, 0)
+    const message = deliveryCommitMessageFor(item)
+    const committed = spawnSync('git', ['-C', directory, 'commit', '-qm', message], {
+      encoding: 'utf8',
+    })
+    assert.equal(committed.status, 0)
+
+    const files = committedDeliveryFiles(directory)
+    assert.deepEqual(files.sort(), [
+      'docs/design/PPPoE账号管理-LDD.md',
+      'source.ts',
+    ])
+    assert.doesNotThrow(() =>
+      validateDeliveryCommit({
+        previousHead: 'parent',
+        head: 'commit',
+        message,
+        files,
+        expectedMessage: message,
+        allowedFiles: files,
+      }),
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('提交前只清理超过两分钟且无人占用的空 Git 索引锁', () => {

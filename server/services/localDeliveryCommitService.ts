@@ -85,6 +85,28 @@ export function forbiddenDeliveryCommitFiles(files: readonly string[]): string[]
   return [...new Set(files.map(normalizeDeliveryPath).filter(isForbiddenDeliveryCommitFile))]
 }
 
+export function parseGitPathList(output: string): string[] {
+  return output
+    .split('\0')
+    .map(normalizeDeliveryPath)
+    .filter(Boolean)
+}
+
+export function committedDeliveryFiles(checkout: string, revision = 'HEAD'): string[] {
+  const result = spawnSync(
+    'git',
+    ['-C', checkout, 'show', '--name-only', '--format=', '-z', revision],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(
+      `读取提交文件失败：${(result.stderr || result.stdout || '').trim() || `退出码 ${result.status}`}`,
+    )
+  }
+  return parseGitPathList(result.stdout)
+}
+
 function readProjectRestrictedConfig(checkout: string): ProjectRestrictedConfig {
   try {
     const path = join(checkout, PROJECT_RESTRICTED_CONFIG)
@@ -118,6 +140,12 @@ function excludedDeliveryFileReason(checkout: string, file: string): string | un
   }
   if (/(?:\.min\.|\.bundle\.|\.chunk\.|(^|\/)remoteEntry\.js$)/i.test(path)) return '构建产物'
   if (/(^|\/)(?:\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(path)) return '操作系统文件'
+  if (
+    /(^|\/)docs\/(?:design|ldd)\/.+\.md$/i.test(path) ||
+    /(?:^|[-_ ])L[LD]D\.md$/i.test(path)
+  ) {
+    return 'LDD/设计文档仅作交付证据，不提交'
+  }
   if (
     /(^|\/)i18n\/lang\/(?!zh\.json$)[^/]+\.json$/i.test(path) ||
     /(^|\/)locales\/lang\/json\/(?:menu-modules\/)?(?!zh\.json$)[^/]+\.json$/i.test(path)
@@ -180,8 +208,9 @@ export function buildDeliveryCommitPrompt(input: DeliveryCommitPromptInput): str
     '',
     '执行要求：',
     '1. 交付 runner 已按项目规则准备好暂存区，运行 `git status`、`git diff --cached --stat` 确认范围。',
-    `2. 当前允许提交的文件：${stagedFiles.length > 0 ? stagedFiles.join(', ') : '以当前暂存区为准'}。`,
+    `2. 当前允许提交的编码文件：${stagedFiles.length > 0 ? stagedFiles.join(', ') : '以当前暂存区为准'}。`,
     '3. 禁止再执行 `git add`、`git reset`、`git restore --staged` 或暂存任何额外文件；不要修改业务代码。若发现缺少必要文件，停止并说明，不要自行补充。',
+    '    LDD、设计报告和其他 Markdown 文档只作为交付证据保留在工作区，不得暂存或提交。',
     '4. 按 aicr-commit 对当前暂存区执行 AICR 审查，并写入 `.git/aicr-ai-review-latest.json`：`scope` 必须为 `staged`，`stagedDiffHash` 必须等于 `git diff --cached --unified=80 | shasum -a 256` 的 hash，审查通过时 `approved` 必须为 `true`。',
     '5. 如果 AICR 审查发现 HIGH 及以上问题或 `approved` 无法为 `true`，不要提交，直接说明阻断原因后退出；不要伪造审查结果。',
     '6. 使用上面的完整提交标题执行一次普通 `git commit`。不要 `--amend`、不要 `--force`、不要创建分支或合并提交。',

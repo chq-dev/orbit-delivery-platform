@@ -32,6 +32,7 @@ import { resetDeliveryCodexPhaseMarker } from '../services/localDeliveryPhase.js
 import {
   buildDeliveryCommitPrompt,
   clearStaleGitIndexLock,
+  committedDeliveryFiles,
   deliveryCommitMessageFor,
   forbiddenDeliveryCommitFiles,
   planDeliveryCommitFiles,
@@ -364,7 +365,9 @@ function assertCleanDeliveryWorktree(checkout: string): void {
 function stageDeliveryCommitFiles(checkout: string, artifactDir: string): string[] {
   const plan = planDeliveryCommitFiles(checkout, workTreeFiles(checkout))
   if (plan.allowedFiles.length === 0) {
-    throw new Error('没有符合项目提交规则的允许文件；请检查交付产物、敏感文件和 i18n 语言文件')
+    throw new Error(
+      '没有符合项目提交规则的编码文件；LDD/设计文档仅作交付证据，不参与提交',
+    )
   }
   if (deliveryCodeFiles(plan.allowedFiles).length === 0) {
     throw new Error('允许提交的文件中没有非 Markdown 代码文件')
@@ -487,14 +490,7 @@ function commitDeliveredChanges(input: {
     )
   }
   const head = requireGit(input.checkout, ['rev-parse', 'HEAD'], '读取交付提交')
-  const files = requireGit(
-    input.checkout,
-    ['show', '--name-only', '--format=', 'HEAD'],
-    '读取交付提交文件',
-  )
-    .split(/\r?\n/)
-    .map(normalizeDeliveryPath)
-    .filter(Boolean)
+  const files = committedDeliveryFiles(input.checkout)
   const message = requireGit(input.checkout, ['log', '-1', '--format=%B'], '读取交付提交信息')
   try {
     validateDeliveryCommit({
