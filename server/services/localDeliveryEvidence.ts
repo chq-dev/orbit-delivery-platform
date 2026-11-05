@@ -1,13 +1,21 @@
 const DELIVERY_ARTIFACT_PREFIX = 'delivery-artifacts/'
 const DOCUMENT_FILE_PATTERN = /\.(?:md|markdown|txt)$/i
+const TEST_FILE_PATTERN =
+  /(^|\/)(?:__tests__|__mocks__|tests?|specs?)\/|(^|\/)[^/]+\.(?:test|spec)\.[^/]+$/i
 
 export function normalizeDeliveryPath(file: string): string {
   return file.replace(/\\/g, '/').replace(/^\.\//, '').trim()
 }
 
+export function isDeliveryTestFile(file: string): boolean {
+  const path = normalizeDeliveryPath(file)
+  return Boolean(path) && TEST_FILE_PATTERN.test(path)
+}
+
 export function isDeliveryCodeFile(file: string): boolean {
   const path = normalizeDeliveryPath(file)
   if (!path || path.startsWith(DELIVERY_ARTIFACT_PREFIX)) return false
+  if (isDeliveryTestFile(path)) return false
   return !DOCUMENT_FILE_PATTERN.test(path)
 }
 

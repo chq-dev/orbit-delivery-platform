@@ -39,6 +39,7 @@ test('提交提示词要求第二次 Codex 执行 /aicr-commit 且只本地提�
   assert.match(prompt, /approved/)
   assert.match(prompt, /不要 push/)
   assert.match(prompt, /禁止再执行 `git add`/)
+  assert.match(prompt, /测试文件.*不得暂存或提交/)
   assert.ok(prompt.includes(message))
 })
 
@@ -127,7 +128,7 @@ test('提交校验拒绝只有报告没有源码的提交', () => {
   )
 })
 
-test('暂存计划只允许源码、测试和 zh 词条，不提交 LDD 设计文档', () => {
+test('暂存计划只允许源码和 zh 词条，不提交测试与 LDD 设计文档', () => {
   const checkout = mkdtempSync(join(tmpdir(), 'orbit-commit-plan-'))
   try {
     const ruleDir = join(checkout, 'web', 'scripts', 'git', 'husky')
@@ -163,7 +164,6 @@ test('暂存计划只允许源码、测试和 zh 词条，不提交 LDD 设计�
     assert.deepEqual(plan.allowedFiles, [
       'web/components/i18n/lang/zh.json',
       'web/components/views/Dashboard.vue',
-      'web/components/views/__tests__/privateMetrics.test.ts',
       'web/src/api/privateMetrics.ts',
     ])
     assert.deepEqual(
@@ -175,6 +175,7 @@ test('暂存计划只允许源码、测试和 zh 词条，不提交 LDD 设计�
         'web/build.log',
         'web/certs/server.pem',
         'web/components/i18n/lang/en.json',
+        'web/components/views/__tests__/privateMetrics.test.ts',
         'web/dist/app.js',
         'web/docs/ldd/SME-私有指标-LDD.md',
         'web/docs/requirements/SME-模式切换-LLD.md',
@@ -184,6 +185,12 @@ test('暂存计划只允许源码、测试和 zh 词条，不提交 LDD 设计�
     assert.equal(
       plan.excludedFiles.find((file) => file.path === 'web/docs/ldd/SME-私有指标-LDD.md')?.reason,
       'LDD/设计文档仅作交付证据，不提交',
+    )
+    assert.equal(
+      plan.excludedFiles.find(
+        (file) => file.path === 'web/components/views/__tests__/privateMetrics.test.ts',
+      )?.reason,
+      '测试文件仅作验证，不参与交付提交',
     )
   } finally {
     rmSync(checkout, { recursive: true, force: true })

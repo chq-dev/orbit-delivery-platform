@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path'
 import {
   deliveryCodeFiles,
   deliveryCommitMessage,
+  isDeliveryTestFile,
   normalizeDeliveryPath,
 } from './localDeliveryEvidence.js'
 import type { WorkItem } from '../../src/types'
@@ -140,6 +141,7 @@ function excludedDeliveryFileReason(checkout: string, file: string): string | un
   }
   if (/(?:\.min\.|\.bundle\.|\.chunk\.|(^|\/)remoteEntry\.js$)/i.test(path)) return '构建产物'
   if (/(^|\/)(?:\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(path)) return '操作系统文件'
+  if (isDeliveryTestFile(path)) return '测试文件仅作验证，不参与交付提交'
   if (
     /(^|\/)docs\/(?:design|ldd)\/.+\.md$/i.test(path) ||
     /(?:^|[-_ ])L[LD]D\.md$/i.test(path)
@@ -211,6 +213,7 @@ export function buildDeliveryCommitPrompt(input: DeliveryCommitPromptInput): str
     `2. 当前允许提交的编码文件：${stagedFiles.length > 0 ? stagedFiles.join(', ') : '以当前暂存区为准'}。`,
     '3. 禁止再执行 `git add`、`git reset`、`git restore --staged` 或暂存任何额外文件；不要修改业务代码。若发现缺少必要文件，停止并说明，不要自行补充。',
     '    LDD、设计报告和其他 Markdown 文档只作为交付证据保留在工作区，不得暂存或提交。',
+    '    测试文件（如 `__tests__/**`、`*.test.*`、`*.spec.*`）只用于验证，也不得暂存或提交。',
     '4. 按 aicr-commit 对当前暂存区执行 AICR 审查，并写入 `.git/aicr-ai-review-latest.json`：`scope` 必须为 `staged`，`stagedDiffHash` 必须等于 `git diff --cached --unified=80 | shasum -a 256` 的 hash，审查通过时 `approved` 必须为 `true`。',
     '5. 如果 AICR 审查发现 HIGH 及以上问题或 `approved` 无法为 `true`，不要提交，直接说明阻断原因后退出；不要伪造审查结果。',
     '6. 使用上面的完整提交标题执行一次普通 `git commit`。不要 `--amend`、不要 `--force`、不要创建分支或合并提交。',
