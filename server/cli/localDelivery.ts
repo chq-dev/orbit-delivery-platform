@@ -1019,6 +1019,7 @@ async function main(): Promise<void> {
     localPath,
     autoCommit: !args.noCommit,
   }
+  let removeInterruptHandlers = (): void => {}
 
   try {
     if (contextIssue) throw new Error(contextIssue)
@@ -1104,6 +1105,26 @@ async function main(): Promise<void> {
           `已隔离客户端原有未提交变更 ${attempt.workspaceIsolation.preexistingFiles.length} 个，本次只交付 Codex 产生的改动`,
         )
       }
+    }
+
+    let interruptHandled = false
+    const handleInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
+      if (interruptHandled) return
+      interruptHandled = true
+      console.error(`LOCAL_DELIVERY_INTERRUPT: 收到 ${signal}，正在恢复交付前未提交代码`)
+      try {
+        restoreDeliveryWorkspace(attempt)
+      } finally {
+        process.exit(signal === 'SIGINT' ? 130 : 143)
+      }
+    }
+    const onSigint = (): void => handleInterrupt('SIGINT')
+    const onSigterm = (): void => handleInterrupt('SIGTERM')
+    process.once('SIGINT', onSigint)
+    process.once('SIGTERM', onSigterm)
+    removeInterruptHandlers = (): void => {
+      process.removeListener('SIGINT', onSigint)
+      process.removeListener('SIGTERM', onSigterm)
     }
 
     const codexCommand = resolveCodexBinary()
@@ -1291,12 +1312,17 @@ async function main(): Promise<void> {
     }
 
     if (args.push) {
-      const cleaned = cleanupGeneratedDeliveryFiles(checkout.checkout, committed.excludedFiles)
+      const cleaned = cleanupGeneratedDeliveryFiles(
+        checkout.checkout,
+        committed.excludedFiles,
+        attempt.workspaceIsolation?.preexistingFiles,
+      )
       if (cleaned.length > 0) {
         console.log(`已清理本次生成但不参与提交的测试、日志或构建文件 ${cleaned.length} 个`)
       }
     }
     const workspaceRestore = restoreDeliveryWorkspace(attempt)
+    removeInterruptHandlers()
     const reports = deliveryReports(artifactDir)
     attempt.reports = reports
 
@@ -1349,6 +1375,7 @@ async function main(): Promise<void> {
       lastMessageFile: lastMessagePath,
     }, null, 2))
   } catch (error) {
+    removeInterruptHandlers()
     restoreDeliveryWorkspace(attempt)
     const message = error instanceof Error ? error.message : String(error)
     let recordedPipelineId: string | undefined

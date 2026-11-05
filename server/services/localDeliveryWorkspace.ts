@@ -2,7 +2,10 @@ import { spawnSync } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { normalizeDeliveryPath } from './localDeliveryEvidence.js'
-import type { ExcludedDeliveryCommitFile } from './localDeliveryCommitService.js'
+import {
+  clearStaleGitIndexLock,
+  type ExcludedDeliveryCommitFile,
+} from './localDeliveryCommitService.js'
 
 const DELIVERY_ARTIFACT_PREFIX = 'delivery-artifacts/'
 
@@ -75,6 +78,7 @@ export function isolatePreexistingDeliveryChanges(
   }
   if (files.length === 0) return isolation
 
+  clearStaleGitIndexLock(checkout)
   const message = `orbit-delivery-${label.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 80)}`
   const result = git(checkout, [
     'stash',
@@ -133,6 +137,7 @@ export function restorePreexistingDeliveryChanges(
       warning: `未找到交付前保存的 Git stash ${isolation.stashHash.slice(0, 12)}，请手工检查 git stash list`,
     }
   }
+  clearStaleGitIndexLock(isolation.checkout)
   const apply = git(isolation.checkout, ['stash', 'apply', '--quiet', selector])
   if (apply.status !== 0) {
     return {
@@ -169,11 +174,14 @@ function isCleanupCandidate(file: ExcludedDeliveryCommitFile): boolean {
 export function cleanupGeneratedDeliveryFiles(
   checkout: string,
   files: readonly ExcludedDeliveryCommitFile[],
+  protectedFiles: readonly string[] = [],
 ): string[] {
   const cleaned: string[] = []
+  const protectedPaths = new Set(protectedFiles.map(normalizeDeliveryPath).filter(Boolean))
   for (const file of files) {
     if (!isCleanupCandidate(file)) continue
     const path = normalizeDeliveryPath(file.path)
+    if (protectedPaths.has(path)) continue
     const tracked = git(checkout, ['ls-files', '--error-unmatch', '--', path])
     if (tracked.status === 0) {
       const restored = git(checkout, ['restore', '--worktree', '--', path])

@@ -44,10 +44,12 @@ test('交付前隔离用户原有改动，结束后恢复且保留交付产物',
       'export const legacy = "user legacy"\n',
     )
     writeFileSync(join(checkout, 'web', 'legacy.ts'), 'export const legacy = true\n')
+    writeFileSync(join(checkout, 'web', '.env.local'), 'VITE_API_BASE=http://127.0.0.1\n')
 
     const isolation = isolatePreexistingDeliveryChanges(checkout, 'BUG-1')
     assert.equal(isolation.active, true)
     assert.deepEqual(isolation.preexistingFiles.sort(), [
+      'web/.env.local',
       'web/legacy-tracked.ts',
       'web/legacy.ts',
     ])
@@ -56,6 +58,7 @@ test('交付前隔离用户原有改动，结束后恢复且保留交付产物',
       true,
     )
     assert.equal(existsSync(join(checkout, 'web', 'legacy.ts')), false)
+    assert.equal(existsSync(join(checkout, 'web', '.env.local')), false)
     assert.equal(
       existsSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'feishu-context.md')),
       true,
@@ -85,6 +88,10 @@ test('交付前隔离用户原有改动，结束后恢复且保留交付产物',
     )
     assert.equal(readFileSync(join(checkout, 'web', 'tracked.ts'), 'utf8').includes('delivery'), true)
     assert.equal(existsSync(join(checkout, 'web', 'legacy.ts')), true)
+    assert.equal(
+      readFileSync(join(checkout, 'web', '.env.local'), 'utf8').includes('VITE_API_BASE'),
+      true,
+    )
     assert.equal(gitStashCount(checkout), 0)
   } finally {
     rmSync(checkout, { recursive: true, force: true })
@@ -103,6 +110,28 @@ test('原有改动与本次交付文件重叠时保留 stash，不覆盖已交�
     assert.match(restored.warning ?? '', /恢复交付前未提交代码时发生冲突/)
     assert.equal(readFileSync(join(checkout, 'web', 'tracked.ts'), 'utf8').includes('delivery'), true)
     assert.equal(gitStashCount(checkout), 1)
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('清理本次生成文件时保留交付前已存在的同路径配置', () => {
+  const checkout = createCheckout()
+  try {
+    const configPath = join(checkout, 'web', 'local.env')
+    writeFileSync(configPath, 'FEATURE_FLAG=true\n')
+    const excluded = [
+      { path: 'web/local.env', reason: '环境变量临时配置，不参与交付提交' },
+    ]
+
+    assert.deepEqual(
+      cleanupGeneratedDeliveryFiles(checkout, excluded, ['web/local.env']),
+      [],
+    )
+    assert.equal(readFileSync(configPath, 'utf8'), 'FEATURE_FLAG=true\n')
+
+    assert.deepEqual(cleanupGeneratedDeliveryFiles(checkout, excluded), ['web/local.env'])
+    assert.equal(existsSync(configPath), false)
   } finally {
     rmSync(checkout, { recursive: true, force: true })
   }
