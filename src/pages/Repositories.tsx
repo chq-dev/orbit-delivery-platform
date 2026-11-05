@@ -16,8 +16,8 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { DeliveryDialog } from '../components/DeliveryDialog'
 import { Field, Modal, StatusBadge } from '../components/ui'
+import { useDeliveryUi } from '../deliveryUi'
 import { useData } from '../store'
 import type { PageKey, Repository } from '../types'
 
@@ -37,11 +37,10 @@ export function Repositories({
     updateRepositorySettings,
     notify,
   } = useData()
+  const { openDeliveryDialog } = useDeliveryUi()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'healthy' | 'warning'>('all')
   const [modalOpen, setModalOpen] = useState(false)
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
-  const [deliveryItemId, setDeliveryItemId] = useState<string>()
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
   const [branch, setBranch] = useState('develop')
@@ -73,8 +72,7 @@ export function Repositories({
     const item = workItems.find(
       (entry) => entry.repoId === repo.id && entry.status !== '已关闭',
     )
-    setDeliveryItemId(item?.id)
-    setDeliveryOpen(true)
+    openDeliveryDialog(item?.id)
   }
 
   const inferName = (value: string) => {
@@ -510,12 +508,6 @@ export function Repositories({
         </Field>
       </Modal>
 
-      <DeliveryDialog
-        open={deliveryOpen}
-        onClose={() => setDeliveryOpen(false)}
-        initialWorkItemId={deliveryItemId}
-        onStarted={(run) => onNavigate('pipelines', run.id)}
-      />
     </div>
   )
 }

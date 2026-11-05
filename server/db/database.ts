@@ -28,6 +28,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       db.exec(schemaSql)
       ensureColumn(db, 'repositories', 'local_path', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'pipelines', 'local_path', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(db, 'pipelines', 'delivery_job_id', 'TEXT')
       ensureColumn(db, 'accounts', 'service_url', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'work_items', 'archived_at', 'TEXT')
       ensureColumn(db, 'work_items', 'feishu_status', 'TEXT')
@@ -52,6 +53,9 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_client_status ON feishu_agent_commands(client_id, status, created_at)',
       )
+      db.exec(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_delivery_job ON pipelines(delivery_job_id) WHERE delivery_job_id IS NOT NULL',
+      )
       db.pragma(`user_version = ${SCHEMA_VERSION}`)
     })()
   }
@@ -64,6 +68,9 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
   )
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_client_status ON feishu_agent_commands(client_id, status, created_at)',
+  )
+  db.exec(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_pipelines_delivery_job ON pipelines(delivery_job_id) WHERE delivery_job_id IS NOT NULL',
   )
 
   return db

@@ -223,6 +223,11 @@ function platformHeaders(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {}
 }
 
+function deliveryJobId(): string | undefined {
+  const value = process.env.ORBIT_DELIVERY_JOB_ID?.trim()
+  return value ? value.slice(0, 200) : undefined
+}
+
 function git(cwd: string, args: string[]): GitResult {
   const result = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
@@ -618,6 +623,7 @@ async function recordPlatformDelivery(
       ...platformHeaders(),
     },
     body: JSON.stringify({
+      ...(deliveryJobId() ? { deliveryJobId: deliveryJobId() } : {}),
       outcome: 'success',
       workItemId: item.id,
       repoId: repository.id,
@@ -759,6 +765,7 @@ async function recordPlatformFailure(
     }
   }
   const body = JSON.stringify({
+    ...(deliveryJobId() ? { deliveryJobId: deliveryJobId() } : {}),
     outcome: 'failed',
     workItemId: context.item.id,
     repoId: context.repository.id,

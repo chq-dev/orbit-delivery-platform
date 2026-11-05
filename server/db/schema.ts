@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 18
+export const SCHEMA_VERSION = 19
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS pipelines (
   repo_name TEXT NOT NULL,
   branch TEXT NOT NULL,
   local_path TEXT NOT NULL DEFAULT '',
+  delivery_job_id TEXT,
   commit_hash TEXT NOT NULL,
   version TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'success', 'failed')),

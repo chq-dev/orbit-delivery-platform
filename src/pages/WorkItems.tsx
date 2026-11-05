@@ -22,12 +22,12 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DeliveryDialog } from '../components/DeliveryDialog'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
 import { codingSkills, smeDeliveryStageChain } from '../codingSkills'
+import { useDeliveryUi } from '../deliveryUi'
 import { buildFeishuSyncInstruction } from '../feishuSyncInstruction'
 import {
   DEFAULT_PAGE_SIZE,
@@ -71,6 +71,7 @@ export function WorkItems({
     getWorkItemDetail,
     refreshWorkItems,
   } = useData()
+  const { openDeliveryDialog } = useDeliveryUi()
   const [tab, setTab] = useState<TabKey>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [feishuStatusFilter, setFeishuStatusFilter] = useState('')
@@ -79,8 +80,6 @@ export function WorkItems({
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [createType, setCreateType] = useState<WorkItemType>('requirement')
-  const [deliveryItemId, setDeliveryItemId] = useState<string>()
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [detailItem, setDetailItem] = useState<WorkItem | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [importMode, setImportMode] = useState<WorkItemType>('requirement')
@@ -186,8 +185,7 @@ export function WorkItems({
   }
 
   const openDelivery = (id: string) => {
-    setDeliveryItemId(id)
-    setDeliveryOpen(true)
+    openDeliveryDialog(id)
   }
 
   const directFeishuSync =
@@ -618,12 +616,6 @@ export function WorkItems({
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         initialType={createType}
-      />
-      <DeliveryDialog
-        open={deliveryOpen}
-        onClose={() => setDeliveryOpen(false)}
-        initialWorkItemId={deliveryItemId}
-        onStarted={(run) => onNavigate('pipelines', run.id)}
       />
       <FeishuImportDialog
         open={importOpen}

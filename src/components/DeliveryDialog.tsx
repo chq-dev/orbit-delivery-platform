@@ -311,6 +311,7 @@ export function DeliveryDialog({
   const [terminatingLocal, setTerminatingLocal] = useState(false)
   const progressRef = useRef<HTMLDivElement | null>(null)
   const waitAbortRef = useRef<AbortController | null>(null)
+  const terminationRequestedRef = useRef(false)
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
   const canControlLocalAgent = Boolean(
@@ -495,6 +496,12 @@ export function DeliveryDialog({
     waitAbortRef.current?.abort()
   }, [open])
 
+  useEffect(() => {
+    if (terminatingLocal && localJobInScope?.status !== 'running') {
+      setTerminatingLocal(false)
+    }
+  }, [localJobInScope?.status, terminatingLocal])
+
   useEffect(
     () => () => {
       waitAbortRef.current?.abort()
@@ -630,6 +637,7 @@ export function DeliveryDialog({
       return
     }
     const controller = new AbortController()
+    terminationRequestedRef.current = false
     waitAbortRef.current = controller
     setLaunching(true)
     setDeliveryError('')
@@ -660,6 +668,7 @@ export function DeliveryDialog({
         clientId,
       )
       setDeliveryJob(started)
+      void reload(true)
       notify(
         '客户端交付已启动',
         `${workItemId} · ${selectedClient?.clientName ?? clientId} · ${selectedRepo.name}`,
@@ -690,11 +699,13 @@ export function DeliveryDialog({
       onStarted(run)
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        notify(
-          '已停止等待',
-          '本机交付仍会在客户端后台继续执行，可稍后在流水线中查看结果',
-          'info',
-        )
+        if (!terminationRequestedRef.current) {
+          notify(
+            '执行视图已关闭',
+            '本机交付仍在后台继续执行，可从右下角执行入口重新打开查看',
+            'info',
+          )
+        }
         return
       }
       try {
@@ -733,40 +744,42 @@ export function DeliveryDialog({
     }
   }
 
-  const stopWaitingAndClose = () => {
+  const closeDeliveryView = () => {
     waitAbortRef.current?.abort()
     onClose()
   }
 
   const terminateLocalTask = async () => {
     if (!localJobInScope || terminatingLocal) return
+    terminationRequestedRef.current = true
     setTerminatingLocal(true)
     try {
       const job = await cancelLocalDeliveryJob(localJobInScope.id)
+      waitAbortRef.current?.abort()
       setLocalDeliveryJob(job)
       setDeliveryJob(job)
       setDeliveryError('')
       notify(
-        '已终止本机任务',
-        '已向本机 Codex 进程组发送终止信号；未提交的代码变更会保留在工作区',
+        '已终止全部操作',
+        '已停止本机 Codex 进程组、阶段追踪和页面等待；未提交的代码变更会保留在工作区',
         'info',
       )
     } catch (error) {
+      terminationRequestedRef.current = false
       const message = error instanceof Error ? error.message : '终止本机任务失败'
       setDeliveryError(message)
       notify('终止本机任务失败', message, 'warning')
     } finally {
-      setTerminatingLocal(false)
+      if (!terminationRequestedRef.current) setTerminatingLocal(false)
     }
   }
 
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={closeDeliveryView}
       closeOnBackdrop={false}
-      closeOnEscape={!launching}
-      closeDisabled={launching}
+      closeOnEscape
       title="启动一键交付"
       subtitle="在本机真实执行需求分析、业务 LDD、编码、集成验证、提交与推送；推送后触发已配置的 Jenkins 内部编译，升级与测试仍仅在真实证据时完成"
       size="lg"
@@ -806,16 +819,21 @@ export function DeliveryDialog({
                 className="btn btn-danger"
                 onClick={() => void terminateLocalTask()}
                 disabled={terminatingLocal}
+                title="终止本机 Codex 进程组、全部子进程、阶段追踪和页面等待"
               >
-                {terminatingLocal ? '正在终止…' : '终止本机执行'}
+                {terminatingLocal ? '正在终止…' : '终止全部操作'}
               </button>
             )}
             <button
               className="btn btn-secondary"
-              onClick={launching ? stopWaitingAndClose : onClose}
-              title={launching ? '只停止页面轮询并关闭弹窗，本机 Codex 进程会继续执行；需要停止请点“终止本机执行”' : undefined}
+              onClick={closeDeliveryView}
+              title={
+                effectiveDeliveryJob?.status === 'running'
+                  ? '只关闭当前视图并停止页面等待，本机执行继续运行；可从右下角执行入口重新打开'
+                  : undefined
+              }
             >
-              {launching ? '后台运行并关闭' : '取消'}
+              {effectiveDeliveryJob?.status === 'running' ? '仅关闭视图' : '关闭'}
             </button>
             <button
               className="btn btn-primary"
@@ -916,6 +934,12 @@ export function DeliveryDialog({
                     </strong>
                   </div>
                 </div>
+              )}
+              {effectiveDeliveryJob?.status === 'running' && (
+                <p className="delivery-progress-note">
+                  <ShieldCheck size={13} />
+                  “仅关闭视图”只会关闭当前界面，执行会继续；“终止全部操作”会停止本机 Codex 进程组、全部子进程和页面等待。
+                </p>
               )}
               {effectiveDeliveryJob?.status === 'running' && heartbeatStale && (
                 <p className="delivery-progress-warning">

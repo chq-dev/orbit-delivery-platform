@@ -730,11 +730,15 @@ async function validateClientCheckout(
   return { checkout, branch: resolved.branch }
 }
 
-function localDeliveryEnvironment(config: FeishuAgentStoredConfig): NodeJS.ProcessEnv {
+function localDeliveryEnvironment(
+  config: FeishuAgentStoredConfig,
+  deliveryJobId?: string,
+): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     PLATFORM_SYNC_TOKEN: config.syncToken,
     ORBIT_AGENT_CLIENT_ID: config.clientId,
+    ...(deliveryJobId ? { ORBIT_DELIVERY_JOB_ID: deliveryJobId } : {}),
   }
   for (const key of [
     'FEISHU_INGEST_TOKEN',
@@ -805,6 +809,7 @@ async function recordFailedDeliveryFallback(
   const body = buildFailedDeliveryPipelinePayload({
     workItemId: request.workItemId,
     repoId: request.repoId,
+    deliveryJobId: job.commandId ?? job.id,
     branch: job.branch,
     localPath: job.localPath,
     error: message,
@@ -1084,7 +1089,7 @@ async function executeLocalDelivery(
       result = await runCommand(
         npmCommand,
         args,
-        localDeliveryEnvironment(config),
+        localDeliveryEnvironment(config, job.commandId ?? job.id),
         deliveryTimeoutMs,
         (line) => {
           const executorStage = line.match(
@@ -1098,7 +1103,7 @@ async function executeLocalDelivery(
               job,
               checkout.checkout,
               request.workItemId,
-              localDeliveryEnvironment(config),
+              localDeliveryEnvironment(config, job.commandId ?? job.id),
             )
           }
           if (executorStage && executorStage !== 'connectivity' && executorStage !== 'codex') {

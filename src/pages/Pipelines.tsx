@@ -29,10 +29,10 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { DeliveryDialog } from '../components/DeliveryDialog'
 import { PipelineSteps } from '../components/PipelineSteps'
 import { Modal, StatusBadge } from '../components/ui'
 import { averageDuration } from '../duration'
+import { useDeliveryUi } from '../deliveryUi'
 import { useData } from '../store'
 import type { PageKey, PipelineReport, PipelineRun, PipelineStage } from '../types'
 
@@ -107,10 +107,10 @@ export function Pipelines({
   onNavigate: (page: PageKey, id?: string) => void
 }) {
   const { pipelines, reports } = useData()
+  const { openDeliveryDialog } = useDeliveryUi()
   const [filter, setFilter] = useState<RunFilter>('all')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState(selectedRunId ?? pipelines[0]?.id ?? '')
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [artifactReport, setArtifactReport] = useState<PipelineReport | null>(null)
 
   useEffect(() => {
@@ -163,7 +163,7 @@ export function Pipelines({
           <button className="btn btn-secondary" onClick={() => setFilter('running')}>
             <CirclePlay size={16} /> 运行中 {runningCount}
           </button>
-          <button className="btn btn-primary" onClick={() => setDeliveryOpen(true)}>
+          <button className="btn btn-primary" onClick={() => openDeliveryDialog()}>
             <Rocket size={16} /> 启动交付
           </button>
         </div>
@@ -273,7 +273,7 @@ export function Pipelines({
                     </button>
                   )}
                   {run.status === 'failed' && (
-                    <button className="btn btn-primary btn-sm" onClick={() => setDeliveryOpen(true)}>
+                    <button className="btn btn-primary btn-sm" onClick={() => openDeliveryDialog()}>
                       <RefreshCw size={15} /> 重新执行
                     </button>
                   )}
@@ -485,7 +485,7 @@ export function Pipelines({
               <div className="empty-state">
                 <h3>暂无交付流水线</h3>
                 <p>请先创建账号、接入仓库并录入工作项，然后启动交付。</p>
-                <button className="btn btn-primary" onClick={() => setDeliveryOpen(true)}>
+                <button className="btn btn-primary" onClick={() => openDeliveryDialog()}>
                   <Rocket size={15} /> 启动交付
                 </button>
               </div>
@@ -493,12 +493,6 @@ export function Pipelines({
           </section>
         )}
       </div>
-
-      <DeliveryDialog
-        open={deliveryOpen}
-        onClose={() => setDeliveryOpen(false)}
-        onStarted={(started) => setSelectedId(started.id)}
-      />
 
       <Modal
         open={Boolean(artifactReport)}

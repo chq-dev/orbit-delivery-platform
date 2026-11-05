@@ -396,6 +396,7 @@ export function failedDeliveryStageIndex(message: string, failedStepKey: string)
 export interface FailedDeliveryPipelineInput {
   workItemId: string
   repoId: string
+  deliveryJobId?: string
   branch?: string
   localPath?: string
   error: string
@@ -454,6 +455,7 @@ export function buildFailedDeliveryPipelinePayload(
     log: error,
   }
   return {
+    ...(input.deliveryJobId ? { deliveryJobId: input.deliveryJobId } : {}),
     outcome: 'failed',
     workItemId: input.workItemId,
     repoId: input.repoId,

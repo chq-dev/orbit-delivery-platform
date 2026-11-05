@@ -19,9 +19,13 @@ import {
 import {
   advancePipeline,
   getPipeline,
+  listPipelines,
   startPipeline,
 } from '../services/pipelineService.js'
-import { recordLocalDelivery } from '../services/localDeliveryService.js'
+import {
+  recordLocalDelivery,
+  syncLocalDeliveryPipelineFromAgentJob,
+} from '../services/localDeliveryService.js'
 import { listTestReports } from '../services/reportService.js'
 import {
   createRepository,
@@ -115,6 +119,7 @@ test('旧版数据库升级后可使用抓包 Token 存储', () => {
     .get('feishu_sync_credentials') as { count: number }
   assert.equal(repositoryColumns.some((column) => column.name === 'local_path'), true)
   assert.equal(pipelineColumns.some((column) => column.name === 'local_path'), true)
+  assert.equal(pipelineColumns.some((column) => column.name === 'delivery_job_id'), true)
   assert.equal(accountColumns.some((column) => column.name === 'service_url'), true)
   assert.equal(workItemColumns.some((column) => column.name === 'archived_at'), true)
   assert.equal(workItemColumns.some((column) => column.name === 'project_line'), true)
@@ -139,6 +144,24 @@ test('版本 6 数据库升级后会创建飞书同步密钥表', () => {
     .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get('feishu_sync_credentials') as { count: number }
   assert.equal(table.count, 1)
+  upgraded.close()
+})
+
+test('版本 18 数据库升级后会添加本机交付关联列和唯一索引', () => {
+  const filename = join(tempDir, 'upgrade-v18-delivery-job.db')
+  const oldDb = createDatabase({ filename })
+  oldDb.exec(
+    'DROP INDEX IF EXISTS idx_pipelines_delivery_job; ALTER TABLE pipelines DROP COLUMN delivery_job_id; PRAGMA user_version = 18;',
+  )
+  oldDb.close()
+
+  const upgraded = createDatabase({ filename })
+  const columns = upgraded.pragma('table_info(pipelines)') as { name: string }[]
+  assert.equal(columns.some((column) => column.name === 'delivery_job_id'), true)
+  const index = upgraded
+    .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get('idx_pipelines_delivery_job') as { count: number }
+  assert.equal(index.count, 1)
   upgraded.close()
 })
 
@@ -402,6 +425,114 @@ test('客户端本地交付结果可回写平台并更新工作项', () => {
   assert.equal(run.stages.slice(5).every((stage) => stage.status === 'pending'), true)
   assert.match(run.stages[4].log ?? '', /已推送至 origin\/develop/)
   assert.equal(getWorkItem(db, item.id).status, '已交付')
+})
+
+test('本机交付执行中即创建流水线，并在完成时更新同一记录', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '执行中流水线可见',
+    description: '验证本机任务启动后立即出现在流水线列表',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const startedAt = new Date().toISOString()
+  const running = syncLocalDeliveryPipelineFromAgentJob(db, {
+    id: 'delivery-running-test',
+    status: 'running',
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    steps: [
+      {
+        key: 'connectivity',
+        status: 'success',
+        log: '平台与仓库校验通过',
+        startedAt,
+        finishedAt: startedAt,
+      },
+      {
+        key: 'analysis',
+        status: 'running',
+        log: 'Codex 正在分析需求',
+        startedAt,
+      },
+      { key: 'ldd', status: 'pending' },
+      { key: 'coding', status: 'pending' },
+      { key: 'evidence', status: 'pending' },
+      { key: 'commit', status: 'pending' },
+      { key: 'writeback', status: 'pending' },
+    ],
+  })
+  assert.ok(running)
+  assert.equal(running.status, 'running')
+  assert.equal(running.progress, 8)
+  assert.equal(running.stages[0].status, 'running')
+  assert.equal(
+    listPipelines(db).some((pipeline) => pipeline.id === running.id && pipeline.status === 'running'),
+    true,
+  )
+
+  const completed = recordLocalDelivery(db, {
+    deliveryJobId: 'delivery-running-test',
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    commit: 'abcdef1234567890abcdef1234567890abcdef12',
+    stageResults: [
+      { index: 0, status: 'success', log: '真实解析需求' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '真实修改代码' },
+      { index: 3, status: 'success', log: '真实完成集成验证' },
+      { index: 4, status: 'success', log: '真实创建提交' },
+    ],
+  })
+  assert.equal(completed.id, running.id)
+  assert.equal(completed.status, 'success')
+  assert.equal(
+    listPipelines(db).filter((pipeline) => pipeline.workItemId === item.id).length,
+    1,
+  )
+})
+
+test('旧代理未携带任务标识时也能收口唯一的执行中流水线', () => {
+  const item = createWorkItem(db, {
+    type: 'requirement',
+    title: '兼容旧代理流水线',
+    description: '验证最终回写不会重复创建记录',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const running = syncLocalDeliveryPipelineFromAgentJob(db, {
+    id: 'delivery-legacy-test',
+    status: 'running',
+    workItemId: item.id,
+    repoId: repositoryId,
+    steps: [{ key: 'analysis', status: 'running', log: '正在分析需求' }],
+  })
+  assert.ok(running)
+
+  const completed = recordLocalDelivery(db, {
+    workItemId: item.id,
+    repoId: repositoryId,
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    commit: 'abcdef1234567890abcdef1234567890abcdef12',
+    stageResults: [
+      { index: 0, status: 'success', log: '真实解析需求' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '真实修改代码' },
+      { index: 3, status: 'success', log: '真实完成集成验证' },
+      { index: 4, status: 'success', log: '真实创建提交' },
+    ],
+  })
+  assert.equal(completed.id, running.id)
+  assert.equal(
+    listPipelines(db).filter((pipeline) => pipeline.workItemId === item.id).length,
+    1,
+  )
 })
 
 test('拒绝缺少真实代码与提交证据的本地交付回写', () => {

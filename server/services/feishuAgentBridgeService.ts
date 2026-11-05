@@ -8,6 +8,7 @@ import {
   parseBuildAgentCommandRequest,
 } from './buildService.js'
 import { parseLocalDeliveryAgentRequest } from './localDeliveryAgentService.js'
+import { syncLocalDeliveryPipelineFromAgentJob } from './localDeliveryService.js'
 
 export const DEFAULT_FEISHU_AGENT_CLIENT_ID = 'primary'
 const RUNNING_COMMAND_LEASE_MS = 15 * 60_000
@@ -15,6 +16,14 @@ const RECENT_COMMAND_LIMIT = 20
 const MAX_RUNNING_COMMAND_IDS = 50
 
 export const FEISHU_AGENT_ONLINE_WINDOW_MS = 90_000
+
+function syncDeliveryPipelineSafely(db: AppDatabase, job: unknown): void {
+  try {
+    syncLocalDeliveryPipelineFromAgentJob(db, job)
+  } catch (error) {
+    console.error('同步本机交付流水线失败', error)
+  }
+}
 
 export type FeishuAgentCommandType =
   | 'login_start'
@@ -593,6 +602,24 @@ export function enqueueFeishuAgentCommand(
       (id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at)
      VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
   ).run(id, clientId, commandType, payloadJson, now, now)
+  if (commandType === 'delivery_start' && deliveryRequest) {
+    syncDeliveryPipelineSafely(db, {
+      id,
+      commandId: id,
+      status: 'running',
+      workItemId: deliveryRequest.workItemId,
+      repoId: deliveryRequest.repoId,
+      steps: [
+        { key: 'connectivity', status: 'running', log: '任务已下发，等待本机代理领取', startedAt: now },
+        { key: 'analysis', status: 'pending' },
+        { key: 'ldd', status: 'pending' },
+        { key: 'coding', status: 'pending' },
+        { key: 'evidence', status: 'pending' },
+        { key: 'commit', status: 'pending' },
+        { key: 'writeback', status: 'pending' },
+      ],
+    })
+  }
   return {
     id,
     clientId,
@@ -660,6 +687,37 @@ export function completeFeishuAgentCommand(
      SET status = ?, result_json = ?, error = ?, updated_at = ?, completed_at = ?
      WHERE id = ?`,
   ).run(status, resultJson, finalError || null, now, status === 'running' ? null : now, id)
+  if (
+    existing.command_type === 'delivery_start' &&
+    isRecord(payload.result) &&
+    isRecord(payload.result.job)
+  ) {
+    syncDeliveryPipelineSafely(db, payload.result.job)
+  } else if (existing.command_type === 'delivery_start' && status === 'failed') {
+    const deliveryPayload = parseJson(existing.payload_json)
+    if (
+      isRecord(deliveryPayload) &&
+      typeof deliveryPayload.workItemId === 'string' &&
+      typeof deliveryPayload.repoId === 'string'
+    ) {
+      syncDeliveryPipelineSafely(db, {
+        id,
+        commandId: id,
+        status: 'failed',
+        workItemId: deliveryPayload.workItemId,
+        repoId: deliveryPayload.repoId,
+        steps: [
+          {
+            key: 'connectivity',
+            status: 'failed',
+            log: finalError || '本机代理未能启动交付',
+            finishedAt: now,
+          },
+        ],
+        error: finalError || '本机代理未能启动交付',
+      })
+    }
+  }
   return publicCommand({
     ...existing,
     status,
@@ -704,6 +762,7 @@ export function updateFeishuAgentCommandProgress(
      SET status = ?, result_json = ?, error = ?, updated_at = ?, completed_at = ?
      WHERE id = ?`,
   ).run(status, resultJson, error, now, job.status === 'running' ? null : now, id)
+  syncDeliveryPipelineSafely(db, payload.job)
   return publicCommand({
     ...existing,
     status,
