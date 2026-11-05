@@ -191,6 +191,17 @@ test('Codex 参数用 -- 隔离图片参数与提示词，避免提示词被当�
   assert.equal(args[separator + 1], '实现需求并生成报告')
   assert.equal(args.at(-1), '实现需求并生成报告')
   assert.equal(args.includes('/tmp/design shot.jpg'), true)
+  assert.equal(args[args.indexOf('--sandbox') + 1], 'workspace-write')
+
+  const commitArgs = buildCodexExecArgs({
+    checkout: '/Users/example/sme-main',
+    prompt: '创建 AICR 提交',
+    lastMessagePath: '/tmp/codex-commit-last-message.md',
+    imagePaths: [],
+    mcpArgs: [],
+    sandbox: 'danger-full-access',
+  })
+  assert.equal(commitArgs[commitArgs.indexOf('--sandbox') + 1], 'danger-full-access')
 })
 
 test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', () => {
@@ -345,6 +356,12 @@ test('交付超时按已进入的阶段生成可分类的失败信息', () => {
   const coding = deliveryTimeoutFailureMessage('LOCAL_DELIVERY_STAGE:codex\n', 45 * 60_000)
   assert.match(coding, /Codex 执行失败：本机交付执行超时/)
   assert.equal(classifyLocalDeliveryFailure(coding), 'codex')
+
+  const evidence = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:codex\nLOCAL_DELIVERY_STAGE:evidence\n',
+    45 * 60_000,
+  )
+  assert.match(evidence, /检查交付证据失败：本机交付执行超时/)
 
   const commit = deliveryTimeoutFailureMessage(
     'LOCAL_DELIVERY_STAGE:codex\nLOCAL_DELIVERY_STAGE:commit\n',

@@ -166,6 +166,7 @@ export interface CodexExecArgsInput {
   lastMessagePath: string
   imagePaths: string[]
   mcpArgs: string[]
+  sandbox?: 'workspace-write' | 'danger-full-access'
 }
 
 const REQUEST_KEYS = new Set([
@@ -295,7 +296,7 @@ export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
     input.checkout,
     '--skip-git-repo-check',
     '--sandbox',
-    'workspace-write',
+    input.sandbox ?? 'workspace-write',
     '--output-last-message',
     input.lastMessagePath,
     ...input.imagePaths.flatMap((path) => ['--image', path]),
@@ -340,7 +341,7 @@ export function classifyLocalDeliveryFailure(message: string): string {
 export function deliveryTimeoutFailureMessage(stdout: string, timeoutMs: number): string {
   const minutes = Math.max(1, Math.round(timeoutMs / 60_000))
   const stage = Array.from(
-    stdout.matchAll(/LOCAL_DELIVERY_STAGE:(connectivity|codex|commit|push|writeback)/g),
+    stdout.matchAll(/LOCAL_DELIVERY_STAGE:(connectivity|codex|evidence|commit|push|writeback)/g),
   ).at(-1)?.[1]
   const suffix = '；代码变更可能仍保留在客户端工作区，请检查 delivery-artifacts 与 Codex 日志'
   if (stage === 'connectivity') {
@@ -348,6 +349,9 @@ export function deliveryTimeoutFailureMessage(stdout: string, timeoutMs: number)
   }
   if (stage === 'commit') {
     return `创建本地交付提交失败：本机交付执行超时（超过 ${minutes} 分钟），/aicr-commit 未完成${suffix}`
+  }
+  if (stage === 'evidence') {
+    return `检查交付证据失败：本机交付执行超时（超过 ${minutes} 分钟）${suffix}`
   }
   if (stage === 'push') {
     return `推送失败：本机交付执行超时（超过 ${minutes} 分钟）${suffix}`

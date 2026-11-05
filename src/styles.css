@@ -2838,7 +2838,7 @@ p {
 
 .delivery-progress-log {
   display: grid;
-  grid-template-columns: 7px 82px minmax(0, 1fr);
+  grid-template-columns: 7px 82px minmax(0, 1fr) auto;
   align-items: start;
   gap: 7px;
   color: #7b8297;
@@ -2851,8 +2851,16 @@ p {
   font-weight: 600;
 }
 
-.delivery-progress-log span:last-child {
+.delivery-progress-log-copy {
   overflow-wrap: anywhere;
+}
+
+.delivery-progress-log-duration {
+  color: #8a90a5;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 8px;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .delivery-progress-log-dot {

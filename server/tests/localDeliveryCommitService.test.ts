@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import {
   buildDeliveryCommitPrompt,
+  clearStaleGitIndexLock,
   deliveryCommitMessageFor,
   forbiddenDeliveryCommitFiles,
   isForbiddenDeliveryCommitFile,
+  planDeliveryCommitFiles,
   validateDeliveryCommit,
 } from '../services/localDeliveryCommitService.js'
 
@@ -31,7 +37,7 @@ test('提交提示词要求第二次 Codex 执行 /aicr-commit 且只本地提�
   assert.match(prompt, /scope.*staged/)
   assert.match(prompt, /approved/)
   assert.match(prompt, /不要 push/)
-  assert.match(prompt, /禁止暂存 `\.env`、`\.env\.\*`/)
+  assert.match(prompt, /禁止再执行 `git add`/)
   assert.ok(prompt.includes(message))
 })
 
@@ -118,4 +124,94 @@ test('提交校验拒绝只有报告没有源码的提交', () => {
       }),
     /没有包含任何非 Markdown 代码文件/,
   )
+})
+
+test('暂存计划只允许项目规则内的源码、LDD、测试和 zh 词条', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'orbit-commit-plan-'))
+  try {
+    const ruleDir = join(checkout, 'web', 'scripts', 'git', 'husky')
+    mkdirSync(ruleDir, { recursive: true })
+    writeFileSync(
+      join(ruleDir, 'restricted-files.json'),
+      JSON.stringify({
+        restrictedFiles: [
+          { pattern: '^web/vite\\.config\\.js$', description: 'Vite 配置', enabled: true },
+        ],
+        restrictedPatterns: [
+          { pattern: '\\.env.*', description: '环境变量文件', enabled: true },
+        ],
+      }),
+    )
+    const plan = planDeliveryCommitFiles(checkout, [
+      'web/src/api/privateMetrics.ts',
+      'web/components/views/Dashboard.vue',
+      'web/components/views/__tests__/privateMetrics.test.ts',
+      'web/docs/ldd/SME-私有指标-LDD.md',
+      'web/components/i18n/lang/zh.json',
+      'web/components/i18n/lang/en.json',
+      'delivery-artifacts/REQ-1082/design-report.md',
+      'web/.env.development',
+      'web/certs/server.pem',
+      'web/build.log',
+      'web/dist/app.js',
+      'web/vite.config.js',
+    ])
+
+    assert.deepEqual(plan.allowedFiles, [
+      'web/components/i18n/lang/zh.json',
+      'web/components/views/Dashboard.vue',
+      'web/components/views/__tests__/privateMetrics.test.ts',
+      'web/docs/ldd/SME-私有指标-LDD.md',
+      'web/src/api/privateMetrics.ts',
+    ])
+    assert.deepEqual(
+      plan.excludedFiles.map((file) => file.path),
+      [
+        'delivery-artifacts/REQ-1082/design-report.md',
+        'web/.env.development',
+        'web/build.log',
+        'web/certs/server.pem',
+        'web/components/i18n/lang/en.json',
+        'web/dist/app.js',
+        'web/vite.config.js',
+      ],
+    )
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('提交校验拒绝提交文件超出项目允许清单', () => {
+  const message = deliveryCommitMessageFor(item)
+  assert.throws(
+    () =>
+      validateDeliveryCommit({
+        previousHead: 'aaa',
+        head: 'bbb',
+        message,
+        files: ['web/src/a.ts', 'web/src/unrelated.ts'],
+        expectedMessage: message,
+        allowedFiles: ['web/src/a.ts'],
+      }),
+    /未按项目规则暂存的文件：web\/src\/unrelated\.ts/,
+  )
+})
+
+test('提交前只清理超过两分钟且无人占用的空 Git 索引锁', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'orbit-index-lock-'))
+  try {
+    const init = spawnSync('git', ['init', '--quiet', directory], { encoding: 'utf8' })
+    assert.equal(init.status, 0)
+    const lockPath = join(directory, '.git', 'index.lock')
+    writeFileSync(lockPath, '')
+    const stale = new Date(Date.now() - 3 * 60_000)
+    utimesSync(lockPath, stale, stale)
+    assert.equal(clearStaleGitIndexLock(directory), true)
+    assert.equal(clearStaleGitIndexLock(directory), false)
+
+    writeFileSync(lockPath, '')
+    assert.equal(clearStaleGitIndexLock(directory), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })

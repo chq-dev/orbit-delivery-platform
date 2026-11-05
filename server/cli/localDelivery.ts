@@ -31,8 +31,10 @@ import {
 import { resetDeliveryCodexPhaseMarker } from '../services/localDeliveryPhase.js'
 import {
   buildDeliveryCommitPrompt,
+  clearStaleGitIndexLock,
   deliveryCommitMessageFor,
   forbiddenDeliveryCommitFiles,
+  planDeliveryCommitFiles,
   validateDeliveryCommit,
 } from '../services/localDeliveryCommitService.js'
 import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
@@ -359,6 +361,71 @@ function assertCleanDeliveryWorktree(checkout: string): void {
   )
 }
 
+function stageDeliveryCommitFiles(checkout: string, artifactDir: string): string[] {
+  const plan = planDeliveryCommitFiles(checkout, workTreeFiles(checkout))
+  if (plan.allowedFiles.length === 0) {
+    throw new Error('没有符合项目提交规则的允许文件；请检查交付产物、敏感文件和 i18n 语言文件')
+  }
+  if (deliveryCodeFiles(plan.allowedFiles).length === 0) {
+    throw new Error('允许提交的文件中没有非 Markdown 代码文件')
+  }
+
+  const reset = git(checkout, ['reset', '--mixed', 'HEAD'])
+  if (reset.status !== 0) {
+    throw new Error(`重置暂存区失败：${reset.stderr || reset.stdout || `退出码 ${reset.status}`}`)
+  }
+  for (let index = 0; index < plan.allowedFiles.length; index += 60) {
+    const batch = plan.allowedFiles.slice(index, index + 60)
+    const added = git(checkout, ['add', '--', ...batch])
+    if (added.status !== 0) {
+      throw new Error(`按项目规则暂存文件失败：${added.stderr || added.stdout || `退出码 ${added.status}`}`)
+    }
+  }
+
+  const stagedFiles = requireGit(
+    checkout,
+    ['diff', '--cached', '--name-only', '-z'],
+    '读取已暂存文件',
+  )
+    .split('\0')
+    .map(normalizeDeliveryPath)
+    .filter(Boolean)
+  const allowed = new Set(plan.allowedFiles)
+  const unexpected = stagedFiles.filter((file) => !allowed.has(file))
+  const missing = plan.allowedFiles.filter((file) => !stagedFiles.includes(file))
+  if (unexpected.length > 0 || missing.length > 0) {
+    throw new Error(
+      `暂存结果与项目允许清单不一致：${
+        unexpected.length > 0 ? `多余 ${unexpected.slice(0, 8).join(', ')}` : ''
+      }${unexpected.length > 0 && missing.length > 0 ? '；' : ''}${
+        missing.length > 0 ? `缺少 ${missing.slice(0, 8).join(', ')}` : ''
+      }`,
+    )
+  }
+  const forbidden = forbiddenDeliveryCommitFiles(stagedFiles)
+  if (forbidden.length > 0) {
+    throw new Error(`暂存区包含禁止提交的敏感文件：${forbidden.slice(0, 8).join(', ')}`)
+  }
+
+  const report = [
+    '# 交付提交暂存报告',
+    '',
+    `允许并已暂存 ${stagedFiles.length} 个文件：`,
+    ...stagedFiles.map((file) => `- ${file}`),
+    '',
+    `按项目规则排除 ${plan.excludedFiles.length} 个文件：`,
+    ...plan.excludedFiles.map((file) => `- ${file.path}（${file.reason}）`),
+    '',
+  ].join('\n')
+  writeFileSync(join(artifactDir, 'commit-staging-report.md'), report, 'utf8')
+  console.log(
+    `已按项目规则暂存 ${stagedFiles.length} 个文件${
+      plan.excludedFiles.length > 0 ? `，排除 ${plan.excludedFiles.length} 个受限文件` : ''
+    }`,
+  )
+  return stagedFiles
+}
+
 function commitDeliveredChanges(input: {
   checkout: string
   branch: string
@@ -369,14 +436,19 @@ function commitDeliveredChanges(input: {
 }): string {
   const expectedMessage = deliveryCommitMessageFor(input.item)
   const previousHead = requireGit(input.checkout, ['rev-parse', 'HEAD'], '读取提交前 HEAD')
+  const lastMessagePath = join(input.artifactDir, 'codex-commit-last-message.md')
+  console.log('LOCAL_DELIVERY_STAGE:commit')
+  if (clearStaleGitIndexLock(input.checkout)) {
+    console.log('已清理陈旧的 Git 索引锁')
+  }
+  const stagedFiles = stageDeliveryCommitFiles(input.checkout, input.artifactDir)
   const prompt = buildDeliveryCommitPrompt({
     checkout: input.checkout,
     branch: input.branch,
     item: input.item,
     commitMessage: expectedMessage,
+    stagedFiles,
   })
-  const lastMessagePath = join(input.artifactDir, 'codex-commit-last-message.md')
-  console.log('LOCAL_DELIVERY_STAGE:commit')
   const result = spawnSync(
     input.codexCommand,
     buildCodexExecArgs({
@@ -385,6 +457,7 @@ function commitDeliveredChanges(input: {
       lastMessagePath,
       imagePaths: [],
       mcpArgs: input.mcpArgs,
+      sandbox: 'danger-full-access',
     }),
     {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -430,6 +503,7 @@ function commitDeliveredChanges(input: {
       message,
       files,
       expectedMessage,
+      allowedFiles: stagedFiles,
     })
   } catch (error) {
     throw new Error(
@@ -976,6 +1050,7 @@ async function main(): Promise<void> {
       }
     }
 
+    console.log('LOCAL_DELIVERY_STAGE:evidence')
     const evidence = artifactEvidence(artifactDir)
     try {
       evidence.changedFiles = deliveryCodeFiles(workTreeFiles(checkout.checkout))
@@ -1030,9 +1105,17 @@ async function main(): Promise<void> {
     let internalBuild: DeliveryBuildOutcome | undefined
     if (args.push) {
       console.log('LOCAL_DELIVERY_STAGE:push')
-      await confirmPush(branch, args.yes)
+      const actualBranch = requireGit(
+        checkout.checkout,
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
+        '读取提交后分支',
+      )
+      if (actualBranch !== branch) {
+        throw new Error(`推送失败：提交后分支已从 ${branch} 变为 ${actualBranch}，已停止推送`)
+      }
+      await confirmPush(actualBranch, args.yes)
       if (!checkout.remote) throw new Error('本地仓库没有 origin 远端，无法推送')
-      const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${branch}`])
+      const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${actualBranch}`])
       if (push.status !== 0) {
         throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)
       }

@@ -911,6 +911,65 @@ function advanceDeliveryCodexPhase(job: LocalDeliveryJob, phase: DeliveryCodexPh
   }
 }
 
+type LocalDeliveryExecutionStage =
+  | 'connectivity'
+  | 'codex'
+  | 'evidence'
+  | 'commit'
+  | 'push'
+  | 'writeback'
+
+function finishDeliveryStep(job: LocalDeliveryJob, key: string, log: string): void {
+  const step = job.steps.find((entry) => entry.key === key)
+  if (!step || step.status === 'success' || step.status === 'failed') return
+  setStep(job, key, 'success', log)
+}
+
+function advanceDeliveryExecutionStage(
+  job: LocalDeliveryJob,
+  stage: LocalDeliveryExecutionStage,
+): void {
+  if (stage === 'connectivity') {
+    if (job.steps.find((step) => step.key === 'connectivity')?.status === 'pending') {
+      setStep(job, 'connectivity', 'running', '正在读取平台并校验本机仓库与分支')
+    }
+    return
+  }
+  if (stage === 'codex') {
+    finishDeliveryStep(job, 'connectivity', '平台与本机仓库校验通过')
+    if (job.steps.find((step) => step.key === 'analysis')?.status === 'pending') {
+      setStep(job, 'analysis', 'running', DELIVERY_CODEX_PHASE_LOGS.analysis.running)
+    }
+    return
+  }
+  if (stage === 'evidence') {
+    finishDeliveryStep(job, 'analysis', DELIVERY_CODEX_PHASE_LOGS.analysis.success)
+    finishDeliveryStep(job, 'ldd', DELIVERY_CODEX_PHASE_LOGS.ldd.success)
+    finishDeliveryStep(job, 'coding', 'Codex 编码与验证已结束')
+    if (job.steps.find((step) => step.key === 'evidence')?.status === 'pending') {
+      setStep(job, 'evidence', 'running', '正在确认代码变更与交付报告')
+    }
+    return
+  }
+  if (stage === 'commit') {
+    finishDeliveryStep(job, 'evidence', '代码变更、设计报告与集成报告已确认')
+    if (job.steps.find((step) => step.key === 'commit')?.status === 'pending') {
+      setStep(job, 'commit', 'running', '正在执行 AICR 审查并创建本地提交')
+    }
+    return
+  }
+  if (stage === 'push') {
+    setStep(job, 'commit', 'running', '本地提交已创建，正在推送到远端')
+    return
+  }
+  if (stage === 'writeback') {
+    finishDeliveryStep(job, 'commit', '本地提交与推送已完成')
+    if (job.steps.find((step) => step.key === 'writeback')?.status === 'pending') {
+      setStep(job, 'writeback', 'running', '正在回写平台流水线与交付结果')
+    }
+  }
+}
+
 function startDeliveryCodexPhaseTracker(
   job: LocalDeliveryJob,
   checkout: string,
@@ -1028,13 +1087,23 @@ async function executeLocalDelivery(
         localDeliveryEnvironment(config),
         deliveryTimeoutMs,
         (line) => {
-          if (line.includes('LOCAL_DELIVERY_STAGE:codex') && !stopPhaseTracker) {
+          const executorStage = line.match(
+            /LOCAL_DELIVERY_STAGE:(connectivity|codex|evidence|commit|push|writeback)/,
+          )?.[1] as LocalDeliveryExecutionStage | undefined
+          if (executorStage) {
+            advanceDeliveryExecutionStage(job, executorStage)
+          }
+          if (executorStage === 'codex' && !stopPhaseTracker) {
             stopPhaseTracker = startDeliveryCodexPhaseTracker(
               job,
               checkout.checkout,
               request.workItemId,
               localDeliveryEnvironment(config),
             )
+          }
+          if (executorStage && executorStage !== 'connectivity' && executorStage !== 'codex') {
+            stopPhaseTracker?.()
+            stopPhaseTracker = undefined
           }
           const phase = line.match(/LOCAL_DELIVERY_PHASE:(analysis|ldd|coding)/)?.[1] as
             | DeliveryCodexPhase

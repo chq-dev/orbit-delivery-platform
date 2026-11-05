@@ -62,15 +62,26 @@ function activityLabel(value?: string): string {
   return `${Math.floor(seconds / 3_600)} 小时前`
 }
 
-function elapsedLabel(value?: string): string {
+function elapsedLabel(value?: string, finishedAt?: string): string {
   if (!value) return '未知'
   const timestamp = Date.parse(value)
   if (!Number.isFinite(timestamp)) return '未知'
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000))
+  const finishedTimestamp = finishedAt ? Date.parse(finishedAt) : Date.now()
+  const seconds = Math.max(
+    0,
+    Math.round(((Number.isFinite(finishedTimestamp) ? finishedTimestamp : Date.now()) - timestamp) / 1_000),
+  )
   if (seconds < 60) return `${seconds} 秒`
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes} 分钟`
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`
+}
+
+function stepDurationLabel(
+  step: NonNullable<LocalDeliveryJob['steps']>[number],
+): string {
+  if (!step.startedAt) return step.status === 'running' ? '执行中' : '未开始'
+  return elapsedLabel(step.startedAt, step.finishedAt)
 }
 
 function ageSeconds(value?: string): number | undefined {
@@ -854,11 +865,13 @@ export function DeliveryDialog({
                   </span>
                 )}
               </div>
-              {effectiveDeliveryJob?.status === 'running' && (
+              {effectiveDeliveryJob && (
                 <div className="delivery-progress-metrics">
                   <div>
-                    <span>已运行</span>
-                    <strong>{elapsedLabel(effectiveDeliveryJob.startedAt)}</strong>
+                    <span>{effectiveDeliveryJob.status === 'running' ? '已运行' : '总耗时'}</span>
+                    <strong>
+                      {elapsedLabel(effectiveDeliveryJob.startedAt, effectiveDeliveryJob.finishedAt)}
+                    </strong>
                   </div>
                   <div>
                     <span>最近心跳</span>
@@ -871,16 +884,22 @@ export function DeliveryDialog({
                     <strong className={processExited ? 'warning' : ''}>
                       {processExited
                         ? '已退出'
-                        : effectiveDeliveryJob.processAlive
-                          ? `存活${effectiveDeliveryJob.processId ? ` #${effectiveDeliveryJob.processId}` : ''}`
-                          : '等待上报'}
+                        : effectiveDeliveryJob.status !== 'running'
+                          ? effectiveDeliveryJob.status === 'succeeded'
+                            ? '已完成'
+                            : '已结束'
+                          : effectiveDeliveryJob.processAlive
+                            ? `存活${effectiveDeliveryJob.processId ? ` #${effectiveDeliveryJob.processId}` : ''}`
+                            : '等待上报'}
                     </strong>
                   </div>
                   <div>
                     <span>代码变更</span>
                     <strong>
                       {effectiveDeliveryJob.changedFileCount === undefined
-                        ? '等待检测'
+                        ? effectiveDeliveryJob.status === 'running'
+                          ? '等待检测'
+                          : '未采集'
                         : `${effectiveDeliveryJob.changedFileCount} 个文件`}
                     </strong>
                   </div>
@@ -961,7 +980,12 @@ export function DeliveryDialog({
                   <div className={`delivery-progress-log ${step.status}`} key={step.key}>
                     <span className="delivery-progress-log-dot" />
                     <strong>{step.name}</strong>
-                    <span>{step.log ?? step.description}</span>
+                    <span className="delivery-progress-log-copy">
+                      {step.log ?? step.description}
+                    </span>
+                    <span className="delivery-progress-log-duration">
+                      {stepDurationLabel(step)}
+                    </span>
                   </div>
                 ))}
                 {effectiveDeliveryError && (
