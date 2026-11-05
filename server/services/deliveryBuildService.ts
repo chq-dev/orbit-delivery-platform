@@ -1,5 +1,6 @@
 import type { AppDatabase } from '../db/database.js'
-import { notFound } from '../domain/errors.js'
+import { notFound, unprocessable } from '../domain/errors.js'
+import { describeFetchError } from '../domain/network.js'
 import { requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
 import { listAccounts } from './accountService.js'
@@ -17,6 +18,20 @@ export interface DeliveryBuildOutcome {
   triggered: boolean
   message: string
   build?: BuildTriggerResult
+  error?: string
+}
+
+export function deliveryBuildFailureOutcome(
+  error: unknown,
+  options: { pushed?: boolean } = {},
+): DeliveryBuildOutcome {
+  const detail = describeFetchError(error)
+  return {
+    configured: false,
+    triggered: false,
+    message: `${options.pushed ? '代码已提交并推送成功，但' : ''}触发 Jenkins 内部编译失败：${detail}`,
+    error: detail,
+  }
 }
 
 export async function triggerDeliveryBuild(
@@ -29,17 +44,34 @@ export async function triggerDeliveryBuild(
 
   const workItem = db.prepare('SELECT id FROM work_items WHERE id = ?').get(workItemId)
   if (!workItem) throw notFound('工作项')
-  const repository = db.prepare('SELECT id FROM repositories WHERE id = ?').get(repoId)
+  const repository = db
+    .prepare('SELECT id, build_account_id FROM repositories WHERE id = ?')
+    .get(repoId) as { id: string; build_account_id: string } | undefined
   if (!repository) throw notFound('代码仓库')
 
-  const account = listAccounts(db).find(
-    (item) => item.platform === 'build' && Boolean(item.serviceUrl),
-  )
+  const configuredAccount = repository.build_account_id
+    ? listAccounts(db).find((item) => item.id === repository.build_account_id)
+    : undefined
+  if (repository.build_account_id && !configuredAccount) {
+    throw unprocessable('项目绑定的编译系统账号不存在，请重新配置代码仓库的编译系统')
+  }
+  if (configuredAccount && configuredAccount.platform !== 'build') {
+    throw unprocessable('项目绑定的账号不是编译系统账号，请重新配置代码仓库的编译系统')
+  }
+  const account = configuredAccount ??
+    listAccounts(db).find((item) => item.platform === 'build' && Boolean(item.serviceUrl))
   if (!account) {
     return {
       configured: false,
       triggered: false,
       message: '未配置带 Jenkins 服务地址的编译系统账号，编译阶段保持未执行',
+    }
+  }
+  if (!account.serviceUrl) {
+    return {
+      configured: false,
+      triggered: false,
+      message: `编译系统账号 ${account.label} 尚未配置 Jenkins 服务地址，编译阶段保持未执行`,
     }
   }
 

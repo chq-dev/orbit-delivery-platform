@@ -20,6 +20,8 @@ export interface Repository {
   url: string
   branch: string
   localPath: string
+  buildEnabled: boolean
+  buildAccountId: string
   language: string
   accountId: string
   lastSync: string

@@ -49,6 +49,8 @@ export interface RepositoryInput {
   url: string
   branch: string
   localPath?: string
+  buildEnabled?: boolean
+  buildAccountId?: string
   language: string
   accountId: string
 }
@@ -56,6 +58,8 @@ export interface RepositoryInput {
 export interface RepositorySettingsInput {
   branch?: string
   localPath?: string
+  buildEnabled?: boolean
+  buildAccountId?: string
 }
 
 export interface AccountInput {

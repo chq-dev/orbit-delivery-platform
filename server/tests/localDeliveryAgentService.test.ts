@@ -23,11 +23,16 @@ const request = {
   repoId: 'repo-1',
   autoCommit: true,
   pushAfterAcceptance: true,
+  runBuild: true,
   autoClose: true,
 }
 
 test('一键交付请求只接受受控参数，不允许浏览器下发本地路径', () => {
   assert.deepEqual(parseLocalDeliveryAgentRequest(request), request)
+  assert.equal(
+    parseLocalDeliveryAgentRequest({ ...request, runBuild: false }).runBuild,
+    false,
+  )
   assert.throws(
     () =>
       parseLocalDeliveryAgentRequest({
@@ -159,6 +164,7 @@ test('一键交付命令通过 argv 传递并自动授权推送确认', () => {
       '--run',
       '--push',
       '--yes',
+      '--build',
       '--close',
     ],
   )
@@ -176,6 +182,16 @@ test('一键交付命令通过 argv 传递并自动授权推送确认', () => {
   assert.equal(localOnly.includes('--push'), false)
   assert.equal(localOnly.includes('--yes'), false)
   assert.equal(localOnly.includes('--close'), false)
+
+  const withoutBuild = buildLocalDeliveryCommand({
+    platformBaseUrl: 'http://8.145.45.84:8787',
+    ...request,
+    runBuild: false,
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    branch: 'dev-harvey',
+  })
+  assert.equal(withoutBuild.includes('--no-build'), true)
+  assert.equal(withoutBuild.includes('--build'), false)
 })
 
 test('Codex 参数用 -- 隔离图片参数与提示词，避免提示词被当作图片吞掉', () => {

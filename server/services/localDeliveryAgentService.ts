@@ -114,6 +114,7 @@ export interface LocalDeliveryAgentRequest {
   repoId: string
   autoCommit: boolean
   pushAfterAcceptance: boolean
+  runBuild: boolean
   autoClose: boolean
 }
 
@@ -155,6 +156,7 @@ export interface LocalDeliveryCommandInput {
   repoId: string
   autoCommit: boolean
   pushAfterAcceptance: boolean
+  runBuild: boolean
   autoClose: boolean
   localPath: string
   branch: string
@@ -174,6 +176,7 @@ const REQUEST_KEYS = new Set([
   'repoId',
   'autoCommit',
   'pushAfterAcceptance',
+  'runBuild',
   'autoClose',
 ])
 
@@ -217,6 +220,7 @@ export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAge
     repoId: requiredIdentifier(input.repoId, '代码仓库'),
     autoCommit,
     pushAfterAcceptance,
+    runBuild: booleanOption(input.runBuild, '系统编译', true),
     autoClose: booleanOption(input.autoClose, '自动关闭缺陷', false),
   }
 }
@@ -280,7 +284,10 @@ export function buildLocalDeliveryCommand(input: LocalDeliveryCommandInput): str
     '--run',
   ]
   if (!input.autoCommit) args.push('--no-commit')
-  else if (input.pushAfterAcceptance) args.push('--push', '--yes')
+  else if (input.pushAfterAcceptance) {
+    args.push('--push', '--yes')
+    args.push(input.runBuild ? '--build' : '--no-build')
+  }
   if (input.autoClose) args.push('--close')
   return args
 }

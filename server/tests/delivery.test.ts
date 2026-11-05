@@ -9,7 +9,12 @@ import { createDatabase, type AppDatabase } from '../db/database.js'
 import { SCHEMA_VERSION } from '../db/schema.js'
 import { AppError } from '../domain/errors.js'
 import { CredentialVault } from '../security/vault.js'
-import { createAccount, listAccounts } from '../services/accountService.js'
+import {
+  createAccount,
+  deleteAccount,
+  listAccounts,
+  updateAccount,
+} from '../services/accountService.js'
 import {
   connectFeishu,
   getFeishuStatus,
@@ -165,6 +170,21 @@ test('版本 18 数据库升级后会添加本机交付关联列和唯一索引'
   upgraded.close()
 })
 
+test('版本 19 数据库升级后会添加仓库系统编译配置列', () => {
+  const filename = join(tempDir, 'upgrade-v19-build-config.db')
+  const oldDb = createDatabase({ filename })
+  oldDb.exec(
+    'ALTER TABLE repositories DROP COLUMN build_enabled; ALTER TABLE repositories DROP COLUMN build_account_id; PRAGMA user_version = 19;',
+  )
+  oldDb.close()
+
+  const upgraded = createDatabase({ filename })
+  const columns = upgraded.pragma('table_info(repositories)') as { name: string }[]
+  assert.equal(columns.some((column) => column.name === 'build_enabled'), true)
+  assert.equal(columns.some((column) => column.name === 'build_account_id'), true)
+  upgraded.close()
+})
+
 test('账号凭据加密存储且列表不泄露密文', () => {
   const account = createAccount(db, vault, {
     platform: 'git',
@@ -258,6 +278,59 @@ test('仓库分支与本地路径可修改并同步到关联工作项', () => {
   assert.equal(withClientPath.localPath, clientPath)
 
   updateRepositorySettings(db, repositoryId, { branch: 'develop', localPath: '' })
+})
+
+test('仓库可配置是否系统编译并绑定项目专属编译系统', () => {
+  const firstBuildAccount = createAccount(db, vault, {
+    platform: 'build',
+    username: 'build-project-a',
+    password: 'build-secret-a',
+    label: '项目 A 编译',
+    serviceUrl: 'https://jenkins.example.com/job/PROJECT_A/',
+  })
+  const secondBuildAccount = createAccount(db, vault, {
+    platform: 'build',
+    username: 'build-project-b',
+    password: 'build-secret-b',
+    label: '项目 B 编译',
+    serviceUrl: 'https://jenkins.example.com/job/PROJECT_B/',
+  })
+  const repository = createRepository(db, {
+    name: 'project-a',
+    url: 'https://git.example.com/project/a.git',
+    branch: 'develop',
+    language: 'TypeScript',
+    accountId,
+    buildEnabled: true,
+    buildAccountId: firstBuildAccount.id,
+  })
+
+  assert.equal(repository.buildEnabled, true)
+  assert.equal(repository.buildAccountId, firstBuildAccount.id)
+
+  const updated = updateRepositorySettings(db, repository.id, {
+    buildEnabled: false,
+    buildAccountId: secondBuildAccount.id,
+  })
+  assert.equal(updated.buildEnabled, false)
+  assert.equal(updated.buildAccountId, secondBuildAccount.id)
+
+  assert.throws(
+    () => updateRepositorySettings(db, repository.id, { buildAccountId: accountId }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 409,
+  )
+  assert.throws(
+    () => updateRepositorySettings(db, repository.id, { buildAccountId: 'acc-missing' }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 404,
+  )
+  assert.throws(
+    () => deleteAccount(db, secondBuildAccount.id),
+    (error: unknown) => error instanceof AppError && error.statusCode === 409,
+  )
+  assert.throws(
+    () => updateAccount(db, vault, secondBuildAccount.id, { platform: 'git' }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 409,
+  )
 })
 
 test('缺陷交付完成九个阶段并自动关闭、归档三类报告', () => {
@@ -424,6 +497,51 @@ test('客户端本地交付结果可回写平台并更新工作项', () => {
   assert.equal(run.stages.slice(0, 5).every((stage) => stage.status === 'success'), true)
   assert.equal(run.stages.slice(5).every((stage) => stage.status === 'pending'), true)
   assert.match(run.stages[4].log ?? '', /已推送至 origin\/develop/)
+  assert.equal(getWorkItem(db, item.id).status, '已交付')
+})
+
+test('推送成功但触发编译失败时仍记录交付成功与推送证据', () => {
+  const item = createWorkItem(db, {
+    type: 'defect',
+    title: '推送成功编译告警',
+    description: '验证编译触发失败不会覆盖已完成的提交推送结果',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  const commit = '111111122222222333333334444444455555555'
+  const run = recordLocalDelivery(db, {
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'master-labeld-harvey',
+    localPath: '/Users/chenhuaqu/ryapp/ryapp',
+    commit,
+    pushed: true,
+    summary: '代码已推送，编译触发失败',
+    stageResults: [
+      { index: 0, status: 'success', log: '真实完成需求分析' },
+      { index: 1, status: 'success', log: '真实生成业务 LDD' },
+      { index: 2, status: 'success', log: '真实修改代码' },
+      { index: 3, status: 'success', log: '真实完成集成验证' },
+      {
+        index: 4,
+        status: 'success',
+        log: `已创建本地提交 ${commit}，已推送至 origin/master-labeld-harvey`,
+      },
+      {
+        index: 5,
+        status: 'pending',
+        log: '代码已提交并推送成功，但触发 Jenkins 内部编译失败：fetch failed；本次内部编译未触发',
+      },
+    ],
+  })
+
+  assert.equal(run.status, 'success')
+  assert.equal(run.commit, commit)
+  assert.equal(run.stages[4].status, 'success')
+  assert.match(run.stages[4].log ?? '', /已推送至 origin\/master-labeld-harvey/)
+  assert.equal(run.stages[5].status, 'pending')
+  assert.match(run.stages[5].log ?? '', /代码已提交并推送成功.*Jenkins.*fetch failed/)
   assert.equal(getWorkItem(db, item.id).status, '已交付')
 })
 

@@ -24,6 +24,8 @@ test('交付提示词包含工作项配置的设计稿或设计说明', () => {
     url: 'http://cloudgit.rj.link/sme/sme-main.git',
     branch: 'dev-harvey',
     localPath: '/Users/chenhuaqu/sme/sme-main',
+    buildEnabled: true,
+    buildAccountId: '',
     language: 'Vue 3 + Lua',
     accountId: 'account-1',
     lastSync: '刚刚',

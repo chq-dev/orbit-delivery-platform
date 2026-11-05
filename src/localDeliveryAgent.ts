@@ -24,6 +24,7 @@ export interface LocalDeliveryStartInput {
   repoId: string
   autoCommit: boolean
   pushAfterAcceptance: boolean
+  runBuild: boolean
   autoClose: boolean
 }
 

@@ -45,6 +45,8 @@ export function Repositories({
   const [name, setName] = useState('')
   const [branch, setBranch] = useState('develop')
   const [localPath, setLocalPath] = useState('')
+  const [buildEnabled, setBuildEnabled] = useState(true)
+  const [buildAccountId, setBuildAccountId] = useState('')
   const [language, setLanguage] = useState('Vue 3 + Lua')
   const [accountId, setAccountId] = useState(
     accounts.find((account) => account.platform === 'git')?.id ?? '',
@@ -52,9 +54,14 @@ export function Repositories({
   const [branchRepo, setBranchRepo] = useState<Repository | null>(null)
   const [branchDraft, setBranchDraft] = useState('')
   const [localPathDraft, setLocalPathDraft] = useState('')
+  const [buildEnabledDraft, setBuildEnabledDraft] = useState(true)
+  const [buildAccountDraft, setBuildAccountDraft] = useState('')
   const [branchSaving, setBranchSaving] = useState(false)
 
   const gitAccounts = accounts.filter((account) => account.platform === 'git')
+  const buildAccounts = accounts.filter(
+    (account) => account.platform === 'build' && Boolean(account.serviceUrl),
+  )
   const filtered = useMemo(
     () =>
       repositories.filter((repo) => {
@@ -89,6 +96,8 @@ export function Repositories({
         url: url.trim(),
         branch: branch.trim(),
         localPath: localPath.trim(),
+        buildEnabled,
+        buildAccountId,
         language,
         accountId,
       })
@@ -97,6 +106,8 @@ export function Repositories({
       setName('')
       setBranch('develop')
       setLocalPath('')
+      setBuildEnabled(true)
+      setBuildAccountId('')
     } catch {
       // The data provider already reports the API error as a toast.
     }
@@ -115,6 +126,8 @@ export function Repositories({
     setBranchRepo(repo)
     setBranchDraft(repo.branch)
     setLocalPathDraft(repo.localPath)
+    setBuildEnabledDraft(repo.buildEnabled)
+    setBuildAccountDraft(repo.buildAccountId)
   }
 
   const submitSettings = async () => {
@@ -124,6 +137,8 @@ export function Repositories({
       await updateRepositorySettings(branchRepo.id, {
         branch: branchDraft.trim(),
         localPath: localPathDraft.trim(),
+        buildEnabled: buildEnabledDraft,
+        buildAccountId: buildAccountDraft,
       })
       setBranchRepo(null)
     } catch {
@@ -227,6 +242,7 @@ export function Repositories({
       <div className="repo-grid">
         {filtered.map((repo, index) => {
           const account = accounts.find((entry) => entry.id === repo.accountId)
+          const buildAccount = accounts.find((entry) => entry.id === repo.buildAccountId)
           const repoRuns = pipelines.filter((run) => run.repoId === repo.id)
           const latestRun = repoRuns[0]
           return (
@@ -285,12 +301,19 @@ export function Repositories({
                   <strong>{account?.username ?? '未绑定'}</strong>
                 </div>
                 <div>
-                  <small>最新版本</small>
-                  <strong>{repo.latestVersion}</strong>
+                  <small>系统编译</small>
+                  <strong>
+                    {repo.buildEnabled
+                      ? `启用 · ${
+                          buildAccount?.label ??
+                          (buildAccounts.length > 0 ? '默认编译账号' : '未配置编译账号')
+                        }`
+                      : '未启用'}
+                  </strong>
                 </div>
                 <div>
-                  <small>最近同步</small>
-                  <strong>{repo.lastSync}</strong>
+                  <small>最新版本</small>
+                  <strong>{repo.latestVersion}</strong>
                 </div>
               </div>
 
@@ -321,7 +344,7 @@ export function Repositories({
               </div>
 
               <div className="repo-card-footer">
-                <button className="btn btn-quiet" onClick={() => onNavigate('accounts')}>
+                <button className="btn btn-quiet" onClick={() => openSettingsModal(repo)}>
                   <Settings2 size={15} /> 配置
                 </button>
                 <button className="btn btn-soft-primary" onClick={() => openDelivery(repo)}>
@@ -349,7 +372,7 @@ export function Repositories({
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         title="接入 Git 仓库"
-        subtitle="配置仓库地址、目标分支、客户端代码路径与认证账号"
+        subtitle="配置仓库地址、目标分支、客户端代码路径、认证账号与编译系统"
         footer={
           <>
             <span className="modal-footer-hint">
@@ -414,6 +437,35 @@ export function Repositories({
             />
           </div>
         </Field>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={buildEnabled}
+            onChange={(event) => setBuildEnabled(event.target.checked)}
+          />
+          <span className="custom-check" />
+          <span>
+            <strong>推送后执行系统编译</strong>
+            <small>关闭后本仓库的交付不会触发 Jenkins 或其他编译系统</small>
+          </span>
+        </label>
+        <Field
+          label="编译系统账号"
+          hint="不同项目可绑定不同的 Jenkins 任务；未指定时使用带服务地址的默认编译账号"
+        >
+          <select
+            value={buildAccountId}
+            onChange={(event) => setBuildAccountId(event.target.value)}
+            disabled={!buildEnabled || buildAccounts.length === 0}
+          >
+            <option value="">未指定（使用默认编译账号）</option>
+            {buildAccounts.map((buildAccount) => (
+              <option key={buildAccount.id} value={buildAccount.id}>
+                {buildAccount.label} · {buildAccount.serviceUrl}
+              </option>
+            ))}
+          </select>
+        </Field>
         <div className="field-row">
           <Field label="主要语言">
             <select value={language} onChange={(event) => setLanguage(event.target.value)}>
@@ -455,7 +507,7 @@ export function Repositories({
         footer={
           <>
             <span className="modal-footer-hint">
-              <CheckCircle2 size={15} /> 修改分支会同步关联工作项；客户端路径用于真实提交与验收后推送
+              <CheckCircle2 size={15} /> 修改分支会同步关联工作项；客户端路径与编译配置用于本机交付
             </span>
             <div className="modal-footer-actions">
               <button className="btn btn-secondary" onClick={() => setBranchRepo(null)}>
@@ -505,6 +557,35 @@ export function Repositories({
               placeholder="/Users/name/sme/sme-main"
             />
           </div>
+        </Field>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={buildEnabledDraft}
+            onChange={(event) => setBuildEnabledDraft(event.target.checked)}
+          />
+          <span className="custom-check" />
+          <span>
+            <strong>推送后执行系统编译</strong>
+            <small>这是本项目的默认选项，发起交付时仍可单独调整</small>
+          </span>
+        </label>
+        <Field
+          label="编译系统账号"
+          hint="选择该项目对应的 Jenkins 任务账号；留空时使用默认编译账号"
+        >
+          <select
+            value={buildAccountDraft}
+            onChange={(event) => setBuildAccountDraft(event.target.value)}
+            disabled={!buildEnabledDraft || buildAccounts.length === 0}
+          >
+            <option value="">未指定（使用默认编译账号）</option>
+            {buildAccounts.map((buildAccount) => (
+              <option key={buildAccount.id} value={buildAccount.id}>
+                {buildAccount.label} · {buildAccount.serviceUrl}
+              </option>
+            ))}
+          </select>
         </Field>
       </Modal>
 

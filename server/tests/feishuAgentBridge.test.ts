@@ -368,6 +368,7 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
       repoId: 'repo-1',
       autoCommit: true,
       pushAfterAcceptance: false,
+      runBuild: true,
       autoClose: false,
     })
 

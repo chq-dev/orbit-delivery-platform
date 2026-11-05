@@ -226,6 +226,16 @@ export function updateAccount(
     .prepare('SELECT id FROM accounts WHERE platform = ? AND username = ? AND id <> ?')
     .get(platform, username, id) as { id: string } | undefined
   if (duplicate) throw conflict('该平台账号已绑定，请勿重复添加')
+  if (platform !== 'build') {
+    const buildRepository = db
+      .prepare('SELECT name FROM repositories WHERE build_account_id = ? LIMIT 1')
+      .get(id) as { name: string } | undefined
+    if (buildRepository) {
+      throw conflict(
+        `账号正在作为仓库「${buildRepository.name}」的编译系统，不能改为其他平台`,
+      )
+    }
+  }
 
   const encrypted = password
     ? vault.encrypt(password)
@@ -274,6 +284,14 @@ export function deleteAccount(db: AppDatabase, id: string): void {
     .get(id) as { id: string; name: string } | undefined
   if (repository) {
     throw conflict(`账号正在为仓库「${repository.name}」提供凭据，请先调整仓库账号后再删除`)
+  }
+  const buildRepository = db
+    .prepare('SELECT id, name FROM repositories WHERE build_account_id = ? LIMIT 1')
+    .get(id) as { id: string; name: string } | undefined
+  if (buildRepository) {
+    throw conflict(
+      `账号正在作为仓库「${buildRepository.name}」的编译系统，请先调整仓库编译配置后再删除`,
+    )
   }
   db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
 }

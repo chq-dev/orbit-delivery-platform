@@ -286,6 +286,7 @@ export function DeliveryDialog({
   const {
     workItems,
     repositories,
+    accounts,
     notify,
     reload,
     refreshWorkItems,
@@ -298,6 +299,7 @@ export function DeliveryDialog({
   const [repoId, setRepoId] = useState('')
   const [autoCommit, setAutoCommit] = useState(true)
   const [pushAfterAcceptance, setPushAfterAcceptance] = useState(true)
+  const [runBuild, setRunBuild] = useState(true)
   const [autoClose, setAutoClose] = useState(true)
   const [requirementBreakdown, setRequirementBreakdown] = useState('')
   const [designReference, setDesignReference] = useState('')
@@ -372,6 +374,15 @@ export function DeliveryDialog({
   )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
+  const buildAccounts = accounts.filter(
+    (account) => account.platform === 'build' && Boolean(account.serviceUrl),
+  )
+  const selectedBuildAccount =
+    accounts.find(
+      (account) =>
+        account.id === selectedRepo?.buildAccountId && account.platform === 'build',
+    ) ?? buildAccounts[0]
+  const buildAvailable = Boolean(selectedBuildAccount?.serviceUrl)
   const selectedClient = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
   )
@@ -410,6 +421,8 @@ export function DeliveryDialog({
     setWorkItemId(preferred?.id ?? '')
     const preferredRepoId = preferred?.repoId ?? repositories[0]?.id ?? ''
     setRepoId(preferredRepoId)
+    const preferredRepo = repositories.find((repo) => repo.id === preferredRepoId)
+    setRunBuild(preferredRepo?.buildEnabled ?? true)
     setAutoCommit(true)
     setPushAfterAcceptance(true)
     setAutoClose(true)
@@ -531,6 +544,8 @@ export function DeliveryDialog({
 
   const handleRepoChange = (id: string) => {
     setRepoId(id)
+    const repository = repositories.find((repo) => repo.id === id)
+    setRunBuild(repository?.buildEnabled ?? true)
     setDeliveryJob(null)
     setDeliveryError('')
   }
@@ -654,6 +669,7 @@ export function DeliveryDialog({
         repoId,
         autoCommit,
         pushAfterAcceptance,
+        runBuild: runBuild && pushAfterAcceptance && autoCommit && buildAvailable,
         autoClose,
       })
       setDeliveryJob(pending)
@@ -663,6 +679,7 @@ export function DeliveryDialog({
           repoId,
           autoCommit,
           pushAfterAcceptance,
+          runBuild: runBuild && pushAfterAcceptance && autoCommit && buildAvailable,
           autoClose,
         },
         clientId,
@@ -781,7 +798,7 @@ export function DeliveryDialog({
       closeOnBackdrop={false}
       closeOnEscape
       title="启动一键交付"
-      subtitle="在本机真实执行需求分析、业务 LDD、编码、集成验证、提交与推送；推送后触发已配置的 Jenkins 内部编译，升级与测试仍仅在真实证据时完成"
+      subtitle="在本机真实执行需求分析、业务 LDD、编码、集成验证、提交与推送；推送后按项目配置决定是否触发系统编译，升级与测试仍仅在真实证据时完成"
       size="lg"
       footer={
         <>
@@ -1289,7 +1306,24 @@ export function DeliveryDialog({
               <span className="custom-check" />
               <span>
                 <strong>验收通过后推送</strong>
-                <small>勾选即授权；推送成功后由平台触发已配置的 Jenkins 内部编译</small>
+                <small>勾选即授权；推送成功后按本次选择决定是否触发系统编译</small>
+              </span>
+            </label>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={runBuild && pushAfterAcceptance && buildAvailable}
+                disabled={!pushAfterAcceptance || !buildAvailable}
+                onChange={(event) => setRunBuild(event.target.checked)}
+              />
+              <span className="custom-check" />
+              <span>
+                <strong>执行系统编译</strong>
+                <small>
+                  {selectedBuildAccount
+                    ? `${selectedBuildAccount.label} · ${selectedBuildAccount.serviceUrl}；关闭后本次交付不触发编译`
+                    : '当前项目未绑定带服务地址的编译系统，请先到代码仓库配置'}
+                </small>
               </span>
             </label>
             <label className="check-row">

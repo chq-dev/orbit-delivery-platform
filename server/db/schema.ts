@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 19
+export const SCHEMA_VERSION = 20
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS repositories (
   url TEXT NOT NULL UNIQUE,
   branch TEXT NOT NULL,
   local_path TEXT NOT NULL DEFAULT '',
+  build_enabled INTEGER NOT NULL DEFAULT 1 CHECK (build_enabled IN (0, 1)),
+  build_account_id TEXT NOT NULL DEFAULT '',
   language TEXT NOT NULL,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
   last_sync TEXT NOT NULL,

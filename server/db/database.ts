@@ -27,6 +27,13 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
     db.transaction(() => {
       db.exec(schemaSql)
       ensureColumn(db, 'repositories', 'local_path', "TEXT NOT NULL DEFAULT ''")
+      ensureColumn(
+        db,
+        'repositories',
+        'build_enabled',
+        'INTEGER NOT NULL DEFAULT 1 CHECK (build_enabled IN (0, 1))',
+      )
+      ensureColumn(db, 'repositories', 'build_account_id', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'pipelines', 'local_path', "TEXT NOT NULL DEFAULT ''")
       ensureColumn(db, 'pipelines', 'delivery_job_id', 'TEXT')
       ensureColumn(db, 'accounts', 'service_url', "TEXT NOT NULL DEFAULT ''")

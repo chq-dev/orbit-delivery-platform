@@ -24,6 +24,7 @@ import {
 } from '../services/meegleMcpService.js'
 import { buildLocalSkillInstruction } from '../../src/skillInstruction'
 import { requirementDeliveryContextIssue } from '../../src/deliveryContext'
+import { describeFetchError } from '../domain/network.js'
 import {
   deliveryCodeFiles,
   normalizeDeliveryPath,
@@ -45,7 +46,10 @@ import {
   resolveLocalDeliveryBranch,
   supportsLocalDeliveryContract,
 } from '../services/localDeliveryAgentService.js'
-import type { DeliveryBuildOutcome } from '../services/deliveryBuildService.js'
+import {
+  deliveryBuildFailureOutcome,
+  type DeliveryBuildOutcome,
+} from '../services/deliveryBuildService.js'
 import type { Repository, WorkItem, WorkItemScreenshot } from '../../src/types'
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -102,6 +106,7 @@ interface LocalDeliveryArgs {
   run: boolean
   commitOnly: boolean
   push: boolean
+  build: boolean
   noCommit: boolean
   close: boolean
   yes: boolean
@@ -167,6 +172,8 @@ Options:
   --commit-only        Skip coding Codex and resume /aicr-commit on existing changes
   --no-commit          Leave validated changes uncommitted for human review
   --push               Push the resulting commit after Codex succeeds (requires confirmation)
+  --build              Trigger the build system configured for the repository (default)
+  --no-build           Skip system build for this delivery
   --close              Mark a local defect closed after delivery is recorded
   --yes                Skip the --push confirmation
   --help               Show this help
@@ -185,6 +192,7 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
     run: false,
     commitOnly: false,
     push: false,
+    build: true,
     noCommit: false,
     close: false,
     yes: false,
@@ -210,6 +218,8 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
     }
     else if (flag === '--no-commit') args.noCommit = true
     else if (flag === '--push') args.push = true
+    else if (flag === '--build') args.build = true
+    else if (flag === '--no-build') args.build = false
     else if (flag === '--close') args.close = true
     else if (flag === '--yes') args.yes = true
     else if (flag === '--help' || flag === '-h') args.help = true
@@ -615,31 +625,36 @@ async function recordPlatformDelivery(
   stageResults: DeliveryStageResult[],
   reports: ReturnType<typeof deliveryReports>,
 ): Promise<unknown> {
-  const response = await fetch(`${api}/api/pipelines/local`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json',
-      ...platformHeaders(),
-    },
-    body: JSON.stringify({
-      ...(deliveryJobId() ? { deliveryJobId: deliveryJobId() } : {}),
-      outcome: 'success',
-      workItemId: item.id,
-      repoId: repository.id,
-      branch,
-      localPath: checkout,
-      commit,
-      autoClose: args.close && item.type === 'defect' && evidence.testReport,
-      pushed: args.push,
-      summary: args.push
-        ? `客户端本地交付完成，提交已推送至 origin/${branch}`
-        : '客户端本地交付完成，提交保留在本地',
-      stageResults,
-      reports,
-    }),
-    signal: AbortSignal.timeout(20_000),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${api}/api/pipelines/local`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...platformHeaders(),
+      },
+      body: JSON.stringify({
+        ...(deliveryJobId() ? { deliveryJobId: deliveryJobId() } : {}),
+        outcome: 'success',
+        workItemId: item.id,
+        repoId: repository.id,
+        branch,
+        localPath: checkout,
+        commit,
+        autoClose: args.close && item.type === 'defect' && evidence.testReport,
+        pushed: args.push,
+        summary: args.push
+          ? `客户端本地交付完成，提交已推送至 origin/${branch}`
+          : '客户端本地交付完成，提交保留在本地',
+        stageResults,
+        reports,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    })
+  } catch (error) {
+    throw new Error(`回写平台失败：${describeFetchError(error)}`)
+  }
   if (!response.ok) {
     const payload = await response.text().catch(() => '')
     throw new Error(`回写平台失败（HTTP ${response.status}）：${payload}`)
@@ -968,6 +983,7 @@ async function main(): Promise<void> {
       run: args.run,
       commitOnly: args.commitOnly,
       push: args.push,
+      build: args.build,
       autoCommit: !args.noCommit,
       close: args.close,
       codexTimeoutMs,
@@ -1122,13 +1138,30 @@ async function main(): Promise<void> {
       if (push.status !== 0) {
         throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)
       }
-      internalBuild = await requestDeliveryBuild(
-        args.api,
-        item.id,
-        repository.id,
-        process.env.ORBIT_AGENT_CLIENT_ID?.trim() || undefined,
-      )
+      const commitStage = stageResults.find((result) => result.index === 4)
+      if (commitStage) {
+        commitStage.log = `已创建本地提交 ${finalHead}，已推送至 origin/${actualBranch}`
+      }
       const buildStage = stageResults.find((result) => result.index === 5)
+      if (args.build) {
+        try {
+          internalBuild = await requestDeliveryBuild(
+            args.api,
+            item.id,
+            repository.id,
+            process.env.ORBIT_AGENT_CLIENT_ID?.trim() || undefined,
+          )
+        } catch (error) {
+          internalBuild = deliveryBuildFailureOutcome(error, { pushed: true })
+          console.warn(`LOCAL_DELIVERY_BUILD_WARNING: ${internalBuild.message}`)
+        }
+      } else {
+        internalBuild = {
+          configured: false,
+          triggered: false,
+          message: '本次交付未选择执行系统编译，编译阶段保持未执行',
+        }
+      }
       if (internalBuild.triggered && internalBuild.build) {
         evidence.buildReport = true
         if (buildStage) {
@@ -1138,7 +1171,10 @@ async function main(): Promise<void> {
           }`
         }
       } else if (buildStage && !evidence.buildReport) {
-        buildStage.log = internalBuild.message
+        buildStage.status = 'pending'
+        buildStage.log = internalBuild.error
+          ? `${internalBuild.message}；代码已提交并推送至 origin/${actualBranch}，本次内部编译未触发`
+          : internalBuild.message
       }
     } else {
       const buildStage = stageResults.find((result) => result.index === 5)
@@ -1177,6 +1213,7 @@ async function main(): Promise<void> {
       previousHead: checkout.head,
       commit: finalHead,
       pushed: args.push,
+      build: args.build,
       changedFiles: evidence.changedFiles,
       evidence: {
         designReport: evidence.designReport,

@@ -4,8 +4,11 @@ import { createDatabase } from '../db/database.js'
 import { AppError } from '../domain/errors.js'
 import { CredentialVault } from '../security/vault.js'
 import { createAccount } from '../services/accountService.js'
-import { triggerDeliveryBuild } from '../services/deliveryBuildService.js'
-import { createRepository } from '../services/repositoryService.js'
+import {
+  deliveryBuildFailureOutcome,
+  triggerDeliveryBuild,
+} from '../services/deliveryBuildService.js'
+import { createRepository, updateRepositorySettings } from '../services/repositoryService.js'
 import { createWorkItem } from '../services/workItemService.js'
 
 const originalFetch = globalThis.fetch
@@ -38,16 +41,17 @@ function fixture(withBuildAccount: boolean) {
     repoId: repository.id,
     owner: '测试员',
   })
+  let buildAccountId: string | undefined
   if (withBuildAccount) {
-    createAccount(db, vault, {
+    buildAccountId = createAccount(db, vault, {
       platform: 'build',
       username: 'jenkins.user',
       password: 'jenkins-token',
       label: 'Jenkins 编译账号',
       serviceUrl: 'https://jenkins.example.com/job/SME_DELIVERY/',
-    })
+    }).id
   }
-  return { db, vault, repository, workItem }
+  return { db, vault, repository, workItem, buildAccountId }
 }
 
 test('交付流程编译阶段复用内部编译并返回 Jenkins 队列', async () => {
@@ -74,7 +78,10 @@ test('交付流程编译阶段复用内部编译并返回 Jenkins 队列', async
     if (url.pathname === '/crumbIssuer/api/json') {
       return Response.json({ crumb: 'crumb', crumbRequestField: 'Jenkins-Crumb' })
     }
-    if (init?.method === 'POST' && url.pathname.endsWith('/buildWithParameters')) {
+    if (
+      init?.method === 'POST' &&
+      (url.pathname.endsWith('/buildWithParameters') || url.pathname.endsWith('/build'))
+    ) {
       return new Response(null, { status: 201, headers: { location: '/queue/item/99/' } })
     }
     return new Response('unexpected request', { status: 500 })
@@ -89,6 +96,58 @@ test('交付流程编译阶段复用内部编译并返回 Jenkins 队列', async
   assert.equal(result.build?.jobName, 'SME_DELIVERY')
   assert.equal(result.build?.queueUrl, 'https://jenkins.example.com/queue/item/99/')
   assert.match(result.message, /Jenkins 内部编译/)
+  db.close()
+})
+
+test('推送成功后触发编译失败只记录编译告警', () => {
+  const outcome = deliveryBuildFailureOutcome(new TypeError('fetch failed'), { pushed: true })
+  assert.equal(outcome.configured, false)
+  assert.equal(outcome.triggered, false)
+  assert.match(outcome.message, /^代码已提交并推送成功，但触发 Jenkins 内部编译失败/)
+  assert.match(outcome.message, /fetch failed/)
+  assert.equal(outcome.error, 'fetch failed')
+})
+
+test('不同项目按仓库绑定的编译系统触发对应 Jenkins 任务', async () => {
+  const { db, vault, repository, workItem } = fixture(true)
+  const projectBuildAccount = createAccount(db, vault, {
+    platform: 'build',
+    username: 'jenkins.project-b',
+    password: 'jenkins-token-b',
+    label: '项目 B 编译',
+    serviceUrl: 'https://jenkins.example.com/job/PROJECT_B/',
+  })
+  updateRepositorySettings(db, repository.id, { buildAccountId: projectBuildAccount.id })
+  let requestedJobPath = ''
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/crumbIssuer/api/json') {
+      return Response.json({ crumb: 'crumb', crumbRequestField: 'Jenkins-Crumb' })
+    }
+    if (url.pathname.endsWith('/api/json')) {
+      requestedJobPath = url.pathname
+      return Response.json({
+        name: 'PROJECT_B',
+        buildable: true,
+        property: [{ parameterDefinitions: [] }],
+      })
+    }
+    if (
+      init?.method === 'POST' &&
+      (url.pathname.endsWith('/buildWithParameters') || url.pathname.endsWith('/build'))
+    ) {
+      return new Response(null, { status: 201, headers: { location: '/queue/item/100/' } })
+    }
+    return new Response('unexpected request', { status: 500 })
+  }) as typeof fetch
+
+  const result = await triggerDeliveryBuild(db, vault, {
+    workItemId: workItem.id,
+    repoId: repository.id,
+  })
+  assert.equal(result.triggered, true)
+  assert.equal(result.build?.jobName, 'PROJECT_B')
+  assert.match(requestedJobPath, /\/job\/PROJECT_B\/api\/json$/)
   db.close()
 })
 
