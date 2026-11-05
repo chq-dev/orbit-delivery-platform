@@ -6215,6 +6215,7 @@ p {
 
 .stage-timeline-card,
 .run-info-card,
+.delivery-artifacts-card,
 .report-mini-card {
   padding: 17px 18px;
 }
@@ -6366,6 +6367,90 @@ p {
   color: #4346b8;
   border-color: #c9cbf6;
   background: #efefff;
+}
+
+.delivery-artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.delivery-artifact-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid #eceef4;
+  border-radius: 8px;
+  background: #fbfbfd;
+}
+
+.delivery-artifact-icon {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  place-items: center;
+  color: #5558ca;
+  border: 1px solid #e1e2fb;
+  border-radius: 7px;
+  background: #f4f4ff;
+}
+
+.delivery-artifact-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.delivery-artifact-copy strong {
+  overflow: hidden;
+  color: #363d53;
+  font-size: 8.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-artifact-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #8b93a5;
+  font-size: 7.2px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.delivery-artifact-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.delivery-artifact-actions .stage-artifact-link {
+  margin-top: 0;
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: #747b91;
+  border: 1px solid #e5e7ef;
+  border-radius: 5px;
+  background: #fff;
+  transition: 0.16s ease;
+}
+
+.icon-button:hover {
+  color: #5558ca;
+  border-color: #d5d6f8;
+  background: #f7f7ff;
 }
 
 .stage-timeline-line {

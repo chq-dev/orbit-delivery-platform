@@ -40,6 +40,13 @@ import {
   validateDeliveryCommit,
 } from '../services/localDeliveryCommitService.js'
 import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
+import { loadDeliveryFeishuContext } from '../services/deliveryFeishuContext.js'
+import {
+  cleanupGeneratedDeliveryFiles,
+  isolatePreexistingDeliveryChanges,
+  restorePreexistingDeliveryChanges,
+  type DeliveryWorktreeIsolation,
+} from '../services/localDeliveryWorkspace.js'
 import {
   buildCodexExecArgs,
   fetchJsonWithRetry,
@@ -154,6 +161,7 @@ interface DeliveryAttemptContext {
   reports?: ReturnType<typeof deliveryReports>
   commit?: string
   failureRecorded?: boolean
+  workspaceIsolation?: DeliveryWorktreeIsolation
 }
 
 function usage(): string {
@@ -367,17 +375,10 @@ function workTreeFiles(checkout: string): string[] {
   )]
 }
 
-function assertCleanDeliveryWorktree(checkout: string): void {
-  const pending = workTreeFiles(checkout).filter(
-    (file) => !file.startsWith('delivery-artifacts/'),
-  )
-  if (pending.length === 0) return
-  throw new Error(
-    `客户端工作区存在未提交变更，请先提交或清理后再执行交付：${pending.slice(0, 8).join(', ')}`,
-  )
-}
-
-function stageDeliveryCommitFiles(checkout: string, artifactDir: string): string[] {
+function stageDeliveryCommitFiles(
+  checkout: string,
+  artifactDir: string,
+): { stagedFiles: string[]; excludedFiles: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles'] } {
   const plan = planDeliveryCommitFiles(checkout, workTreeFiles(checkout))
   if (plan.allowedFiles.length === 0) {
     throw new Error(
@@ -441,7 +442,7 @@ function stageDeliveryCommitFiles(checkout: string, artifactDir: string): string
       plan.excludedFiles.length > 0 ? `，排除 ${plan.excludedFiles.length} 个受限文件` : ''
     }`,
   )
-  return stagedFiles
+  return { stagedFiles, excludedFiles: plan.excludedFiles }
 }
 
 function commitDeliveredChanges(input: {
@@ -451,7 +452,7 @@ function commitDeliveredChanges(input: {
   codexCommand: string
   mcpArgs: string[]
   artifactDir: string
-}): string {
+}): { head: string; excludedFiles: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles'] } {
   const expectedMessage = deliveryCommitMessageFor(input.item)
   const previousHead = requireGit(input.checkout, ['rev-parse', 'HEAD'], '读取提交前 HEAD')
   const lastMessagePath = join(input.artifactDir, 'codex-commit-last-message.md')
@@ -459,13 +460,13 @@ function commitDeliveredChanges(input: {
   if (clearStaleGitIndexLock(input.checkout)) {
     console.log('已清理陈旧的 Git 索引锁')
   }
-  const stagedFiles = stageDeliveryCommitFiles(input.checkout, input.artifactDir)
+  const staged = stageDeliveryCommitFiles(input.checkout, input.artifactDir)
   const prompt = buildDeliveryCommitPrompt({
     checkout: input.checkout,
     branch: input.branch,
     item: input.item,
     commitMessage: expectedMessage,
-    stagedFiles,
+    stagedFiles: staged.stagedFiles,
   })
   const result = spawnSync(
     input.codexCommand,
@@ -514,19 +515,53 @@ function commitDeliveredChanges(input: {
       message,
       files,
       expectedMessage,
-      allowedFiles: stagedFiles,
+      allowedFiles: staged.stagedFiles,
     })
   } catch (error) {
     throw new Error(
       `创建本地交付提交失败：${error instanceof Error ? error.message : String(error)}`,
     )
   }
-  return head
+  return { head, excludedFiles: staged.excludedFiles }
+}
+
+function restoreDeliveryWorkspace(
+  context: DeliveryAttemptContext,
+): { restored: boolean; warning?: string } {
+  const result = restorePreexistingDeliveryChanges(context.workspaceIsolation)
+  if (result.warning) {
+    console.warn(`LOCAL_DELIVERY_WORKSPACE_WARNING: ${result.warning}`)
+    if (context.artifactDir) {
+      try {
+        writeFileSync(
+          join(context.artifactDir, 'workspace-recovery.md'),
+          [
+            '# 客户端原有未提交代码恢复说明',
+            '',
+            result.warning,
+            '',
+            `Git stash：${context.workspaceIsolation?.stashHash ?? '未知'}`,
+            '',
+            '原有文件：',
+            ...(context.workspaceIsolation?.preexistingFiles ?? []).map((file) => `- ${file}`),
+            '',
+            '本次交付的代码提交与推送不受影响；请根据 Git stash 手工恢复与本次交付重叠的文件。',
+            '',
+          ].join('\n'),
+          'utf8',
+        )
+      } catch {
+        // Recovery reporting must not change the delivery outcome.
+      }
+    }
+  }
+  if (result.restored) console.log('已恢复交付前保存的客户端未提交代码')
+  return result
 }
 
 function readReportFile(path: string, title: string): DeliveryReportInput | undefined {
   if (!existsSync(path)) return undefined
-  const content = readFileSync(path, 'utf8').trim()
+  const content = readFileSync(path, 'utf8').trim().slice(0, 256 * 1024)
   if (!content) return undefined
   const summaryLine = content
     .split(/\r?\n/)
@@ -542,10 +577,34 @@ function readReportFile(path: string, title: string): DeliveryReportInput | unde
 function deliveryReports(artifactDir: string): {
   design?: DeliveryReportInput
   integration?: DeliveryReportInput
+  artifacts: Array<DeliveryReportInput & { kind: string }>
 } {
+  const optionalArtifact = (
+    kind: string,
+    title: string,
+    files: string[],
+  ): (DeliveryReportInput & { kind: string }) | undefined => {
+    for (const file of files) {
+      const report = readReportFile(join(artifactDir, file), title)
+      if (report) return { ...report, kind }
+    }
+    return undefined
+  }
+  const artifacts = [
+    optionalArtifact('test', '自动化测试报告', ['test-report.md']),
+    optionalArtifact('build', '编译报告', ['build-report.md', 'build.log']),
+    optionalArtifact('upgrade', '设备升级报告', ['upgrade-report.md', 'upgrade.log']),
+    optionalArtifact('staging', '交付提交暂存报告', ['commit-staging-report.md']),
+    optionalArtifact('feishu-context', '飞书缺陷上下文与截图清单', ['feishu-context.md']),
+    optionalArtifact('codex-summary', 'Codex 编码结果', ['codex-last-message.md']),
+    optionalArtifact('codex-log', 'Codex 编码日志', ['codex.log']),
+    optionalArtifact('aicr-log', 'AICR 提交日志', ['codex-commit.log']),
+    optionalArtifact('workspace-recovery', '客户端工作区恢复说明', ['workspace-recovery.md']),
+  ].filter((entry): entry is DeliveryReportInput & { kind: string } => Boolean(entry))
   return {
     design: readReportFile(join(artifactDir, 'design-report.md'), '开发设计报告'),
     integration: readReportFile(join(artifactDir, 'integration-report.md'), '集成报告'),
+    artifacts,
   }
 }
 
@@ -624,46 +683,55 @@ async function recordPlatformDelivery(
   evidence: DeliveryEvidence,
   stageResults: DeliveryStageResult[],
   reports: ReturnType<typeof deliveryReports>,
+  workspaceWarning?: string,
 ): Promise<unknown> {
-  let response: Response
-  try {
-    response = await fetch(`${api}/api/pipelines/local`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json',
-        ...platformHeaders(),
-      },
-      body: JSON.stringify({
-        ...(deliveryJobId() ? { deliveryJobId: deliveryJobId() } : {}),
-        outcome: 'success',
-        workItemId: item.id,
-        repoId: repository.id,
-        branch,
-        localPath: checkout,
-        commit,
-        autoClose: args.close && item.type === 'defect' && evidence.testReport,
-        pushed: args.push,
-        summary: args.push
-          ? `客户端本地交付完成，提交已推送至 origin/${branch}`
-          : '客户端本地交付完成，提交保留在本地',
-        stageResults,
-        reports,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    })
-  } catch (error) {
-    throw new Error(`回写平台失败：${describeFetchError(error)}`)
-  }
-  if (!response.ok) {
-    const payload = await response.text().catch(() => '')
-    throw new Error(`回写平台失败（HTTP ${response.status}）：${payload}`)
-  }
-  const payload = (await response.json().catch(() => null)) as {
+  let payload: {
     id?: unknown
     clientExecuted?: unknown
     stages?: unknown
   } | null
+  try {
+    payload = await fetchJsonWithRetry<{
+      id?: unknown
+      clientExecuted?: unknown
+      stages?: unknown
+    }>(`${api}/api/pipelines/local`, {
+      label: '回写平台交付结果',
+      attempts: 4,
+      timeoutMs: 20_000,
+      init: {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...platformHeaders(),
+        },
+        body: JSON.stringify({
+          ...(deliveryJobId() ? { deliveryJobId: deliveryJobId() } : {}),
+          outcome: 'success',
+          workItemId: item.id,
+          repoId: repository.id,
+          branch,
+          localPath: checkout,
+          commit,
+          autoClose: args.close && item.type === 'defect' && args.push,
+          pushed: args.push,
+          summary: `${
+            args.push
+              ? `客户端本地交付完成，提交已推送至 origin/${branch}`
+              : '客户端本地交付完成，提交保留在本地'
+          }${
+            args.close && item.type === 'defect' && args.push
+              ? '；飞书缺陷已进入关闭队列'
+              : ''
+          }${workspaceWarning ? `；${workspaceWarning}` : ''}`,
+          stageResults,
+          reports,
+        }),
+      },
+    })
+  } catch (error) {
+    throw new Error(`回写平台失败：${describeFetchError(error)}`)
+  }
   if (!payload || typeof payload.id !== 'string' || !payload.id) {
     throw new Error('平台未返回真实流水线记录，不能把本次交付标记为完成')
   }
@@ -848,6 +916,7 @@ function buildPrompt(
   branch: string,
   runDescription: string,
   screenshotPaths: string[],
+  feishuContextPath?: string,
 ): string {
   const phaseMarkerPath = join(localPath, 'delivery-artifacts', item.id, '.phase-current')
   return [
@@ -866,8 +935,15 @@ function buildPrompt(
     `Expected branch: ${branch}`,
     `Platform work item: ${item.id}`,
     runDescription,
+    feishuContextPath
+      ? `Feishu live work-item context was read from the source system and saved at ${feishuContextPath}. Read it before requirement analysis, including its description, comments, and screenshot paths.`
+      : '',
+    feishuContextPath
+      ? 'Do not claim screenshots or textual details are missing when feishu-context.md contains them. If a screenshot download failed, state the exact warning instead of inventing content.'
+      : '',
     `Work in three explicit phases: requirement analysis, business LDD, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. This file is progress telemetry only; never treat it as design or test evidence.`,
     'Phase 2 must generate or update the business LDD affected by this work item under the project LDD convention (for mode-switch work use web/docs/ldd/SME-模式切换-LDD.md). Record the LDD path and key decisions in design-report.md; do not invent an LDD that the code does not follow.',
+    'Before writing the LDD, extract every requirement detail, acceptance condition and unresolved item from feishu-context.md, including comments and screenshots. Resolve the unresolved items in the design and implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.',
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
     'Unit tests may be added or run as verification, but test files are not part of the delivery commit and must remain uncommitted.',
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
@@ -875,6 +951,9 @@ function buildPrompt(
     `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
     'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages when the task needs them.',
+    feishuContextPath
+      ? 'The Feishu defect description, comments and downloaded screenshots are authoritative design inputs for this delivery; inspect every attached image before editing.'
+      : '',
     'If the Codex session exposes a Meegle MCP server named "meegle", use it to query live requirement or defect details. The platform-provided work item remains authoritative for scope. MCP output is supporting input, not acceptance evidence; run the required checks before claiming success.',
   ].join('\n')
 }
@@ -903,6 +982,9 @@ async function main(): Promise<void> {
   if (args.push && !args.run) throw new Error('--push 必须与 --run 一起使用')
   if (args.push && args.noCommit) throw new Error('--push 不能与 --no-commit 同时使用')
   if (args.commitOnly && args.noCommit) throw new Error('--commit-only 不能与 --no-commit 同时使用')
+  if (args.close && !args.push) {
+    throw new Error('自动关闭飞书缺陷必须在提交后推送代码，请同时启用 --push')
+  }
   console.log('LOCAL_DELIVERY_STAGE:connectivity')
 
   const bootstrap = await fetchBootstrap(args.api)
@@ -952,7 +1034,18 @@ async function main(): Promise<void> {
     const artifactDir = join(checkout.checkout, 'delivery-artifacts', item.id)
     attempt.artifactDir = artifactDir
     mkdirSync(artifactDir, { recursive: true })
-    const screenshotPaths = materializeDeliveryScreenshots(artifactDir, context.screenshots)
+    const feishuContext = await loadDeliveryFeishuContext({
+      artifactDir,
+      externalId: item.externalId,
+      title: item.title,
+      description: item.description,
+    })
+    if (feishuContext.description) deliveryItem.description = feishuContext.description
+    for (const warning of feishuContext.warnings) console.warn(`提示：${warning}`)
+    const screenshotPaths = [
+      ...materializeDeliveryScreenshots(artifactDir, context.screenshots),
+      ...feishuContext.imagePaths,
+    ]
     const promptPath = join(artifactDir, 'codex-prompt.md')
     const runDescription = args.run
       ? 'Run the required code changes now; the launcher will not ask for the prompt again.'
@@ -964,6 +1057,7 @@ async function main(): Promise<void> {
       branch,
       runDescription,
       screenshotPaths,
+      feishuContext.contextPath,
     )
     writeFileSync(promptPath, `${prompt}\n`, 'utf8')
     const feishuMcp = resolveFeishuMcpRuntime()
@@ -980,6 +1074,7 @@ async function main(): Promise<void> {
       dirty: checkout.dirty,
       remote: checkout.remote || null,
       promptFile: promptPath,
+      feishuContextFile: feishuContext.contextPath,
       screenshotFiles: screenshotPaths,
       run: args.run,
       commitOnly: args.commitOnly,
@@ -999,7 +1094,17 @@ async function main(): Promise<void> {
       return
     }
 
-    if (!args.commitOnly) assertCleanDeliveryWorktree(checkout.checkout)
+    if (!args.commitOnly) {
+      attempt.workspaceIsolation = isolatePreexistingDeliveryChanges(
+        checkout.checkout,
+        item.id,
+      )
+      if (attempt.workspaceIsolation.active) {
+        console.log(
+          `已隔离客户端原有未提交变更 ${attempt.workspaceIsolation.preexistingFiles.length} 个，本次只交付 Codex 产生的改动`,
+        )
+      }
+    }
 
     const codexCommand = resolveCodexBinary()
     if (!codexCommand) throw new Error(codexBinaryError())
@@ -1108,7 +1213,7 @@ async function main(): Promise<void> {
       throw new Error(`${message}。平台已记录失败流水线 ${failure.id}`)
     }
 
-    const finalHead = commitDeliveredChanges({
+    const committed = commitDeliveredChanges({
       checkout: checkout.checkout,
       branch,
       item: deliveryItem,
@@ -1116,12 +1221,10 @@ async function main(): Promise<void> {
       mcpArgs: [],
       artifactDir,
     })
+    const finalHead = committed.head
     attempt.commit = finalHead
     const stageResults = deliveryStageResults(evidence, true)
     attempt.stageResults = stageResults
-    const reports = deliveryReports(artifactDir)
-    attempt.reports = reports
-
     let internalBuild: DeliveryBuildOutcome | undefined
     if (args.push) {
       console.log('LOCAL_DELIVERY_STAGE:push')
@@ -1144,7 +1247,8 @@ async function main(): Promise<void> {
         commitStage.log = `已创建本地提交 ${finalHead}，已推送至 origin/${actualBranch}`
       }
       const buildStage = stageResults.find((result) => result.index === 5)
-      if (args.build) {
+      const buildRequested = args.build && repository.buildEnabled !== false
+      if (buildRequested) {
         try {
           internalBuild = await requestDeliveryBuild(
             args.api,
@@ -1160,7 +1264,9 @@ async function main(): Promise<void> {
         internalBuild = {
           configured: false,
           triggered: false,
-          message: '本次交付未选择执行系统编译，编译阶段保持未执行',
+          message: repository.buildEnabled
+            ? '本次交付未选择执行系统编译，编译阶段保持未执行'
+            : '仓库已关闭推送后系统编译，本次交付跳过编译；提交、推送与缺陷关闭继续执行',
         }
       }
       if (internalBuild.triggered && internalBuild.build) {
@@ -1184,6 +1290,16 @@ async function main(): Promise<void> {
       }
     }
 
+    if (args.push) {
+      const cleaned = cleanupGeneratedDeliveryFiles(checkout.checkout, committed.excludedFiles)
+      if (cleaned.length > 0) {
+        console.log(`已清理本次生成但不参与提交的测试、日志或构建文件 ${cleaned.length} 个`)
+      }
+    }
+    const workspaceRestore = restoreDeliveryWorkspace(attempt)
+    const reports = deliveryReports(artifactDir)
+    attempt.reports = reports
+
     let platformPipeline: unknown = null
     try {
       console.log('LOCAL_DELIVERY_STAGE:writeback')
@@ -1198,6 +1314,7 @@ async function main(): Promise<void> {
         evidence,
         stageResults,
         reports,
+        workspaceRestore.warning,
       )
     } catch (error) {
       throw new Error(
@@ -1224,6 +1341,7 @@ async function main(): Promise<void> {
         upgradeReport: evidence.upgradeReport,
       },
       internalBuild,
+      workspaceRestore,
       stageResults,
       platformPipeline,
       promptFile: promptPath,
@@ -1231,6 +1349,7 @@ async function main(): Promise<void> {
       lastMessageFile: lastMessagePath,
     }, null, 2))
   } catch (error) {
+    restoreDeliveryWorkspace(attempt)
     const message = error instanceof Error ? error.message : String(error)
     let recordedPipelineId: string | undefined
     let recordErrorMessage: string | undefined

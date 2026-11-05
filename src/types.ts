@@ -141,6 +141,7 @@ export interface PipelineRun {
   stages: PipelineStage[]
   designReport?: PipelineReport
   integrationReport?: PipelineReport
+  artifacts?: PipelineReport[]
   createdAt: string
   triggeredBy: string
   autoCommit: boolean

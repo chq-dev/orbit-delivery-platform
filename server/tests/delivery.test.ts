@@ -185,6 +185,51 @@ test('版本 19 数据库升级后会添加仓库系统编译配置列', () => {
   upgraded.close()
 })
 
+test('版本 20 数据库升级后允许保存设计、集成之外的交付产物', () => {
+  const filename = join(tempDir, 'upgrade-v20-pipeline-artifacts.db')
+  const oldDb = createDatabase({ filename })
+  oldDb.exec(`
+    PRAGMA foreign_keys = OFF;
+    DROP TABLE pipeline_report_sections;
+    DROP TABLE pipeline_reports;
+    CREATE TABLE pipeline_reports (
+      id TEXT PRIMARY KEY,
+      pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('design', 'integration')),
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (pipeline_id, kind)
+    );
+    CREATE TABLE pipeline_report_sections (
+      report_id TEXT NOT NULL REFERENCES pipeline_reports(id) ON DELETE CASCADE,
+      section_index INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      PRIMARY KEY (report_id, section_index)
+    );
+    PRAGMA user_version = 20;
+  `)
+  oldDb.close()
+
+  const upgraded = createDatabase({ filename })
+  const table = upgraded
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_reports'")
+    .get() as { sql: string }
+  assert.doesNotMatch(table.sql, /kind IN \('design', 'integration'\)/)
+  upgraded.pragma('foreign_keys = OFF')
+  assert.doesNotThrow(() =>
+    upgraded
+      .prepare(
+        `INSERT INTO pipeline_reports (id, pipeline_id, kind, title, summary, created_at)
+         VALUES ('TEST-1', 'RUN-1', 'test', '测试报告', '摘要', '2026-01-01 00:00:00')`,
+      )
+      .run(),
+  )
+  upgraded.pragma('foreign_keys = ON')
+  upgraded.close()
+})
+
 test('账号凭据加密存储且列表不泄露密文', () => {
   const account = createAccount(db, vault, {
     platform: 'git',
@@ -691,6 +736,84 @@ test('拒绝缺少真实代码与提交证据的本地交付回写', () => {
   )
 })
 
+test('自动关闭飞书缺陷要求代码已提交并推送成功', () => {
+  const item = createWorkItem(db, {
+    type: 'defect',
+    title: '关闭前置条件',
+    description: '未推送时不能关闭飞书缺陷',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '测试员',
+  })
+  assert.throws(
+    () =>
+      recordLocalDelivery(db, {
+        workItemId: item.id,
+        repoId: repositoryId,
+        branch: 'develop',
+        localPath: '/Users/chenhuaqu/sme/sme-main',
+        commit: '2222222333333344444445555555666666677777777',
+        pushed: false,
+        autoClose: true,
+        stageResults: [
+          { index: 0, status: 'success', log: '真实解析缺陷' },
+          { index: 1, status: 'success', log: '真实生成设计报告' },
+          { index: 2, status: 'success', log: '真实修改代码' },
+          { index: 3, status: 'success', log: '真实完成集成验证' },
+          { index: 4, status: 'success', log: '真实创建提交' },
+        ],
+      }),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.statusCode === 422 &&
+      /自动关闭飞书缺陷要求代码已提交并推送成功/.test(error.message),
+  )
+})
+
+test('关闭系统编译后仍完成推送并关闭飞书缺陷', () => {
+  const imported = importWorkItems(db, [
+    {
+      type: 'defect',
+      title: '跳过编译后关闭缺陷',
+      description: '仓库关闭系统编译时，提交推送和缺陷关闭继续执行',
+      priority: '高',
+      repoId: repositoryId,
+      owner: '飞书同步',
+      source: 'feishu',
+      externalId: 'rjcloud:issue:9101',
+    },
+  ])
+  const item = imported.items[0]
+  const run = recordLocalDelivery(db, {
+    workItemId: item.id,
+    repoId: repositoryId,
+    branch: 'develop',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    commit: '3333333444444455555556666666777777788888888',
+    pushed: true,
+    autoClose: true,
+    summary: '代码已推送，仓库关闭系统编译，飞书缺陷已进入关闭队列',
+    stageResults: [
+      { index: 0, status: 'success', log: '真实完成需求分析' },
+      { index: 1, status: 'success', log: '真实生成设计报告' },
+      { index: 2, status: 'success', log: '真实修改代码' },
+      { index: 3, status: 'success', log: '真实完成集成验证' },
+      { index: 4, status: 'success', log: '真实创建提交并推送' },
+      { index: 5, status: 'pending', log: '仓库已关闭系统编译，本阶段跳过' },
+      { index: 6, status: 'pending', log: '未执行设备升级' },
+      { index: 7, status: 'pending', log: '未执行自动化测试' },
+      { index: 8, status: 'pending', log: '未生成测试归档' },
+    ],
+  })
+
+  assert.equal(run.status, 'success')
+  assert.equal(run.progress, 100)
+  assert.equal(run.autoClose, true)
+  assert.equal(run.stages[5].status, 'pending')
+  assert.match(run.stages[5].log ?? '', /仓库已关闭系统编译/)
+  assert.equal(getWorkItem(db, item.id).status, '已关闭')
+})
+
 test('客户端本地交付只记录实际证据并保存真实报告', () => {
   const item = createWorkItem(db, {
     type: 'requirement',
@@ -724,6 +847,14 @@ test('客户端本地交付只记录实际证据并保存真实报告', () => {
         summary: '真实设计摘要',
         content: '# 设计\n\n真实内容',
       },
+      artifacts: [
+        {
+          kind: 'test',
+          title: '自动化测试报告',
+          summary: '真实测试摘要',
+          content: '# 测试\n\n真实测试内容',
+        },
+      ],
     },
   })
 
@@ -731,6 +862,9 @@ test('客户端本地交付只记录实际证据并保存真实报告', () => {
   assert.equal(run.stages[5].status, 'pending')
   assert.equal(run.designReport?.summary, '真实设计摘要')
   assert.match(run.designReport?.sections[0].content ?? '', /真实内容/)
+  const testArtifact = run.artifacts?.find((artifact) => artifact.title === '自动化测试报告')
+  assert.ok(testArtifact)
+  assert.match(testArtifact.sections[0].content, /真实测试内容/)
 })
 
 test('客户端本地交付失败也会写入流水线并保留真实失败阶段', () => {

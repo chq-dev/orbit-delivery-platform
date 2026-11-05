@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 20
+export const SCHEMA_VERSION = 21
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS pipeline_stages (
 CREATE TABLE IF NOT EXISTS pipeline_reports (
   id TEXT PRIMARY KEY,
   pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK (kind IN ('design', 'integration')),
+  kind TEXT NOT NULL,
   title TEXT NOT NULL,
   summary TEXT NOT NULL,
   created_at TEXT NOT NULL,

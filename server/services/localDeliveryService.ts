@@ -36,6 +36,7 @@ interface LocalDeliveryStageResult {
 }
 
 interface LocalDeliveryReport {
+  kind: string
   title: string
   summary: string
   content: string
@@ -224,34 +225,55 @@ function failedStageIndexFrom(value: unknown): number | undefined {
     : undefined
 }
 
-function reportFrom(value: unknown): LocalDeliveryReport | undefined {
+function reportFrom(value: unknown, fallbackKind: string): LocalDeliveryReport | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
+  const candidateKind = typeof record.kind === 'string' ? record.kind.trim() : ''
+  const kind = /^[a-z0-9][a-z0-9_-]{0,40}$/.test(candidateKind) ? candidateKind : fallbackKind
   const title = typeof record.title === 'string' ? record.title.trim().slice(0, 200) : ''
   const summary = typeof record.summary === 'string' ? record.summary.trim().slice(0, 2_000) : ''
   const content = typeof record.content === 'string' ? record.content.trim().slice(0, 256 * 1024) : ''
   if (!title || !summary || !content) return undefined
-  return { title, summary, content }
+  return { kind, title, summary, content }
 }
 
-function reportsFrom(value: unknown): { design?: LocalDeliveryReport; integration?: LocalDeliveryReport } {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+function reportsFrom(value: unknown): {
+  design?: LocalDeliveryReport
+  integration?: LocalDeliveryReport
+  artifacts: LocalDeliveryReport[]
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { artifacts: [] }
+  }
   const record = value as Record<string, unknown>
+  const artifacts = Array.isArray(record.artifacts)
+    ? record.artifacts
+        .slice(0, 20)
+        .map((entry, index) => reportFrom(entry, `artifact-${index + 1}`))
+        .filter((entry): entry is LocalDeliveryReport => Boolean(entry))
+    : []
   return {
-    design: reportFrom(record.design),
-    integration: reportFrom(record.integration),
+    design: reportFrom(record.design, 'design'),
+    integration: reportFrom(record.integration, 'integration'),
+    artifacts,
   }
 }
 
 function insertLocalReport(
   db: AppDatabase,
   pipelineId: string,
-  kind: 'design' | 'integration',
+  kind: string,
   report: LocalDeliveryReport,
   now: string,
 ): void {
   const suffix = pipelineId.replace('RUN-', '')
-  const id = `${kind === 'design' ? 'DESIGN' : 'INTEGRATION'}-${suffix}`
+  const prefix =
+    kind === 'design'
+      ? 'DESIGN'
+      : kind === 'integration'
+        ? 'INTEGRATION'
+        : kind.toUpperCase().replace(/[^A-Z0-9]+/g, '-')
+  const id = `${prefix || 'ARTIFACT'}-${suffix}`
   db.prepare(
     `INSERT INTO pipeline_reports (id, pipeline_id, kind, title, summary, created_at)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -482,17 +504,17 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
     throw unprocessable('提交 SHA 不能为空')
   }
   const commit = commitInput ?? '-'
+  const pushed = booleanValue(rawInput.pushed, '是否已推送', false)
   const autoCloseRequested =
     outcome === 'success' && booleanValue(rawInput.autoClose, '自动关闭缺陷', false)
-  if (autoCloseRequested && stageResults[7].status !== 'success') {
-    throw unprocessable('测试阶段没有真实证据，不能自动关闭缺陷')
+  if (autoCloseRequested && (!pushed || stageResults[4].status !== 'success')) {
+    throw unprocessable('自动关闭飞书缺陷要求代码已提交并推送成功')
   }
   const autoClose = autoCloseRequested
   const autoCommit =
     outcome === 'success'
       ? true
       : booleanValue(rawInput.autoCommit, '自动提交', stageResults[4].status === 'success')
-  const pushed = booleanValue(rawInput.pushed, '是否已推送', false)
   const summary = optionalText(rawInput.summary, '交付摘要', 2_000)
   const reports = reportsFrom(rawInput.reports)
 
@@ -642,6 +664,9 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
 
     if (reports.design) insertLocalReport(db, pipelineId, 'design', reports.design, now)
     if (reports.integration) insertLocalReport(db, pipelineId, 'integration', reports.integration, now)
+    for (const artifact of reports.artifacts) {
+      insertLocalReport(db, pipelineId, artifact.kind, artifact, now)
+    }
 
     if (finalStatus) {
       db.prepare('UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?').run(

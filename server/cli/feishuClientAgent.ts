@@ -1181,11 +1181,12 @@ async function executeLocalDelivery(
         `平台已记录流水线 ${platformPipeline.id}，但状态为 ${String(platformPipeline.status ?? 'unknown')}；本次交付不能标记为完成`,
       )
     }
+    const closeQueued = request.autoClose && platformPipeline.autoClose === true
     setStep(
       job,
       'writeback',
       'success',
-      `平台流水线 ${platformPipeline.id}`,
+      `平台流水线 ${platformPipeline.id}${closeQueued ? '；飞书缺陷已进入关闭队列' : ''}`,
     )
     job.status = 'succeeded'
     job.stage = '本机交付完成'

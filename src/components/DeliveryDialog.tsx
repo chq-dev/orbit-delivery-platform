@@ -382,7 +382,9 @@ export function DeliveryDialog({
       (account) =>
         account.id === selectedRepo?.buildAccountId && account.platform === 'build',
     ) ?? buildAccounts[0]
-  const buildAvailable = Boolean(selectedBuildAccount?.serviceUrl)
+  const buildAvailable = Boolean(
+    selectedRepo?.buildEnabled !== false && selectedBuildAccount?.serviceUrl,
+  )
   const selectedClient = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
   )
@@ -670,7 +672,7 @@ export function DeliveryDialog({
         autoCommit,
         pushAfterAcceptance,
         runBuild: runBuild && pushAfterAcceptance && autoCommit && buildAvailable,
-        autoClose,
+        autoClose: autoClose && pushAfterAcceptance && autoCommit,
       })
       setDeliveryJob(pending)
       const started = await startLocalDelivery(
@@ -680,7 +682,7 @@ export function DeliveryDialog({
           autoCommit,
           pushAfterAcceptance,
           runBuild: runBuild && pushAfterAcceptance && autoCommit && buildAvailable,
-          autoClose,
+          autoClose: autoClose && pushAfterAcceptance && autoCommit,
         },
         clientId,
       )
@@ -1287,7 +1289,10 @@ export function DeliveryDialog({
                 checked={autoCommit}
                 onChange={(e) => {
                   setAutoCommit(e.target.checked)
-                  if (!e.target.checked) setPushAfterAcceptance(false)
+                  if (!e.target.checked) {
+                    setPushAfterAcceptance(false)
+                    setAutoClose(false)
+                  }
                 }}
               />
               <span className="custom-check" />
@@ -1301,7 +1306,10 @@ export function DeliveryDialog({
                 type="checkbox"
                 checked={pushAfterAcceptance}
                 disabled={!autoCommit}
-                onChange={(e) => setPushAfterAcceptance(e.target.checked)}
+                onChange={(e) => {
+                  setPushAfterAcceptance(e.target.checked)
+                  if (!e.target.checked) setAutoClose(false)
+                }}
               />
               <span className="custom-check" />
               <span>
@@ -1320,18 +1328,25 @@ export function DeliveryDialog({
               <span>
                 <strong>执行系统编译</strong>
                 <small>
-                  {selectedBuildAccount
+                  {selectedRepo && selectedRepo.buildEnabled === false
+                    ? '仓库已关闭“推送后执行系统编译”；本次交付跳过编译，提交、推送与缺陷关闭继续执行'
+                    : selectedBuildAccount
                     ? `${selectedBuildAccount.label} · ${selectedBuildAccount.serviceUrl}；关闭后本次交付不触发编译`
                     : '当前项目未绑定带服务地址的编译系统，请先到代码仓库配置'}
                 </small>
               </span>
             </label>
             <label className="check-row">
-              <input type="checkbox" checked={autoClose} onChange={(e) => setAutoClose(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={autoClose && pushAfterAcceptance}
+                disabled={!pushAfterAcceptance}
+                onChange={(e) => setAutoClose(e.target.checked)}
+              />
               <span className="custom-check" />
               <span>
                 <strong>自动关闭缺陷</strong>
-                <small>测试通过后同步关闭飞书缺陷单</small>
+                <small>代码提交并推送成功后，将飞书缺陷状态更新为已解决</small>
               </span>
             </label>
           </div>

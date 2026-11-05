@@ -50,6 +50,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
         'client_id',
         "TEXT NOT NULL DEFAULT 'primary'",
       )
+      migratePipelineReportKinds(db)
       migrateFeishuAgentCommands(db)
       db.exec(
         'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
@@ -81,6 +82,48 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
   )
 
   return db
+}
+
+function migratePipelineReportKinds(db: AppDatabase): void {
+  const table = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_reports'")
+    .get() as { sql: string } | undefined
+  if (!table || !/kind\s+TEXT\s+NOT\s+NULL\s+CHECK/i.test(table.sql)) return
+
+  db.exec('ALTER TABLE pipeline_report_sections RENAME TO pipeline_report_sections_legacy')
+  db.exec('ALTER TABLE pipeline_reports RENAME TO pipeline_reports_legacy')
+  db.exec(`
+    CREATE TABLE pipeline_reports (
+      id TEXT PRIMARY KEY,
+      pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (pipeline_id, kind)
+    )
+  `)
+  db.exec(`
+    CREATE TABLE pipeline_report_sections (
+      report_id TEXT NOT NULL REFERENCES pipeline_reports(id) ON DELETE CASCADE,
+      section_index INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      PRIMARY KEY (report_id, section_index)
+    )
+  `)
+  db.exec(`
+    INSERT INTO pipeline_reports (id, pipeline_id, kind, title, summary, created_at)
+    SELECT id, pipeline_id, kind, title, summary, created_at
+    FROM pipeline_reports_legacy
+  `)
+  db.exec(`
+    INSERT INTO pipeline_report_sections (report_id, section_index, title, content)
+    SELECT report_id, section_index, title, content
+    FROM pipeline_report_sections_legacy
+  `)
+  db.exec('DROP TABLE pipeline_report_sections_legacy')
+  db.exec('DROP TABLE pipeline_reports_legacy')
 }
 
 function ensureColumn(

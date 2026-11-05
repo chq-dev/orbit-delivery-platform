@@ -16,7 +16,11 @@ const LOCAL_DELIVERY_STEP_DEFINITIONS = [
   { key: 'coding', name: '业务编码', description: '按 LDD 与设计实现代码变更和单元测试' },
   { key: 'evidence', name: '检查证据', description: '确认代码变更、设计报告与集成报告' },
   { key: 'commit', name: '提交推送', description: 'AICR 审查、本地提交并按授权推送' },
-  { key: 'writeback', name: '回写平台', description: '写入真实 commit 与阶段结果' },
+  {
+    key: 'writeback',
+    name: '回写并关闭缺陷',
+    description: '写入真实 commit 与阶段结果，并按授权提交飞书缺陷关闭',
+  },
 ] as const
 
 export interface LocalDeliveryStartInput {

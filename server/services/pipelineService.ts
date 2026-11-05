@@ -166,6 +166,7 @@ function hydratePipeline(db: AppDatabase, row: PipelineRow): PipelineRun {
     })),
     designReport: designRow ? loadArtifact(db, designRow) : undefined,
     integrationReport: integrationRow ? loadArtifact(db, integrationRow) : undefined,
+    artifacts: artifacts.map((artifact) => loadArtifact(db, artifact)),
     createdAt: formatDisplayTime(row.created_at),
     triggeredBy: row.triggered_by,
     autoCommit: row.auto_commit === 1,

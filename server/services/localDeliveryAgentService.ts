@@ -25,7 +25,11 @@ export const LOCAL_DELIVERY_AGENT_STEPS: readonly LocalDeliveryAgentStepDefiniti
   { key: 'coding', name: '业务编码', description: '按 LDD 与设计实现代码变更和单元测试' },
   { key: 'evidence', name: '检查证据', description: '确认代码变更、设计报告与集成报告' },
   { key: 'commit', name: '提交推送', description: 'AICR 审查、本地提交并按授权推送' },
-  { key: 'writeback', name: '回写平台', description: '写入真实 commit 与阶段结果' },
+  {
+    key: 'writeback',
+    name: '回写并关闭缺陷',
+    description: '写入真实 commit 与阶段结果，并按授权提交飞书缺陷关闭',
+  },
 ]
 
 export function createLocalDeliveryAgentSteps(): LocalDeliveryAgentStep[] {
@@ -215,13 +219,17 @@ export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAge
   if (pushAfterAcceptance && !autoCommit) {
     throw new Error('未启用自动提交时不能推送')
   }
+  const autoClose = booleanOption(input.autoClose, '自动关闭缺陷', false)
+  if (autoClose && !pushAfterAcceptance) {
+    throw new Error('自动关闭飞书缺陷需要启用提交后推送')
+  }
   return {
     workItemId: requiredIdentifier(input.workItemId, '工作项'),
     repoId: requiredIdentifier(input.repoId, '代码仓库'),
     autoCommit,
     pushAfterAcceptance,
     runBuild: booleanOption(input.runBuild, '系统编译', true),
-    autoClose: booleanOption(input.autoClose, '自动关闭缺陷', false),
+    autoClose,
   }
 }
 
@@ -266,6 +274,9 @@ export function buildLocalDeliveryCommand(input: LocalDeliveryCommandInput): str
     throw new Error(`客户端代码路径必须是绝对路径：${input.localPath}`)
   }
   if (!text(input.branch)) throw new Error('目标分支不能为空')
+  if (input.autoClose && !input.pushAfterAcceptance) {
+    throw new Error('自动关闭飞书缺陷需要启用提交后推送')
+  }
 
   const args = [
     'run',

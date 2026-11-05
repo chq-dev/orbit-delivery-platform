@@ -49,6 +49,14 @@ test('一键交付请求只接受受控参数，不允许浏览器下发本地�
     () => parseLocalDeliveryAgentRequest({ ...request, autoCommit: false }),
     /未启用自动提交时不能推送/,
   )
+  assert.throws(
+    () =>
+      parseLocalDeliveryAgentRequest({
+        ...request,
+        pushAfterAcceptance: false,
+      }),
+    /自动关闭飞书缺陷需要启用提交后推送/,
+  )
 })
 
 test('一键交付路径和分支只从平台仓库配置解析', () => {
@@ -192,6 +200,19 @@ test('一键交付命令通过 argv 传递并自动授权推送确认', () => {
   })
   assert.equal(withoutBuild.includes('--no-build'), true)
   assert.equal(withoutBuild.includes('--build'), false)
+
+  assert.throws(
+    () =>
+      buildLocalDeliveryCommand({
+        platformBaseUrl: 'http://8.145.45.84:8787',
+        ...request,
+        pushAfterAcceptance: false,
+        autoClose: true,
+        localPath: '/Users/chenhuaqu/sme/sme-main',
+        branch: 'dev-harvey',
+      }),
+    /自动关闭飞书缺陷需要启用提交后推送/,
+  )
 })
 
 test('Codex 参数用 -- 隔离图片参数与提示词，避免提示词被当作图片吞掉', () => {
@@ -314,7 +335,7 @@ test('本机交付步骤会记录运行、成功、失败与日志', () => {
   assert.equal(steps.length, 7)
   assert.deepEqual(
     steps.map((step) => step.name),
-    ['连通性校验', '需求分析', '业务 LDD', '业务编码', '检查证据', '提交推送', '回写平台'],
+    ['连通性校验', '需求分析', '业务 LDD', '业务编码', '检查证据', '提交推送', '回写并关闭缺陷'],
   )
   assert.equal(steps.every((step) => step.status === 'pending'), true)
   const running = updateLocalDeliveryAgentStep(steps, 'connectivity', 'running', '连接平台')

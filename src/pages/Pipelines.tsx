@@ -8,6 +8,7 @@ import {
   CirclePlay,
   Clock3,
   Code2,
+  Download,
   FileBarChart2,
   FileText,
   FolderGit2,
@@ -48,6 +49,36 @@ const stageIcons: Record<string, ReactNode> = {
   upgrade: <Smartphone size={16} />,
   test: <TestTube2 size={16} />,
   report: <FileBarChart2 size={16} />,
+}
+
+function reportMarkdown(report: PipelineReport): string {
+  return [
+    `# ${report.title}`,
+    '',
+    `- 报告 ID：${report.id}`,
+    `- 生成时间：${report.createdAt}`,
+    '',
+    report.summary,
+    '',
+    ...report.sections.flatMap((section) => [
+      `## ${section.title}`,
+      '',
+      section.content,
+      '',
+    ]),
+  ].join('\n')
+}
+
+function downloadReport(report: PipelineReport): void {
+  const blob = new Blob([reportMarkdown(report)], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${report.id}-${report.title.replace(/[\\/:*?"<>|]+/g, '-')}.md`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
 }
 
 function stageIcon(stage: PipelineStage) {
@@ -139,6 +170,11 @@ export function Pipelines({
 
   const run = pipelines.find((entry) => entry.id === selectedId) ?? pipelines[0]
   const report = reports.find((entry) => entry.pipelineId === run?.id)
+  const deliveryArtifacts = run?.artifacts?.length
+    ? run.artifacts
+    : [run?.designReport, run?.integrationReport].filter(
+        (entry): entry is PipelineReport => Boolean(entry),
+      )
   const stageByKey = new Map((run?.stages ?? []).map((stage) => [stage.key, stage]))
   const commitStage = stageByKey.get('commit')
   const upgradeStage = stageByKey.get('upgrade')
@@ -417,6 +453,47 @@ export function Pipelines({
                   </div>
                 </article>
 
+                {deliveryArtifacts.length > 0 && (
+                  <article className="card delivery-artifacts-card">
+                    <div className="card-section-head">
+                      <div>
+                        <h2>交付产物</h2>
+                        <p>需求分析、LDD、编码与提交阶段生成的内容</p>
+                      </div>
+                      <span className="soft-tag">{deliveryArtifacts.length} 项</span>
+                    </div>
+                    <div className="delivery-artifact-list">
+                      {deliveryArtifacts.map((artifact) => (
+                        <div className="delivery-artifact-item" key={artifact.id}>
+                          <span className="delivery-artifact-icon"><FileText size={14} /></span>
+                          <div className="delivery-artifact-copy">
+                            <strong>{artifact.title}</strong>
+                            <small>{artifact.summary}</small>
+                          </div>
+                          <div className="delivery-artifact-actions">
+                            <button
+                              type="button"
+                              className="stage-artifact-link"
+                              onClick={() => setArtifactReport(artifact)}
+                            >
+                              查看
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="下载 Markdown"
+                              aria-label={`下载 ${artifact.title}`}
+                              onClick={() => downloadReport(artifact)}
+                            >
+                              <Download size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                )}
+
                 {report ? (
                   <article className="card report-mini-card">
                     <div className="card-section-head">
@@ -510,6 +587,11 @@ export function Pipelines({
               <FileBarChart2 size={15} /> 报告随流水线本地归档，可追溯至对应工作项
             </span>
             <div className="modal-footer-actions">
+              {artifactReport && (
+                <button className="btn btn-secondary" onClick={() => downloadReport(artifactReport)}>
+                  <Download size={15} /> 下载 Markdown
+                </button>
+              )}
               <button className="btn btn-primary" onClick={() => setArtifactReport(null)}>
                 关闭
               </button>
