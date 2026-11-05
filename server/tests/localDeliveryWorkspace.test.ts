@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import {
+  cleanupDeliveryArtifactDirectory,
   cleanupGeneratedDeliveryFiles,
   isolatePreexistingDeliveryChanges,
   restorePreexistingDeliveryChanges,
@@ -49,6 +50,7 @@ test('交付前隔离用户原有改动，结束后恢复且保留交付产物',
     const isolation = isolatePreexistingDeliveryChanges(checkout, 'BUG-1')
     assert.equal(isolation.active, true)
     assert.deepEqual(isolation.preexistingFiles.sort(), [
+      'delivery-artifacts/BUG-1/feishu-context.md',
       'web/.env.local',
       'web/legacy-tracked.ts',
       'web/legacy.ts',
@@ -93,6 +95,81 @@ test('交付前隔离用户原有改动，结束后恢复且保留交付产物',
       true,
     )
     assert.equal(gitStashCount(checkout), 0)
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('平台回写后清理本次生成的证据文件，并保留交付前已有文件', () => {
+  const checkout = createCheckout()
+  try {
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-1'), { recursive: true })
+    mkdirSync(join(checkout, 'docs', 'design'), { recursive: true })
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'old.md'), '# old evidence\n')
+    writeFileSync(join(checkout, 'docs', 'design', 'OLD-LDD.md'), '# user ldd\n')
+    const isolation = isolatePreexistingDeliveryChanges(checkout, 'BUG-1')
+
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'requirement-assets'), {
+      recursive: true,
+    })
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-2'), { recursive: true })
+    mkdirSync(join(checkout, 'docs', 'design'), { recursive: true })
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'new.md'), '# new evidence\n')
+    writeFileSync(
+      join(checkout, 'delivery-artifacts', 'BUG-1', 'requirement-assets', 'new.jpg'),
+      'image',
+    )
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-2', 'new.md'), '# other evidence\n')
+    writeFileSync(join(checkout, 'docs', 'design', 'NEW-LDD.md'), '# generated ldd\n')
+
+    const cleaned = cleanupGeneratedDeliveryFiles(
+      checkout,
+      [
+        { path: 'delivery-artifacts/BUG-1/old.md', reason: '交付产物目录' },
+        { path: 'delivery-artifacts/BUG-1/new.md', reason: '交付产物目录' },
+        {
+          path: 'delivery-artifacts/BUG-1/requirement-assets/new.jpg',
+          reason: '交付产物目录',
+        },
+        { path: 'delivery-artifacts/BUG-2/new.md', reason: '交付产物目录' },
+        { path: 'docs/design/OLD-LDD.md', reason: 'LDD/设计文档仅作交付证据，不提交' },
+        { path: 'docs/design/NEW-LDD.md', reason: 'LDD/设计文档仅作交付证据，不提交' },
+      ],
+      isolation.preexistingFiles,
+      { includeEvidenceFiles: true },
+    )
+
+    assert.deepEqual(cleaned.sort(), [
+      'delivery-artifacts/BUG-1/new.md',
+      'delivery-artifacts/BUG-1/requirement-assets/new.jpg',
+      'delivery-artifacts/BUG-2/new.md',
+      'docs/design/NEW-LDD.md',
+    ])
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'old.md')), true)
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'new.md')), false)
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-2')), false)
+    assert.equal(existsSync(join(checkout, 'docs', 'design', 'NEW-LDD.md')), false)
+    assert.deepEqual(restorePreexistingDeliveryChanges(isolation), { restored: true })
+    assert.equal(readFileSync(join(checkout, 'docs', 'design', 'OLD-LDD.md'), 'utf8'), '# user ldd\n')
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('平台回写完成后只删除当前工作项的交付产物目录', () => {
+  const checkout = createCheckout()
+  try {
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-1'), { recursive: true })
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-2'), { recursive: true })
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'report.md'), '# old\n')
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-2', 'report.md'), '# keep\n')
+
+    assert.equal(cleanupDeliveryArtifactDirectory(checkout, 'BUG-1'), true)
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-1')), false)
+    assert.equal(
+      readFileSync(join(checkout, 'delivery-artifacts', 'BUG-2', 'report.md'), 'utf8'),
+      '# keep\n',
+    )
   } finally {
     rmSync(checkout, { recursive: true, force: true })
   }

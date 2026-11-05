@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { rmSync } from 'node:fs'
+import { existsSync, rmSync, rmdirSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { normalizeDeliveryPath } from './localDeliveryEvidence.js'
 import {
@@ -61,9 +61,7 @@ export function listDeliveryWorktreeFiles(checkout: string): string[] {
 }
 
 function preexistingFiles(checkout: string): string[] {
-  return listDeliveryWorktreeFiles(checkout).filter(
-    (file) => !file.startsWith(DELIVERY_ARTIFACT_PREFIX),
-  )
+  return listDeliveryWorktreeFiles(checkout)
 }
 
 export function isolatePreexistingDeliveryChanges(
@@ -76,7 +74,8 @@ export function isolatePreexistingDeliveryChanges(
     active: false,
     preexistingFiles: files,
   }
-  if (files.length === 0) return isolation
+  const isolatedFiles = files.filter((file) => !file.startsWith(DELIVERY_ARTIFACT_PREFIX))
+  if (isolatedFiles.length === 0) return isolation
 
   clearStaleGitIndexLock(checkout)
   const message = `orbit-delivery-${label.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 80)}`
@@ -105,7 +104,8 @@ export function isolatePreexistingDeliveryChanges(
   isolation.active = true
   isolation.stashHash = hashResult.stdout
 
-  const remaining = preexistingFiles(checkout)
+  const isolated = new Set(isolatedFiles)
+  const remaining = preexistingFiles(checkout).filter((file) => isolated.has(file))
   if (remaining.length > 0) {
     const restore = restorePreexistingDeliveryChanges(isolation)
     throw new Error(
@@ -163,23 +163,47 @@ function isSafeRelativePath(path: string): boolean {
   return Boolean(path) && !isAbsolute(path) && !path.split('/').includes('..')
 }
 
-function isCleanupCandidate(file: ExcludedDeliveryCommitFile): boolean {
+function isCleanupCandidate(
+  file: ExcludedDeliveryCommitFile,
+  includeEvidenceFiles: boolean,
+): boolean {
   const path = normalizeDeliveryPath(file.path)
-  if (!isSafeRelativePath(path) || path.startsWith(DELIVERY_ARTIFACT_PREFIX)) return false
+  if (!isSafeRelativePath(path)) return false
+  if (path.startsWith(DELIVERY_ARTIFACT_PREFIX)) return includeEvidenceFiles
+  if (includeEvidenceFiles && /LDD\/设计文档/.test(file.reason)) return true
   return /测试文件|日志或临时|依赖或构建产物|构建产物|操作系统文件|环境变量|密钥或证书/.test(
     file.reason,
   )
+}
+
+export interface CleanupGeneratedDeliveryFilesOptions {
+  includeEvidenceFiles?: boolean
+}
+
+function pruneEmptyDirectories(checkout: string, path: string): void {
+  const parts = path.split('/')
+  parts.pop()
+  while (parts.length > 0) {
+    const directory = join(checkout, ...parts)
+    try {
+      rmdirSync(directory)
+    } catch {
+      break
+    }
+    parts.pop()
+  }
 }
 
 export function cleanupGeneratedDeliveryFiles(
   checkout: string,
   files: readonly ExcludedDeliveryCommitFile[],
   protectedFiles: readonly string[] = [],
+  options: CleanupGeneratedDeliveryFilesOptions = {},
 ): string[] {
   const cleaned: string[] = []
   const protectedPaths = new Set(protectedFiles.map(normalizeDeliveryPath).filter(Boolean))
   for (const file of files) {
-    if (!isCleanupCandidate(file)) continue
+    if (!isCleanupCandidate(file, options.includeEvidenceFiles === true)) continue
     const path = normalizeDeliveryPath(file.path)
     if (protectedPaths.has(path)) continue
     const tracked = git(checkout, ['ls-files', '--error-unmatch', '--', path])
@@ -190,6 +214,21 @@ export function cleanupGeneratedDeliveryFiles(
     }
     rmSync(join(checkout, ...path.split('/')), { force: true })
     cleaned.push(path)
+    pruneEmptyDirectories(checkout, path)
   }
   return cleaned
+}
+
+export function cleanupDeliveryArtifactDirectory(checkout: string, workItemId: string): boolean {
+  const id = workItemId.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(id)) return false
+  const directory = join(checkout, 'delivery-artifacts', id)
+  if (!existsSync(directory)) return false
+  rmSync(directory, { recursive: true, force: true })
+  try {
+    rmdirSync(join(checkout, 'delivery-artifacts'))
+  } catch {
+    // Keep the shared directory when other work items still have artifacts.
+  }
+  return true
 }

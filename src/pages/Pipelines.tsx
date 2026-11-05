@@ -32,6 +32,7 @@ import {
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { PipelineSteps } from '../components/PipelineSteps'
 import { Modal, StatusBadge } from '../components/ui'
+import { displayDeliveryStages } from '../deliveryStages'
 import { averageDuration } from '../duration'
 import { useDeliveryUi } from '../deliveryUi'
 import { useData } from '../store'
@@ -40,15 +41,16 @@ import type { PageKey, PipelineReport, PipelineRun, PipelineStage } from '../typ
 type RunFilter = 'all' | 'running' | 'success' | 'failed'
 
 const stageIcons: Record<string, ReactNode> = {
+  connectivity: <Workflow size={16} />,
   analysis: <Sparkles size={16} />,
-  design: <FileText size={16} />,
+  ldd: <FileText size={16} />,
   coding: <Code2 size={16} />,
-  integration: <GitMerge size={16} />,
+  evidence: <GitMerge size={16} />,
   commit: <GitCommit size={16} />,
   build: <Box size={16} />,
   upgrade: <Smartphone size={16} />,
   test: <TestTube2 size={16} />,
-  report: <FileBarChart2 size={16} />,
+  writeback: <FileBarChart2 size={16} />,
 }
 
 function reportMarkdown(report: PipelineReport): string {
@@ -175,11 +177,26 @@ export function Pipelines({
     : [run?.designReport, run?.integrationReport].filter(
         (entry): entry is PipelineReport => Boolean(entry),
       )
-  const stageByKey = new Map((run?.stages ?? []).map((stage) => [stage.key, stage]))
+  const displayStages = useMemo(
+    () => displayDeliveryStages(run?.stages ?? []),
+    [run?.stages],
+  )
+  const stageByKey = new Map(displayStages.map((stage) => [stage.key, stage]))
   const commitStage = stageByKey.get('commit')
   const upgradeStage = stageByKey.get('upgrade')
-  const testStage = stageByKey.get('test')
-  const progressStyle = { '--progress': `${run?.progress ?? 0}%` } as CSSProperties
+  const testStage = new Map((run?.stages ?? []).map((stage) => [stage.key, stage])).get('test')
+  const displayProgress = run
+    ? run.status === 'success'
+      ? 100
+      : displayStages.length > 0
+        ? Math.round(
+            (displayStages.filter((stage) => stage.status === 'success').length /
+              displayStages.length) *
+              100,
+          )
+        : run.progress
+    : 0
+  const progressStyle = { '--progress': `${displayProgress}%` } as CSSProperties
   const runningCount = pipelines.filter((entry) => entry.status === 'running').length
   const successCount = pipelines.filter((entry) => entry.status === 'success').length
   const failedCount = pipelines.filter((entry) => entry.status === 'failed').length
@@ -320,18 +337,18 @@ export function Pipelines({
                 <div className="pipeline-progress-label">
                   <span>
                     {run.status === 'running'
-                      ? `正在执行 · ${run.stages.find((stage) => stage.status === 'running')?.name ?? '即将完成'}`
+                      ? `正在执行 · ${displayStages.find((stage) => stage.status === 'running')?.name ?? '即将完成'}`
                       : run.status === 'success'
                         ? !run.clientExecuted
                           ? '旧版服务端记录，无客户端代码执行证据'
-                          : run.stages.some((stage) => stage.status === 'pending')
+                          : displayStages.some((stage) => stage.status === 'pending')
                             ? '代码交付已完成，未取得证据的阶段未执行'
                             : '所有阶段已完成'
                         : run.status === 'failed'
                           ? '流水线执行中断'
                           : '等待执行'}
                   </span>
-                  <strong>{run.progress}%</strong>
+                  <strong>{displayProgress}%</strong>
                 </div>
                 <div className={`pipeline-progress-track pipeline-progress-${run.status}`}>
                   <span style={progressStyle} />
@@ -339,7 +356,7 @@ export function Pipelines({
               </div>
 
               <div className="pipeline-steps-detail">
-                <PipelineSteps stages={run.stages} />
+                <PipelineSteps stages={displayStages} />
               </div>
             </article>
 
@@ -355,7 +372,7 @@ export function Pipelines({
                   </span>
                 </div>
                 <div className="stage-timeline">
-                  {run.stages.map((stage, index) => (
+                  {displayStages.map((stage, index) => (
                     <div className={`stage-timeline-item stage-${stage.status}`} key={stage.key}>
                       <div className="stage-timeline-main">
                         <span className="stage-icon-circle">{stageIcon(stage)}</span>
@@ -379,7 +396,7 @@ export function Pipelines({
                               {stage.duration ?? '执行中…'}
                             </small>
                           )}
-                          {stage.key === 'design' && run.designReport && (
+                          {stage.key === 'ldd' && run.designReport && (
                             <button
                               className="stage-artifact-link"
                               onClick={() => setArtifactReport(run.designReport ?? null)}
@@ -387,7 +404,7 @@ export function Pipelines({
                               <FileText size={11} /> 查看开发设计报告
                             </button>
                           )}
-                          {stage.key === 'integration' && run.integrationReport && (
+                          {stage.key === 'evidence' && run.integrationReport && (
                             <button
                               className="stage-artifact-link"
                               onClick={() => setArtifactReport(run.integrationReport ?? null)}
@@ -397,7 +414,7 @@ export function Pipelines({
                           )}
                         </div>
                       </div>
-                      {index < run.stages.length - 1 && <span className="stage-timeline-line" />}
+                      {index < displayStages.length - 1 && <span className="stage-timeline-line" />}
                     </div>
                   ))}
                 </div>
@@ -438,18 +455,18 @@ export function Pipelines({
                       {commitStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
                       {commitStage?.status === 'success' ? '本地提交已创建' : '提交阶段未完成'}
                     </span>
-                    <span>
-                      {upgradeStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
-                      {upgradeStage?.status === 'success' ? '设备升级有证据' : '设备升级未执行'}
-                    </span>
-                    <span>
-                      {testStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
-                      {testStage?.status === 'success'
-                        ? run.autoClose
-                          ? '测试有证据，缺陷自动关闭'
-                          : '测试有证据，缺陷人工关闭'
-                        : '测试未执行'}
-                    </span>
+                    {upgradeStage && (
+                      <span>
+                        {upgradeStage.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
+                        {upgradeStage.status === 'success' ? '设备升级有证据' : '设备升级未完成'}
+                      </span>
+                    )}
+                    {testStage?.status === 'success' && (
+                      <span>
+                        <CheckCircle2 size={13} />
+                        {run.autoClose ? '测试有证据，缺陷自动关闭' : '测试有证据，缺陷人工关闭'}
+                      </span>
+                    )}
                   </div>
                 </article>
 

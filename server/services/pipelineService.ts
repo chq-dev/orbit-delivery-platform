@@ -23,15 +23,15 @@ import {
 import { createTestReport, type TestReportSource } from './reportService.js'
 
 export const stageDefinitions: StageDefinition[] = [
-  { key: 'analysis', name: '需求解析', description: '识别需求意图、验收条件与影响模块' },
-  { key: 'design', name: '开发设计报告', description: '生成技术方案、改动范围与测试策略' },
-  { key: 'coding', name: '自动需求编码', description: '按设计报告生成代码变更与单元测试' },
-  { key: 'integration', name: '集成验证报告', description: '合并变更并输出依赖、接口与风险结论' },
-  { key: 'commit', name: '提交代码', description: '提交变更至目标分支并关联工作项' },
+  { key: 'analysis', name: '需求分析', description: '识别需求意图、验收条件与影响模块' },
+  { key: 'design', name: '业务 LDD', description: '生成或更新本次业务涉及的 LDD 设计' },
+  { key: 'coding', name: '业务编码', description: '按 LDD 与设计实现代码变更和单元测试' },
+  { key: 'integration', name: '检查证据', description: '确认代码变更、设计报告与集成报告' },
+  { key: 'commit', name: '提交推送', description: 'AICR 审查、本地提交并按授权推送' },
   { key: 'build', name: '自动编译', description: '触发编译系统构建版本' },
   { key: 'upgrade', name: '设备升级', description: '推送固件到 AC/AP 或交换机并完成升级' },
   { key: 'test', name: '自动化测试', description: '执行冒烟与全量回归测试' },
-  { key: 'report', name: '测试报告归档', description: '生成测试报告并关闭缺陷' },
+  { key: 'report', name: '回写并关闭缺陷', description: '写入真实 commit 与阶段结果，并按授权提交飞书缺陷关闭' },
 ]
 
 export const CLIENT_DELIVERY_TRIGGER = '客户端本地交付'

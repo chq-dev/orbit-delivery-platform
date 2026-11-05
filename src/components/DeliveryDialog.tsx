@@ -37,6 +37,7 @@ import {
 } from '../localDeliveryAgent'
 import { cancelLocalDeliveryJob, fetchLocalDeliveryJob } from '../feishuAgent'
 import { prepareScreenshot } from '../screenshotCompression'
+import { displayDeliveryStages } from '../deliveryStages'
 import { useData } from '../store'
 import type { LocalDeliveryJob, PipelineRun, WorkItem } from '../types'
 import { searchWorkItems } from '../workItemSearch'
@@ -406,15 +407,42 @@ export function DeliveryDialog({
         })
       : undefined
   const deliveryStages = useMemo(
-    () =>
-      (effectiveDeliveryJob?.steps ?? []).map((step) => ({
+    () => {
+      const stages = (effectiveDeliveryJob?.steps ?? []).map((step) => ({
         key: step.key,
         name: step.name,
         description: step.description,
         status: step.status,
         log: step.log,
-      })),
-    [effectiveDeliveryJob?.steps],
+      }))
+      const evidence = effectiveDeliveryJob?.result?.evidence
+      const optionalStages: typeof stages = []
+      if (evidence?.buildReport) {
+        optionalStages.push({
+          key: 'build',
+          name: '自动编译',
+          description: '推送后触发项目配置的编译系统',
+          status: 'success',
+          log: '内部编译已按项目配置触发',
+        })
+      }
+      if (evidence?.upgradeReport) {
+        optionalStages.push({
+          key: 'upgrade',
+          name: '设备升级',
+          description: '推送固件到测试设备并完成升级',
+          status: 'success',
+          log: '检测到真实设备升级证据',
+        })
+      }
+      if (optionalStages.length > 0) {
+        const writebackIndex = stages.findIndex((stage) => stage.key === 'writeback')
+        if (writebackIndex >= 0) stages.splice(writebackIndex, 0, ...optionalStages)
+        else stages.push(...optionalStages)
+      }
+      return displayDeliveryStages(stages)
+    },
+    [effectiveDeliveryJob?.result?.evidence, effectiveDeliveryJob?.steps],
   )
 
   useEffect(() => {
@@ -1435,12 +1463,12 @@ export function DeliveryDialog({
             </div>
             <div>
               <GitMerge size={15} />
-              <span>集成报告 · 提交 · 编译 · 升级 · 测试</span>
-              <small>验证通过后推送本机实际分支并生成测试报告</small>
+              <span>检查证据 · 提交推送 · 回写并关闭缺陷</span>
+              <small>验证通过后推送本机实际分支，并按配置追加编译与设备升级</small>
             </div>
           </div>
           <div className="preview-footer">
-            <span>9 个自动化阶段</span>
+            <span>{deliveryStages.length || 7} 个执行阶段</span>
             <span>3 份交付报告</span>
           </div>
         </aside>

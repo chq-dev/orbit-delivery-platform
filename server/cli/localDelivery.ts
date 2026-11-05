@@ -42,6 +42,7 @@ import {
 import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
 import { loadDeliveryFeishuContext } from '../services/deliveryFeishuContext.js'
 import {
+  cleanupDeliveryArtifactDirectory,
   cleanupGeneratedDeliveryFiles,
   isolatePreexistingDeliveryChanges,
   restorePreexistingDeliveryChanges,
@@ -1032,6 +1033,38 @@ async function main(): Promise<void> {
     attempt.localPath = checkout.checkout
     if (!checkout.remote) console.warn('提示：本地仓库没有 origin 远端，--push 将无法执行')
 
+    if (args.run && !args.commitOnly) {
+      attempt.workspaceIsolation = isolatePreexistingDeliveryChanges(
+        checkout.checkout,
+        item.id,
+      )
+      if (attempt.workspaceIsolation.active) {
+        console.log(
+          `已隔离客户端原有未提交变更 ${attempt.workspaceIsolation.preexistingFiles.length} 个，本次只交付 Codex 产生的改动`,
+        )
+      }
+    }
+
+    let interruptHandled = false
+    const handleInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
+      if (interruptHandled) return
+      interruptHandled = true
+      console.error(`LOCAL_DELIVERY_INTERRUPT: 收到 ${signal}，正在恢复交付前未提交代码`)
+      try {
+        restoreDeliveryWorkspace(attempt)
+      } finally {
+        process.exit(signal === 'SIGINT' ? 130 : 143)
+      }
+    }
+    const onSigint = (): void => handleInterrupt('SIGINT')
+    const onSigterm = (): void => handleInterrupt('SIGTERM')
+    process.once('SIGINT', onSigint)
+    process.once('SIGTERM', onSigterm)
+    removeInterruptHandlers = (): void => {
+      process.removeListener('SIGINT', onSigint)
+      process.removeListener('SIGTERM', onSigterm)
+    }
+
     const artifactDir = join(checkout.checkout, 'delivery-artifacts', item.id)
     attempt.artifactDir = artifactDir
     mkdirSync(artifactDir, { recursive: true })
@@ -1093,38 +1126,6 @@ async function main(): Promise<void> {
       console.log(`\nPrompt 已生成：${promptPath}`)
       console.log('需要立即执行时，在命令末尾增加 --run。')
       return
-    }
-
-    if (!args.commitOnly) {
-      attempt.workspaceIsolation = isolatePreexistingDeliveryChanges(
-        checkout.checkout,
-        item.id,
-      )
-      if (attempt.workspaceIsolation.active) {
-        console.log(
-          `已隔离客户端原有未提交变更 ${attempt.workspaceIsolation.preexistingFiles.length} 个，本次只交付 Codex 产生的改动`,
-        )
-      }
-    }
-
-    let interruptHandled = false
-    const handleInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
-      if (interruptHandled) return
-      interruptHandled = true
-      console.error(`LOCAL_DELIVERY_INTERRUPT: 收到 ${signal}，正在恢复交付前未提交代码`)
-      try {
-        restoreDeliveryWorkspace(attempt)
-      } finally {
-        process.exit(signal === 'SIGINT' ? 130 : 143)
-      }
-    }
-    const onSigint = (): void => handleInterrupt('SIGINT')
-    const onSigterm = (): void => handleInterrupt('SIGTERM')
-    process.once('SIGINT', onSigint)
-    process.once('SIGTERM', onSigterm)
-    removeInterruptHandlers = (): void => {
-      process.removeListener('SIGINT', onSigint)
-      process.removeListener('SIGTERM', onSigterm)
     }
 
     const codexCommand = resolveCodexBinary()
@@ -1312,13 +1313,19 @@ async function main(): Promise<void> {
     }
 
     if (args.push) {
-      const cleaned = cleanupGeneratedDeliveryFiles(
-        checkout.checkout,
-        committed.excludedFiles,
-        attempt.workspaceIsolation?.preexistingFiles,
-      )
-      if (cleaned.length > 0) {
-        console.log(`已清理本次生成但不参与提交的测试、日志或构建文件 ${cleaned.length} 个`)
+      try {
+        const cleaned = cleanupGeneratedDeliveryFiles(
+          checkout.checkout,
+          committed.excludedFiles,
+          attempt.workspaceIsolation?.preexistingFiles,
+        )
+        if (cleaned.length > 0) {
+          console.log(`已清理本次生成但不参与提交的测试、日志或构建文件 ${cleaned.length} 个`)
+        }
+      } catch (error) {
+        console.warn(
+          `LOCAL_DELIVERY_CLEANUP_WARNING: 清理本次生成文件失败：${error instanceof Error ? error.message : String(error)}`,
+        )
       }
     }
     const workspaceRestore = restoreDeliveryWorkspace(attempt)
@@ -1346,6 +1353,27 @@ async function main(): Promise<void> {
       throw new Error(
         `本地代码已提交 ${finalHead}${args.push ? `并推送到 origin/${branch}` : '，尚未推送'}，但${error instanceof Error ? error.message : String(error)}`,
       )
+    }
+
+    if (attempt.workspaceIsolation) {
+      try {
+        const evidenceCleanup = cleanupGeneratedDeliveryFiles(
+          checkout.checkout,
+          committed.excludedFiles,
+          attempt.workspaceIsolation.preexistingFiles,
+          { includeEvidenceFiles: true },
+        )
+        if (evidenceCleanup.length > 0) {
+          console.log(`平台回写完成，已清理本次交付生成的 LDD、测试和交付产物 ${evidenceCleanup.length} 个`)
+        }
+        if (cleanupDeliveryArtifactDirectory(checkout.checkout, item.id)) {
+          console.log(`已清理本次交付产物目录 delivery-artifacts/${item.id}`)
+        }
+      } catch (error) {
+        console.warn(
+          `LOCAL_DELIVERY_CLEANUP_WARNING: 清理交付产物失败：${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
 
     console.log(JSON.stringify({
