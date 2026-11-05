@@ -251,6 +251,25 @@ test('需求交付命令下发前由服务端再次校验上下文', async () =>
       body: JSON.stringify({ type: 'delivery_start', payload, clientId }),
     })
     assert.equal(accepted.status, 202)
+
+    const invalidOptions = await fetch(`${base}/api/integrations/feishu/agent/commands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({
+        type: 'delivery_start',
+        payload: { ...payload, autoClose: true },
+        clientId,
+      }),
+    })
+    assert.equal(invalidOptions.status, 422)
+    const invalidPayload = (await invalidOptions.json()) as {
+      error?: { code?: string; message?: string }
+    }
+    assert.equal(invalidPayload.error?.code, 'VALIDATION_ERROR')
+    assert.match(
+      invalidPayload.error?.message ?? '',
+      /自动关闭飞书缺陷需要启用提交后推送/,
+    )
   } finally {
     if (server) await new Promise<void>((resolve) => server?.close(() => resolve()))
     db.close()

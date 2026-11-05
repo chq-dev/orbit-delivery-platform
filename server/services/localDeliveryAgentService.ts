@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path'
 import { describeFetchError } from '../domain/network.js'
+import { unprocessable } from '../domain/errors.js'
 
 export const LOCAL_DELIVERY_CONTRACT_VERSION = 4
 
@@ -194,34 +195,34 @@ function text(value: unknown): string {
 
 function requiredIdentifier(value: unknown, label: string): string {
   const candidate = text(value)
-  if (!candidate) throw new Error(`缺少${label}`)
+  if (!candidate) throw unprocessable(`缺少${label}`)
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(candidate)) {
-    throw new Error(`${label}格式不正确`)
+    throw unprocessable(`${label}格式不正确`)
   }
   return candidate
 }
 
 function booleanOption(value: unknown, label: string, fallback: boolean): boolean {
   if (value === undefined) return fallback
-  if (typeof value !== 'boolean') throw new Error(`${label}必须是布尔值`)
+  if (typeof value !== 'boolean') throw unprocessable(`${label}必须是布尔值`)
   return value
 }
 
 export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAgentRequest {
-  if (!isRecord(input)) throw new Error('请求体必须是 JSON 对象')
+  if (!isRecord(input)) throw unprocessable('请求体必须是 JSON 对象')
   const unknownKeys = Object.keys(input).filter((key) => !REQUEST_KEYS.has(key))
   if (unknownKeys.length > 0) {
-    throw new Error(`不支持交付参数：${unknownKeys.join(', ')}`)
+    throw unprocessable(`不支持交付参数：${unknownKeys.join(', ')}`)
   }
 
   const autoCommit = booleanOption(input.autoCommit, '自动提交', true)
   const pushAfterAcceptance = booleanOption(input.pushAfterAcceptance, '验收后推送', false)
   if (pushAfterAcceptance && !autoCommit) {
-    throw new Error('未启用自动提交时不能推送')
+    throw unprocessable('未启用自动提交时不能推送')
   }
   const autoClose = booleanOption(input.autoClose, '自动关闭缺陷', false)
   if (autoClose && !pushAfterAcceptance) {
-    throw new Error('自动关闭飞书缺陷需要启用提交后推送')
+    throw unprocessable('自动关闭飞书缺陷需要启用提交后推送')
   }
   return {
     workItemId: requiredIdentifier(input.workItemId, '工作项'),
