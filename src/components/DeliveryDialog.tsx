@@ -62,6 +62,23 @@ function activityLabel(value?: string): string {
   return `${Math.floor(seconds / 3_600)} 小时前`
 }
 
+function elapsedLabel(value?: string): string {
+  if (!value) return '未知'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return '未知'
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000))
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`
+}
+
+function ageSeconds(value?: string): number | undefined {
+  if (!value) return undefined
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? Math.max(0, Math.round((Date.now() - timestamp) / 1_000)) : undefined
+}
+
 function WorkItemPicker({
   items,
   value,
@@ -304,6 +321,26 @@ export function DeliveryDialog({
     localJobIsNewer && localJobInScope && localJobInScope.status !== 'running'
       ? localJobInScope.error ?? ''
       : deliveryError
+  const heartbeatAgeSeconds = ageSeconds(effectiveDeliveryJob?.lastActivityAt)
+  const workspaceAgeSeconds = ageSeconds(effectiveDeliveryJob?.workspaceChangedAt)
+  const artifactAgeSeconds = ageSeconds(effectiveDeliveryJob?.artifactChangedAt)
+  const jobAgeSeconds = ageSeconds(effectiveDeliveryJob?.startedAt)
+  const codingStepRunning =
+    effectiveDeliveryJob?.steps?.find((step) => step.key === 'coding')?.status === 'running'
+  const processExited =
+    effectiveDeliveryJob?.status === 'running' && effectiveDeliveryJob.processAlive === false
+  const heartbeatStale =
+    effectiveDeliveryJob?.status === 'running' &&
+    heartbeatAgeSeconds !== undefined &&
+    heartbeatAgeSeconds > 30
+  const workspaceStale =
+    codingStepRunning &&
+    !processExited &&
+    (Math.min(
+      workspaceAgeSeconds ?? Number.POSITIVE_INFINITY,
+      artifactAgeSeconds ?? Number.POSITIVE_INFINITY,
+      jobAgeSeconds ?? Number.POSITIVE_INFINITY,
+    ) > 5 * 60)
   const progressVisible = Boolean(deliveryJob || deliveryError || localJobInScope)
   const [localAgent, setLocalAgent] = useState<
     LocalDeliveryAgentReadiness & { checking: boolean }
@@ -726,7 +763,9 @@ export function DeliveryDialog({
         <>
           <span className="modal-footer-hint">
             <ShieldCheck size={15} />{' '}
-            {localAgent.checking
+            {effectiveDeliveryJob?.status === 'running'
+              ? `任务正在 ${selectedClient?.clientName ?? '执行客户端'} 执行；页面刷新或关闭只影响查看，不会终止本机 Codex`
+              : localAgent.checking
               ? '正在检测所选执行客户端'
               : requirementContextIssue
                 ? requirementContextIssue
@@ -815,6 +854,87 @@ export function DeliveryDialog({
                   </span>
                 )}
               </div>
+              {effectiveDeliveryJob?.status === 'running' && (
+                <div className="delivery-progress-metrics">
+                  <div>
+                    <span>已运行</span>
+                    <strong>{elapsedLabel(effectiveDeliveryJob.startedAt)}</strong>
+                  </div>
+                  <div>
+                    <span>最近心跳</span>
+                    <strong className={heartbeatStale ? 'warning' : ''}>
+                      {activityLabel(effectiveDeliveryJob.lastActivityAt)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>本机进程</span>
+                    <strong className={processExited ? 'warning' : ''}>
+                      {processExited
+                        ? '已退出'
+                        : effectiveDeliveryJob.processAlive
+                          ? `存活${effectiveDeliveryJob.processId ? ` #${effectiveDeliveryJob.processId}` : ''}`
+                          : '等待上报'}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>代码变更</span>
+                    <strong>
+                      {effectiveDeliveryJob.changedFileCount === undefined
+                        ? '等待检测'
+                        : `${effectiveDeliveryJob.changedFileCount} 个文件`}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>最近产物</span>
+                    <strong>
+                      {activityLabel(effectiveDeliveryJob.artifactChangedAt)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>差异行</span>
+                    <strong>
+                      +{effectiveDeliveryJob.diffAddedLines ?? 0} / -{effectiveDeliveryJob.diffRemovedLines ?? 0}
+                    </strong>
+                  </div>
+                </div>
+              )}
+              {effectiveDeliveryJob?.status === 'running' && heartbeatStale && (
+                <p className="delivery-progress-warning">
+                  <AlertTriangle size={14} />
+                  已超过 30 秒没有收到本机进度上报，可能是网络或代理心跳延迟。
+                </p>
+              )}
+              {processExited && (
+                <p className="delivery-progress-warning">
+                  <AlertTriangle size={14} />
+                  本机 Codex 进程已退出，但平台仍显示执行中；代理可能正在收尾，或需要重新检查执行日志。
+                </p>
+              )}
+              {workspaceStale && (
+                <p className="delivery-progress-warning">
+                  <AlertTriangle size={14} />
+                  {effectiveDeliveryJob?.changedFileCount
+                    ? '代码和交付产物已连续 5 分钟没有更新'
+                    : '编码阶段已运行 5 分钟，仍未检测到代码或交付产物更新'}
+                  ，可能正在执行测试/构建，也可能已停在等待状态。
+                  {effectiveDeliveryJob?.workspaceChangedAt
+                    ? ` 最近文件变化：${activityLabel(effectiveDeliveryJob.workspaceChangedAt)}`
+                    : ''}
+                </p>
+              )}
+              {(effectiveDeliveryJob?.recentChangedFiles?.length ?? 0) > 0 && (
+                <p className="delivery-progress-files">
+                  最近变更：{effectiveDeliveryJob?.recentChangedFiles?.join('、')}
+                </p>
+              )}
+              {effectiveDeliveryJob?.artifactChangedFile && (
+                <p className="delivery-progress-files">
+                  最近更新产物：{effectiveDeliveryJob.artifactChangedFile}
+                  {effectiveDeliveryJob.artifactChangedAt
+                    ? ` · ${activityLabel(effectiveDeliveryJob.artifactChangedAt)}`
+                    : ''}
+                </p>
+              )}
               {localJobInScope && (
                 <div className={`delivery-local-process ${localJobInScope.status}`}>
                   <div>

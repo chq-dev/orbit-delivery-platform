@@ -55,8 +55,11 @@ import {
 import {
   DELIVERY_CODEX_PHASES,
   deliveryDesignReportExists,
+  deliveryWorkspaceFiles,
   inferDeliveryCodexPhase,
+  latestDeliveryArtifactActivity,
   nextDeliveryCodexPhase,
+  parseGitNumstat,
   parseGitStatusPaths,
   readDeliveryCodexPhaseMarker,
   resetDeliveryCodexPhaseMarker,
@@ -115,6 +118,13 @@ interface LocalDeliveryJob {
   lastActivityAt?: string
   processId?: number
   processAlive?: boolean
+  workspaceChangedAt?: string
+  changedFileCount?: number
+  diffAddedLines?: number
+  diffRemovedLines?: number
+  recentChangedFiles?: string[]
+  artifactChangedAt?: string
+  artifactChangedFile?: string
   finishedAt?: string
   result?: unknown
   error?: string
@@ -146,6 +156,13 @@ function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
     processId: job.processId,
     processAlive:
       job.status === 'running' ? processGroupAlive(job.processId) : undefined,
+    workspaceChangedAt: job.workspaceChangedAt,
+    changedFileCount: job.changedFileCount,
+    diffAddedLines: job.diffAddedLines,
+    diffRemovedLines: job.diffRemovedLines,
+    recentChangedFiles: job.recentChangedFiles,
+    artifactChangedAt: job.artifactChangedAt,
+    artifactChangedFile: job.artifactChangedFile,
     finishedAt: job.finishedAt,
     result: job.result,
     error: job.error,
@@ -902,6 +919,8 @@ function startDeliveryCodexPhaseTracker(
 ): () => void {
   let stopped = false
   let inFlight = false
+  let workspaceSignature = ''
+  let artifactSignature = ''
   const tick = async (): Promise<void> => {
     if (stopped || inFlight) return
     inFlight = true
@@ -910,15 +929,41 @@ function startDeliveryCodexPhaseTracker(
       scheduleDeliveryProgress(job)
       const marker = readDeliveryCodexPhaseMarker(checkout, workItemId)
       if (marker) advanceDeliveryCodexPhase(job, marker)
-      if (marker === 'coding') return
       const status = await runCommand(
         'git',
-        ['-C', checkout, 'status', '--porcelain=v1', '-z'],
+        ['-C', checkout, 'status', '--porcelain=v1', '-uall', '-z'],
         env,
         10_000,
       )
       if (stopped || status.exitCode !== 0) return
-      const detected = inferDeliveryCodexPhase(parseGitStatusPaths(status.stdout), {
+      const changedPaths = parseGitStatusPaths(status.stdout)
+      const files = deliveryWorkspaceFiles(changedPaths)
+      const artifact = latestDeliveryArtifactActivity(checkout, changedPaths)
+      if (artifact && artifact.modifiedAt !== artifactSignature) {
+        artifactSignature = artifact.modifiedAt
+        job.artifactChangedAt = artifact.modifiedAt
+        job.artifactChangedFile = artifact.path
+        scheduleDeliveryProgress(job)
+      }
+      const diff = await runCommand(
+        'git',
+        ['-C', checkout, 'diff', 'HEAD', '--numstat'],
+        env,
+        10_000,
+      )
+      if (stopped) return
+      const stats = diff.exitCode === 0 ? parseGitNumstat(diff.stdout) : { added: 0, removed: 0 }
+      const signature = `${files.slice().sort().join('\0')}\0${stats.added}\0${stats.removed}`
+      if (signature !== workspaceSignature) {
+        workspaceSignature = signature
+        if (files.length > 0) job.workspaceChangedAt = new Date().toISOString()
+        job.changedFileCount = files.length
+        job.diffAddedLines = stats.added
+        job.diffRemovedLines = stats.removed
+        job.recentChangedFiles = files.slice(0, 8)
+        scheduleDeliveryProgress(job)
+      }
+      const detected = inferDeliveryCodexPhase(files, {
         designReport: deliveryDesignReportExists(checkout, workItemId),
       })
       if (detected) advanceDeliveryCodexPhase(job, detected)

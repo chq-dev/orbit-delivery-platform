@@ -324,6 +324,13 @@ export interface LocalDeliveryJob {
   lastActivityAt?: string
   processId?: number
   processAlive?: boolean
+  workspaceChangedAt?: string
+  changedFileCount?: number
+  diffAddedLines?: number
+  diffRemovedLines?: number
+  recentChangedFiles?: string[]
+  artifactChangedAt?: string
+  artifactChangedFile?: string
   finishedAt?: string
   result?: LocalDeliveryResult
   error?: string

@@ -46,6 +46,16 @@ export interface FeishuAgentDeliveryJob {
   branch?: string
   steps: FeishuAgentDeliveryStep[]
   startedAt: string
+  lastActivityAt?: string
+  processId?: number
+  processAlive?: boolean
+  workspaceChangedAt?: string
+  changedFileCount?: number
+  diffAddedLines?: number
+  diffRemovedLines?: number
+  recentChangedFiles?: string[]
+  artifactChangedAt?: string
+  artifactChangedFile?: string
   finishedAt?: string
   result?: unknown
   error?: string
@@ -189,6 +199,12 @@ function nonNegativeInteger(value: unknown): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0
 }
 
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : undefined
+}
+
 function repoPathOverrides(value: unknown): Record<string, string> {
   if (!isRecord(value)) return {}
   const paths: Record<string, string> = {}
@@ -256,6 +272,7 @@ function deliveryStatus(value: unknown): FeishuAgentDeliveryStep['status'] {
 function sanitizeDeliveryJob(value: unknown): FeishuAgentDeliveryJob | undefined {
   if (!isRecord(value) || !optionalText(value.id, 200)) return undefined
   const status = value.status === 'succeeded' || value.status === 'failed' ? value.status : 'running'
+  const processId = optionalNonNegativeInteger(value.processId)
   const steps = Array.isArray(value.steps)
     ? value.steps.slice(0, 12).filter(isRecord).map((step) => ({
         key: text(step.key, 100),
@@ -278,6 +295,21 @@ function sanitizeDeliveryJob(value: unknown): FeishuAgentDeliveryJob | undefined
     branch: optionalText(value.branch, 200),
     steps,
     startedAt: timestamp(value.startedAt, nowIso()),
+    lastActivityAt: optionalText(value.lastActivityAt, 80),
+    processId: processId && processId > 0 ? processId : undefined,
+    processAlive: typeof value.processAlive === 'boolean' ? value.processAlive : undefined,
+    workspaceChangedAt: optionalText(value.workspaceChangedAt, 80),
+    changedFileCount: optionalNonNegativeInteger(value.changedFileCount),
+    diffAddedLines: optionalNonNegativeInteger(value.diffAddedLines),
+    diffRemovedLines: optionalNonNegativeInteger(value.diffRemovedLines),
+    recentChangedFiles: Array.isArray(value.recentChangedFiles)
+      ? value.recentChangedFiles
+          .slice(0, 8)
+          .map((path) => optionalText(path, 500))
+          .filter((path): path is string => Boolean(path))
+      : undefined,
+    artifactChangedAt: optionalText(value.artifactChangedAt, 80),
+    artifactChangedFile: optionalText(value.artifactChangedFile, 1_000),
     finishedAt: optionalText(value.finishedAt, 80),
     result: isRecord(value.result) ? value.result : undefined,
     error: optionalText(value.error),

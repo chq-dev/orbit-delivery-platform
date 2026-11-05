@@ -106,3 +106,52 @@ export function parseGitStatusPaths(output: string): string[] {
   }
   return paths
 }
+
+export function deliveryWorkspaceFiles(paths: string[]): string[] {
+  return paths
+    .map(normalizePath)
+    .filter((path) => path && !path.startsWith(DELIVERY_ARTIFACT_PREFIX))
+}
+
+export function deliveryArtifactFiles(paths: string[]): string[] {
+  return paths
+    .map(normalizePath)
+    .filter((path) => path.startsWith(DELIVERY_ARTIFACT_PREFIX))
+}
+
+export interface DeliveryArtifactActivity {
+  path: string
+  modifiedAt: string
+}
+
+export function latestDeliveryArtifactActivity(
+  checkout: string,
+  paths: string[],
+): DeliveryArtifactActivity | undefined {
+  let latest: DeliveryArtifactActivity | undefined
+  let latestModifiedMs = 0
+  for (const path of deliveryArtifactFiles(paths)) {
+    try {
+      const info = statSync(join(checkout, path))
+      if (!info.isFile() || info.mtimeMs <= latestModifiedMs) continue
+      latest = { path, modifiedAt: info.mtime.toISOString() }
+      latestModifiedMs = info.mtimeMs
+    } catch {
+      // A path listed by git may have been removed before it could be inspected.
+    }
+  }
+  return latest
+}
+
+export function parseGitNumstat(output: string): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const line of output.split(/\r?\n/)) {
+    const [addedValue, removedValue, ...pathParts] = line.split('\t')
+    const path = normalizePath(pathParts.join('\t'))
+    if (path.startsWith(DELIVERY_ARTIFACT_PREFIX)) continue
+    if (/^\d+$/.test(addedValue ?? '')) added += Number(addedValue)
+    if (/^\d+$/.test(removedValue ?? '')) removed += Number(removedValue)
+  }
+  return { added, removed }
+}

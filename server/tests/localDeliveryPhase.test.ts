@@ -5,10 +5,14 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import {
   deliveryDesignReportExists,
+  deliveryArtifactFiles,
+  deliveryWorkspaceFiles,
   inferDeliveryCodexPhase,
+  latestDeliveryArtifactActivity,
   nextDeliveryCodexPhase,
   parseDeliveryCodexPhase,
   parseGitStatusPaths,
+  parseGitNumstat,
   readDeliveryCodexPhaseMarker,
   resetDeliveryCodexPhaseMarker,
 } from '../services/localDeliveryPhase.js'
@@ -88,4 +92,45 @@ test('解析 git status -z，包含重命名前后的路径', () => {
       'web/src/old.ts',
     ],
   )
+})
+
+test('交付进度统计排除产物目录并汇总增删行数', () => {
+  assert.deepEqual(
+    deliveryWorkspaceFiles([
+      'web/src/PrivateMetric.ts',
+      'delivery-artifacts/REQ-1082/design-report.md',
+      'delivery-artifacts/',
+    ]),
+    ['web/src/PrivateMetric.ts'],
+  )
+  assert.deepEqual(
+    deliveryArtifactFiles([
+      'web/src/PrivateMetric.ts',
+      'delivery-artifacts/REQ-1082/build.log',
+    ]),
+    ['delivery-artifacts/REQ-1082/build.log'],
+  )
+  assert.deepEqual(
+    parseGitNumstat(
+      '12\t3\tweb/src/PrivateMetric.ts\n-\t-\tweb/public/icon.png\n9\t1\tdelivery-artifacts/REQ-1082/build.log\n',
+    ),
+    { added: 12, removed: 3 },
+  )
+})
+
+test('交付产物更新时间用于确认构建或测试仍在写入日志', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'orbit-artifact-'))
+  const artifactDir = join(checkout, 'delivery-artifacts', 'REQ-1082')
+  try {
+    mkdirSync(artifactDir, { recursive: true })
+    writeFileSync(join(artifactDir, 'build.log'), 'build started\n')
+    const activity = latestDeliveryArtifactActivity(checkout, [
+      'delivery-artifacts/REQ-1082/build.log',
+      'web/src/PrivateMetric.ts',
+    ])
+    assert.equal(activity?.path, 'delivery-artifacts/REQ-1082/build.log')
+    assert.ok(activity?.modifiedAt)
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
 })

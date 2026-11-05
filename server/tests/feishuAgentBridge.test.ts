@@ -404,14 +404,42 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
         repoId: 'repo-1',
         steps,
         startedAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        processId: 43210,
+        processAlive: true,
+        workspaceChangedAt: new Date().toISOString(),
+        changedFileCount: 3,
+        diffAddedLines: 42,
+        diffRemovedLines: 7,
+        recentChangedFiles: ['web/src/a.ts', 'web/src/b.ts'],
+        artifactChangedAt: new Date().toISOString(),
+        artifactChangedFile: 'delivery-artifacts/REQ-1082/build.log',
         result: { commit: 'abcdef1234567', changedFiles: ['src/a.ts'] },
       },
     }, TEST_CLIENT_ID)
     assert.equal(updated.status, 'succeeded')
-    assert.equal(
-      (updated.result as { job: { steps: unknown[] } }).job.steps.length,
-      7,
-    )
+    const updatedJob = (updated.result as {
+      job: {
+        steps: unknown[]
+        processId?: number
+        processAlive?: boolean
+        changedFileCount?: number
+        diffAddedLines?: number
+        diffRemovedLines?: number
+        recentChangedFiles?: string[]
+        artifactChangedAt?: string
+        artifactChangedFile?: string
+      }
+    }).job
+    assert.equal(updatedJob.steps.length, 7)
+    assert.equal(updatedJob.processId, 43210)
+    assert.equal(updatedJob.processAlive, true)
+    assert.equal(updatedJob.changedFileCount, 3)
+    assert.equal(updatedJob.diffAddedLines, 42)
+    assert.equal(updatedJob.diffRemovedLines, 7)
+    assert.deepEqual(updatedJob.recentChangedFiles, ['web/src/a.ts', 'web/src/b.ts'])
+    assert.ok(updatedJob.artifactChangedAt)
+    assert.equal(updatedJob.artifactChangedFile, 'delivery-artifacts/REQ-1082/build.log')
   } finally {
     db.close()
   }
