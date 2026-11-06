@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
 import { notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
+import { parseFeishuAgentRepoPaths } from './feishuAgentConfig.js'
 import { parseLocalDeliveryAgentRequest } from './localDeliveryAgentService.js'
 
 export const DEFAULT_FEISHU_AGENT_CLIENT_ID = 'primary'
@@ -15,6 +16,7 @@ export type FeishuAgentCommandType =
   | 'login_start'
   | 'sync'
   | 'rotate_token'
+  | 'configure_repo_paths'
   | 'delivery_start'
 export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'
 
@@ -491,13 +493,21 @@ export function enqueueFeishuAgentCommand(
     type !== 'login_start' &&
     type !== 'sync' &&
     type !== 'rotate_token' &&
+    type !== 'configure_repo_paths' &&
     type !== 'delivery_start'
   ) {
     throw unprocessable('不支持的代理命令')
   }
   const clientId = resolveCommandClientId(db, requestedClientId)
   const request = type === 'delivery_start' ? parseLocalDeliveryAgentRequest(payload) : undefined
-  const payloadJson = request ? JSON.stringify(request) : null
+  const paths = type === 'configure_repo_paths' && isRecord(payload)
+    ? parseFeishuAgentRepoPaths(payload.repoPaths, true)
+    : undefined
+  if (type === 'configure_repo_paths' && (!paths || Object.keys(paths).length === 0)) {
+    throw unprocessable('请配置至少一个本机仓库绝对路径')
+  }
+  const commandPayload = paths ? { repoPaths: paths } : request
+  const payloadJson = commandPayload ? JSON.stringify(commandPayload) : null
   const existing = db
     .prepare(
       `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
@@ -526,7 +536,7 @@ export function enqueueFeishuAgentCommand(
     clientId,
     type,
     status: 'pending',
-    payload: request,
+    payload: commandPayload,
     createdAt: now,
     updatedAt: now,
   }

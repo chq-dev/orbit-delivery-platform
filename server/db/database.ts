@@ -85,7 +85,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'feishu_agent_commands'")
     .get() as { sql: string } | undefined
   if (!table) return
-  if (table.sql.includes("'delivery_start'")) {
+  if (table.sql.includes("'delivery_start'") && table.sql.includes("'configure_repo_paths'")) {
     ensureColumn(db, 'feishu_agent_commands', 'payload_json', 'TEXT')
     ensureColumn(db, 'feishu_agent_commands', 'client_id', "TEXT NOT NULL DEFAULT 'primary'")
     return
@@ -97,7 +97,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
     CREATE TABLE feishu_agent_commands (
       id TEXT PRIMARY KEY,
       client_id TEXT NOT NULL DEFAULT 'primary',
-      command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start')),
+      command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start', 'configure_repo_paths')),
       status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
       payload_json TEXT,
       result_json TEXT,

@@ -78,4 +78,11 @@ export const config = {
     process.env.FEISHU_DEFAULT_REPO_URL ?? 'http://cloudgit.rj.link/sme/sme-main.git',
   feishuDefaultRepoBranch: process.env.FEISHU_DEFAULT_REPO_BRANCH ?? 'dev-harvey',
   feishuDefaultRepoLocalPath: process.env.FEISHU_DEFAULT_REPO_LOCAL_PATH ?? '',
+  cloudDeliveryPlatformUrl: (
+    process.env.CLOUD_DELIVERY_PLATFORM_URL ?? process.env.PLATFORM_BASE_URL ?? ''
+  ).trim(),
+  cloudDeliveryGitHosts: (process.env.CLOUD_DELIVERY_GIT_HOSTS ?? '')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean),
 }

@@ -9,9 +9,11 @@ import {
   Clock3,
   CloudDownload,
   Copy,
+  ExternalLink,
   FileText,
   GitBranch,
   KeyRound,
+  LoaderCircle,
   Plus,
   Rocket,
   Search,
@@ -39,8 +41,9 @@ import {
   type PageSize,
 } from '../pagination'
 import { buildLocalSkillInstruction } from '../skillInstruction'
+import { setupLocalMeegleCli } from '../localAgentDiscovery'
 import { useData } from '../store'
-import type { PageKey, WorkItem, WorkItemStatus, WorkItemType } from '../types'
+import type { FeishuLoginChallenge, PageKey, WorkItem, WorkItemStatus, WorkItemType } from '../types'
 import {
   collectWorkItemFilterValues,
   filterWorkItems,
@@ -67,6 +70,8 @@ export function WorkItems({
     refreshFeishuInbox,
     feishuSnapshot,
     feishuAgent,
+    refreshFeishuAgent,
+    beginFeishuAgentLogin,
     syncFeishu,
     getWorkItemDetail,
     refreshWorkItems,
@@ -86,6 +91,8 @@ export function WorkItems({
   const [importMode, setImportMode] = useState<WorkItemType>('requirement')
   const [importOpen, setImportOpen] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
+  const [meegleSetupBusy, setMeegleSetupBusy] = useState(false)
+  const [meegleChallenge, setMeegleChallenge] = useState<FeishuLoginChallenge>()
   const [syncingType, setSyncingType] = useState<WorkItemType | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE)
@@ -273,6 +280,35 @@ export function WorkItems({
       notify('Codex 飞书同步指令已复制', '粘贴到本机 Codex 即可拉取实时数据并回写平台', 'success')
     } catch {
       notify('复制失败', '浏览器未授予剪贴板权限，请手动选择指令内容', 'warning')
+    }
+  }
+
+  const setupMeegleAndStartLogin = async () => {
+    if (!window.confirm(
+      '将在当前 Mac 上安装/配置 Meegle CLI（当前 Node 全局环境），然后发起飞书设备授权。不会更改服务器；授权页面仍需你本人确认。继续吗？',
+    )) return
+
+    setMeegleSetupBusy(true)
+    setMeegleChallenge(undefined)
+    try {
+      const setup = await setupLocalMeegleCli()
+      if (!setup.available) throw new Error('Meegle CLI 尚不可用，请重新检测本机代理')
+      await refreshFeishuAgent(true)
+      if (setup.authenticated) {
+        notify('Meegle 已完成授权', '当前 Mac 的飞书登录状态可直接使用')
+        return
+      }
+      const challenge = await beginFeishuAgentLogin()
+      setMeegleChallenge(challenge)
+      notify('飞书设备授权已发起', '打开授权链接并输入下方用户码，页面会自动检测完成状态')
+    } catch (error) {
+      notify(
+        '本机快捷配置失败',
+        error instanceof Error ? error.message : '请稍后重试',
+        'warning',
+      )
+    } finally {
+      setMeegleSetupBusy(false)
     }
   }
 
@@ -654,15 +690,40 @@ export function WorkItems({
               <KeyRound size={16} />
               <div>
                 <p>
-                  在已登录飞书的当前电脑启动代理，然后使用上方“本机飞书实时同步”卡片完成
-                  密钥绑定和授权。页面刷新会自动触发同步，无需复制飞书 Cookie。
+                  一键在当前 Mac 安装并配置 Meegle CLI，然后直接发起飞书设备授权。安装只作用于当前 Mac，不会更改平台服务器；授权仍由你在飞书页面确认。
                 </p>
-                <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
-                  {`npm install -g @lark-project/meegle@1.0.27
-meegle config set host project.feishu.cn
-meegle auth login --device-code
-npm run feishu:agent`}
-                </code>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => void setupMeegleAndStartLogin()}
+                  disabled={meegleSetupBusy}
+                >
+                  {meegleSetupBusy ? <LoaderCircle size={14} className="spin" /> : <KeyRound size={14} />}
+                  {meegleSetupBusy ? '正在配置并发起授权…' : '一键配置并开始授权'}
+                </button>
+                {meegleChallenge && (
+                  <div className="credential-note" style={{ marginTop: 10 }}>
+                    <ShieldCheck size={16} />
+                    <div>
+                      <strong>请完成飞书授权</strong>
+                      <p>打开授权页并输入用户码；本机代理会自动检查授权结果。</p>
+                      <a
+                        className="btn btn-secondary btn-xs"
+                        href={meegleChallenge.verificationUriComplete}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        打开飞书授权页 <ExternalLink size={12} />
+                      </a>
+                      <code style={{ display: 'block', marginTop: 6 }}>{meegleChallenge.userCode}</code>
+                    </div>
+                  </div>
+                )}
+                <details style={{ marginTop: 8 }}>
+                  <summary>显示命令行备用方式</summary>
+                  <code style={{ display: 'block', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+                    {`npm install -g @lark-project/meegle@1.0.27\nmeegle config set host project.feishu.cn\nmeegle auth login --device-code`}
+                  </code>
+                </details>
               </div>
             </div>
           </Field>

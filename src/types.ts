@@ -310,6 +310,7 @@ export type FeishuAgentCommandType =
   | 'login_start'
   | 'sync'
   | 'rotate_token'
+  | 'configure_repo_paths'
   | 'delivery_start'
 export type FeishuAgentCommandStatus = 'pending' | 'running' | 'succeeded' | 'failed'
 
@@ -335,6 +336,19 @@ export interface FeishuAgentClientStatus {
   activeCommand: FeishuAgentCommand | null
   lastCommand: FeishuAgentCommand | null
   commands: FeishuAgentCommand[]
+}
+
+export interface FeishuAgentPairingSummary {
+  clientId: string
+  clientName: string
+  machineName: string
+  platformBaseUrl: string
+  projectKey: string
+  status: 'pending' | 'approved'
+  verificationCode: string
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
 }
 
 export interface FeishuAgentBridgeStatus {

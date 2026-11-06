@@ -131,11 +131,13 @@ export interface LocalDeliveryAgentRequest {
   autoCommit: boolean
   pushAfterAcceptance: boolean
   autoClose: boolean
+  temporaryCheckout?: boolean
 }
 
 export interface LocalDeliveryBootstrapRepository {
   id: string
   name?: string
+  url?: string
   branch?: string
   localPath?: string
 }
@@ -157,6 +159,7 @@ export interface LocalDeliveryTarget {
   repository: LocalDeliveryBootstrapRepository
   localPath: string
   branch?: string
+  temporaryCheckout: boolean
 }
 
 export interface LocalDeliveryBranchResolution {
@@ -182,6 +185,7 @@ export interface CodexExecArgsInput {
   lastMessagePath: string
   imagePaths: string[]
   mcpArgs: string[]
+  ephemeral?: boolean
 }
 
 const REQUEST_KEYS = new Set([
@@ -190,6 +194,7 @@ const REQUEST_KEYS = new Set([
   'autoCommit',
   'pushAfterAcceptance',
   'autoClose',
+  'temporaryCheckout',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -224,8 +229,12 @@ export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAge
 
   const autoCommit = booleanOption(input.autoCommit, '自动提交', true)
   const pushAfterAcceptance = booleanOption(input.pushAfterAcceptance, '验收后推送', false)
+  const temporaryCheckout = booleanOption(input.temporaryCheckout, '临时检出', false)
   if (pushAfterAcceptance && !autoCommit) {
     throw new Error('未启用自动提交时不能推送')
+  }
+  if (temporaryCheckout && (!autoCommit || !pushAfterAcceptance)) {
+    throw new Error('临时检出必须启用自动提交和推送，避免清理工作区时丢失代码')
   }
   return {
     workItemId: requiredIdentifier(input.workItemId, '工作项'),
@@ -233,6 +242,7 @@ export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAge
     autoCommit,
     pushAfterAcceptance,
     autoClose: booleanOption(input.autoClose, '自动关闭缺陷', false),
+    temporaryCheckout,
   }
 }
 
@@ -247,14 +257,22 @@ export function resolveLocalDeliveryTarget(
   if (!repository) throw new Error(`平台中不存在代码仓库 ${request.repoId}`)
 
   const localPath = text(repoPaths[repository.id]) || text(repository.localPath)
-  if (!localPath) {
+  if (!localPath && !request.temporaryCheckout) {
     throw new Error(
       '该仓库尚未配置当前客户端的代码路径；请在平台仓库设置或本机代理 repoPaths 中配置绝对路径',
     )
   }
-  if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
+  if (localPath && !isAbsolute(localPath)) {
+    throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
+  }
   const branch = text(repository.branch) || text(workItem.branch)
-  return { workItem, repository, localPath, branch: branch || undefined }
+  return {
+    workItem,
+    repository,
+    localPath,
+    branch: branch || undefined,
+    temporaryCheckout: Boolean(request.temporaryCheckout),
+  }
 }
 
 export function resolveLocalDeliveryBranch(
@@ -306,6 +324,7 @@ export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
   if (!text(input.lastMessagePath)) throw new Error('Codex 最后消息文件不能为空')
   return [
     'exec',
+    ...(input.ephemeral ? ['--ephemeral'] : []),
     ...input.mcpArgs,
     '-C',
     input.checkout,

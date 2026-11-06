@@ -2,9 +2,10 @@
   "name": "orbit-delivery-platform",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "yarn@1.22.22",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev": "npm run build:agent && concurrently -k -n api,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
     "start:server": "tsx server/index.ts",
@@ -22,9 +23,10 @@
     "sync:feishu:snapshot:watch": "tsx server/cli/feishuSync.ts --snapshot-only --watch",
     "snapshot:from-db": "tsx server/cli/exportFeishuSnapshot.ts",
     "tls:generate": "bash scripts/generate-dev-cert.sh",
+    "build:agent": "esbuild server/cli/feishuClientAgent.ts server/cli/feishuSync.ts server/cli/localDelivery.ts --bundle --platform=node --format=esm --target=node18 --out-extension:.js=.mjs --outdir=public/downloads",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "test:server": "node --import tsx --import ./server/tests/setup.ts --test server/tests/*.test.ts",
-    "build": "tsc -b && npm run typecheck:server && vite build",
+    "build": "tsc -b && npm run typecheck:server && npm run build:agent && vite build",
     "preview": "npm run build && npm run start:server",
     "preview:web": "vite preview"
   },
@@ -46,6 +48,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.2.5",
+    "esbuild": "^0.25.0",
     "tsx": "^4.23.15",
     "typescript": "~5.7.2",
     "vite": "^6.0.5"

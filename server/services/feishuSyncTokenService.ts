@@ -41,6 +41,42 @@ function getCredentialRow(db: AppDatabase): CredentialRow | undefined {
     .get(CREDENTIAL_ID) as CredentialRow | undefined
 }
 
+interface AgentCredentialRow {
+  client_id: string
+  token_hash: string
+  token_hint: string
+  created_at: string
+  updated_at: string
+}
+
+function agentCredentialForToken(
+  db: AppDatabase,
+  token: string,
+): AgentCredentialRow | undefined {
+  if (!token) return undefined
+  const rows = db
+    .prepare(
+      'SELECT client_id, token_hash, token_hint, created_at, updated_at FROM feishu_agent_credentials',
+    )
+    .all() as AgentCredentialRow[]
+  return rows.find((row) => safeHashEqual(row.token_hash, tokenHash(token)))
+}
+
+export function issueFeishuAgentCredential(db: AppDatabase, clientId: string): string {
+  const token = createToken()
+  const now = nowIso()
+  db.prepare(
+    `INSERT INTO feishu_agent_credentials
+      (client_id, token_hash, token_hint, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(client_id) DO UPDATE SET
+       token_hash = excluded.token_hash,
+       token_hint = excluded.token_hint,
+       updated_at = excluded.updated_at`,
+  ).run(clientId, tokenHash(token), `••••${token.slice(-4)}`, now, now)
+  return token
+}
+
 export function getFeishuSyncTokenStatus(db: AppDatabase): FeishuSyncTokenStatus {
   if (config.feishuIngestToken) {
     return {
@@ -83,6 +119,18 @@ export function rotateFeishuSyncToken(
   token: string
   status: FeishuSyncTokenStatus
 } {
+  const agentCredential = agentCredentialForToken(db, currentToken)
+  if (agentCredential) {
+    const token = createToken()
+    const now = nowIso()
+    db.prepare(
+      `UPDATE feishu_agent_credentials
+       SET token_hash = ?, token_hint = ?, updated_at = ?
+       WHERE client_id = ?`,
+    ).run(tokenHash(token), `••••${token.slice(-4)}`, now, agentCredential.client_id)
+    return { token, status: getFeishuSyncTokenStatus(db) }
+  }
+
   if (config.feishuIngestToken) {
     throw conflict('飞书同步密钥由 FEISHU_INGEST_TOKEN 管理，不能在页面轮换')
   }
@@ -112,5 +160,6 @@ export function verifyFeishuSyncToken(db: AppDatabase, token: string): boolean {
     if (expected.length === actual.length && timingSafeEqual(expected, actual)) return true
   }
   const row = getCredentialRow(db)
-  return Boolean(row && safeHashEqual(row.token_hash, tokenHash(token)))
+  if (row && safeHashEqual(row.token_hash, tokenHash(token))) return true
+  return Boolean(agentCredentialForToken(db, token))
 }

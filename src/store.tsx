@@ -28,9 +28,6 @@ import {
   type FeishuSnapshot,
 } from './feishuSnapshot'
 import {
-  configureLocalFeishuAgent,
-  configureLocalFeishuAgentRepoPaths,
-  fetchLocalFeishuAgentHealth,
   enqueueFeishuAgentCommand,
   fetchFeishuAgentStatus,
 } from './feishuAgent'
@@ -58,13 +55,6 @@ import {
   type ToastMessage,
   type WorkItem,
 } from './types'
-
-interface FeishuAgentBindResult {
-  status: FeishuSyncTokenStatus
-  agentConfigured: boolean
-  token?: string
-  error?: string
-}
 
 const FEISHU_AGENT_AUTO_SYNC_INTERVAL_MS = 10 * 60_000
 const WORK_ITEMS_REFRESH_INTERVAL_MS = 60_000
@@ -147,10 +137,6 @@ interface DataContextValue {
   refreshFeishuAgent: (quiet?: boolean) => Promise<FeishuClientAgentHealth | null>
   selectFeishuAgentClient: (clientId: string) => Promise<void>
   refreshFeishuSyncToken: () => Promise<FeishuSyncTokenStatus | null>
-  bindFeishuAgent: (input: {
-    repoPaths: Record<string, string>
-    syncToken?: string
-  }) => Promise<FeishuAgentBindResult>
   saveFeishuAgentRepoPaths: (repoPaths: Record<string, string>) => Promise<void>
   beginFeishuAgentLogin: () => Promise<FeishuLoginChallenge>
   rotateFeishuSyncToken: () => Promise<FeishuSyncTokenStatus>
@@ -493,7 +479,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const autoSelectLocalFeishuAgent = useCallback(
     async (clients: FeishuAgentClientStatus[]): Promise<boolean> => {
-      if (feishuAgentClientId.current) return false
       const localClientId = await discoverLocalFeishuAgentClientId()
       if (localClientId) setLocalFeishuAgentClientId(localClientId)
       if (
@@ -583,14 +568,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
         throw new Error('执行客户端已切换，请重新发起飞书同步')
       }
       if (!health) {
-        throw new Error('本机飞书同步代理未启动，请先在客户端运行 npm run feishu:agent')
+        throw new Error('本机飞书同步代理未启动，请先安装并启动登录自启动代理')
       }
       if (!feishuAgentOnline.current) {
         throw new Error('所选执行客户端离线，请恢复该客户端代理后重试')
       }
       if (health.running) throw new Error('本机飞书同步代理正在执行同步，请稍后重试')
       if (!health.config.configured) {
-        throw new Error('本机代理尚未绑定平台同步密钥，请先点击“生成密钥并绑定”')
+        throw new Error('本机代理尚未绑定平台，请到账号中心“添加执行客户端”完成登记')
       }
       if (!health.meegle.available) {
         throw new Error('本机未安装 Meegle CLI，请安装 @lark-project/meegle 后重启代理')
@@ -637,80 +622,20 @@ export function DataProvider({ children }: { children: ReactNode }) {
     ],
   )
 
-  const bindFeishuAgent = useCallback(
-    async ({ repoPaths, syncToken }: {
-      repoPaths: Record<string, string>
-      syncToken?: string
-    }): Promise<FeishuAgentBindResult> => {
-      const localHealth = await fetchLocalFeishuAgentHealth()
-      const localClientId = localHealth.config.clientId
-      if (!localClientId) throw new Error('本机代理尚未注册，请重启 npm run feishu:agent 后重试')
-      if (feishuAgentClientId.current && feishuAgentClientId.current !== localClientId) {
-        throw new Error('当前选中的不是这台 Mac，请先选择当前 Mac 的执行客户端')
-      }
-      if (!Object.keys(repoPaths).length) {
-        throw new Error('请先配置至少一个本机仓库绝对路径')
-      }
-
-      const currentStatus = await api.getFeishuSyncTokenStatus()
-      setFeishuSyncToken(currentStatus)
-
-      if (localHealth.config.configured) {
-        await configureLocalFeishuAgentRepoPaths(repoPaths)
-        await fetchAgentStatus()
-        return { status: currentStatus, agentConfigured: true }
-      }
-
-      if (currentStatus.source === 'env' && !syncToken) {
-        throw new Error('平台密钥由服务器环境变量管理，无法从账号中心读取；请让服务器管理员更新密钥配置')
-      }
-      if (currentStatus.configured && !syncToken) {
-        throw new Error('平台已有密钥，但无法再次读取；请使用本次生成的密钥重试，或由管理员重置后重新绑定')
-      }
-
-      const created = currentStatus.configured
-        ? { token: syncToken as string, status: currentStatus }
-        : await api.bootstrapFeishuSyncToken()
-      setFeishuSyncToken(created.status)
-      try {
-        await configureLocalFeishuAgent({
-          platformBaseUrl: window.location.origin,
-          syncToken: created.token,
-          projectKey: feishuIntegration.projectKey || 'rjcloud',
-          repoPaths,
-        })
-      } catch (error) {
-        return {
-          status: created.status,
-          agentConfigured: false,
-          token: created.token,
-          error: error instanceof Error ? error.message : '无法写入本机代理配置',
-        }
-      }
-
-      await delay(300)
-      await fetchAgentStatus().catch(() => undefined)
-      return { status: created.status, agentConfigured: true }
-    },
-    [fetchAgentStatus, feishuIntegration.projectKey],
-  )
-
   const saveFeishuAgentRepoPaths = useCallback(async (repoPaths: Record<string, string>) => {
-    const localHealth = await fetchLocalFeishuAgentHealth()
-    if (!localHealth.config.configured) throw new Error('本机代理尚未绑定平台同步密钥')
-    if (
-      feishuAgentClientId.current &&
-      localHealth.config.clientId !== feishuAgentClientId.current
-    ) {
-      throw new Error('当前选中的不是这台 Mac，请先选择当前 Mac 的执行客户端')
-    }
-    await configureLocalFeishuAgentRepoPaths(repoPaths)
+    const clientId = feishuAgentClientId.current
+    if (!clientId) throw new Error('请选择要配置的执行客户端')
+    const command = await enqueueFeishuAgentCommand(
+      'configure_repo_paths',
+      clientId,
+      { repoPaths },
+    )
+    await waitForAgentCommand(command, 30_000, clientId)
     await fetchAgentStatus().catch(() => undefined)
-  }, [fetchAgentStatus])
+  }, [fetchAgentStatus, waitForAgentCommand])
 
   const rotateFeishuSyncToken = useCallback(async () => {
     const status = (await refreshFeishuSyncToken()) ?? feishuSyncToken
-    if (!status.configured) throw new Error('平台尚未生成飞书同步密钥')
     if (status.source === 'env') {
       throw new Error('同步密钥由 FEISHU_INGEST_TOKEN 管理，不能在页面轮换')
     }
@@ -741,6 +666,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const status = await fetchAgentStatus()
       if (!status.online || !status.health) {
         throw new Error('同步代理离线，无法发起飞书授权')
+      }
+      if (!status.health.meegle.available) {
+        throw new Error('当前 Mac 未安装 Meegle CLI，请先安装官方 CLI 后重新检测')
       }
       if (status.health.meegle.authenticated) {
         throw new Error('飞书已经完成授权，无需重复登录')
@@ -1097,13 +1025,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }
 
       if (health && !health.config.configured) {
-        throw new Error('本机代理尚未绑定平台同步密钥，请先点击“生成密钥并绑定”')
+        throw new Error('本机代理尚未绑定平台，请到账号中心“添加执行客户端”完成登记')
       }
       if (health && health.meegle.available && !health.meegle.authenticated) {
         throw new Error('Meegle 尚未登录，请先完成页面中的飞书设备授权')
       }
       throw new Error(
-        '未检测到本机飞书同步代理。请在客户端运行 npm run feishu:agent 并完成一次绑定；旧快照不会再被当作实时同步结果',
+        '未检测到本机飞书同步代理。请先在账号中心查看客户端安装方式并完成平台绑定；旧快照不会再被当作实时同步结果',
       )
     } catch (error) {
       reportApiError('飞书工作项同步失败', error)
@@ -1171,7 +1099,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       refreshFeishuAgent,
       selectFeishuAgentClient,
       refreshFeishuSyncToken,
-      bindFeishuAgent,
       saveFeishuAgentRepoPaths,
       beginFeishuAgentLogin,
       rotateFeishuSyncToken,
@@ -1187,7 +1114,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addRepository,
       addWorkItem,
       beginFeishuAgentLogin,
-      bindFeishuAgent,
       connectFeishu,
       disconnectFeishu,
       dismissToast,

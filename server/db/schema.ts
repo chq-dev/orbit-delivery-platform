@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 18
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -256,6 +256,30 @@ CREATE TABLE IF NOT EXISTS feishu_sync_credentials (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS feishu_agent_credentials (
+  client_id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_hint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feishu_agent_pairings (
+  client_id TEXT PRIMARY KEY,
+  pairing_secret_hash TEXT NOT NULL,
+  client_name TEXT NOT NULL,
+  machine_name TEXT NOT NULL,
+  platform_base_url TEXT NOT NULL,
+  project_key TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  source_ip TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved')),
+  config_ciphertext TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS feishu_agent_state (
   id TEXT PRIMARY KEY,
   client_name TEXT NOT NULL DEFAULT '',
@@ -269,7 +293,7 @@ CREATE TABLE IF NOT EXISTS feishu_agent_state (
 CREATE TABLE IF NOT EXISTS feishu_agent_commands (
   id TEXT PRIMARY KEY,
   client_id TEXT NOT NULL DEFAULT 'primary',
-  command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start')),
+  command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start', 'configure_repo_paths')),
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
   payload_json TEXT,
   result_json TEXT,

@@ -28,11 +28,15 @@ import {
 } from '../deliveryContext'
 import {
   createPendingLocalDeliveryJob,
+  getCloudDeliveryReadiness,
   markLocalDeliveryStartFailed,
   pipelineFromDeliveryResult,
   probeLocalDeliveryAgent,
   startLocalDelivery,
+  startCloudDelivery,
   waitForLocalDelivery,
+  waitForCloudDelivery,
+  type CloudDeliveryReadiness,
   type LocalDeliveryAgentReadiness,
 } from '../localDeliveryAgent'
 import { prepareScreenshot } from '../screenshotCompression'
@@ -45,10 +49,10 @@ import { Field, Modal, StatusBadge } from './ui'
 const MAX_VISIBLE_WORK_ITEMS = 50
 
 function deliveryStatusLabel(job: LocalDeliveryJob | null, error: string): string {
-  if (error || job?.status === 'failed') return '客户端执行失败'
-  if (job?.status === 'succeeded') return '客户端执行完成'
-  if (job?.status === 'running') return '客户端执行中'
-  return '等待客户端执行'
+  if (error || job?.status === 'failed') return '交付执行失败'
+  if (job?.status === 'succeeded') return '交付执行完成'
+  if (job?.status === 'running') return '交付执行中'
+  return '等待交付执行'
 }
 
 function WorkItemPicker({
@@ -260,6 +264,9 @@ export function DeliveryDialog({
   const [autoCommit, setAutoCommit] = useState(true)
   const [pushAfterAcceptance, setPushAfterAcceptance] = useState(true)
   const [autoClose, setAutoClose] = useState(true)
+  const [executionMode, setExecutionMode] = useState<'auto' | 'mac' | 'server'>('auto')
+  const [cloudReadiness, setCloudReadiness] = useState<CloudDeliveryReadiness | null>(null)
+  const [cloudReadinessChecking, setCloudReadinessChecking] = useState(false)
   const [requirementBreakdown, setRequirementBreakdown] = useState('')
   const [designReference, setDesignReference] = useState('')
   const [screenshots, setScreenshots] = useState<DeliveryScreenshotUpload[]>([])
@@ -294,8 +301,23 @@ export function DeliveryDialog({
   const selectedClient = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
   )
+  const localMacSelected = Boolean(
+    localFeishuAgentClientId && selectedFeishuAgentClientId === localFeishuAgentClientId,
+  )
   const localRepoPath = localAgent.repoPaths[repoId]
   const effectiveLocalPath = localRepoPath || selectedRepo?.localPath
+  const macAgentReady = Boolean(
+    selectedFeishuAgentClientId &&
+      localAgent.online &&
+      localAgent.platformReady &&
+      localAgent.configured &&
+      localAgent.codexAvailable,
+  )
+  const canUseMacAutomatically = macAgentReady && Boolean(effectiveLocalPath || localMacSelected)
+  const serverExecution =
+    executionMode === 'server' ||
+    (executionMode === 'auto' && !canUseMacAutomatically)
+  const macExecution = !serverExecution
   const savedScreenshotCount = selectedItem?.requirementScreenshotCount ?? 0
   const effectiveScreenshotCount =
     screenshots.length > 0 ? screenshots.length : savedScreenshotCount
@@ -328,6 +350,7 @@ export function DeliveryDialog({
     setAutoCommit(true)
     setPushAfterAcceptance(true)
     setAutoClose(true)
+    setExecutionMode('auto')
     setRequirementBreakdown(preferred?.requirementBreakdown ?? '')
     setDesignReference(preferred?.designReference ?? '')
     setScreenshots([])
@@ -383,6 +406,36 @@ export function DeliveryDialog({
       cancelled = true
     }
   }, [open, selectedFeishuAgentClientId])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setCloudReadinessChecking(true)
+    void getCloudDeliveryReadiness()
+      .then((state) => {
+        if (!cancelled) setCloudReadiness(state)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCloudReadiness({
+            available: false,
+            gitAvailable: false,
+            runnerAvailable: false,
+            codexAvailable: false,
+            allowedGitHostsConfigured: false,
+            platformUrlConfigured: false,
+            busy: false,
+            reason: error instanceof Error ? error.message : '无法读取服务器执行状态',
+          })
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCloudReadinessChecking(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   useEffect(() => {
     if (open) return
@@ -479,10 +532,6 @@ export function DeliveryDialog({
   const launch = async () => {
     if (launching) return
     const clientId = selectedFeishuAgentClientId
-    if (!clientId) {
-      notify('未选择执行客户端', '请先启动客户端代理并在页面选择执行客户端', 'warning')
-      return
-    }
     if (selectedItem?.type === 'requirement' && requirementContextIssue) {
       notify('缺少需求交付上下文', requirementContextIssue, 'warning')
       return
@@ -491,34 +540,48 @@ export function DeliveryDialog({
       notify('未选择代码仓库', '请先选择一个目标代码仓库', 'warning')
       return
     }
-    if (!effectiveLocalPath) {
+    if (macExecution) {
+      if (!clientId) {
+        notify('未选择执行客户端', '请先启动客户端代理并在页面选择执行客户端', 'warning')
+        return
+      }
+      if (!localAgent.online) {
+        notify('执行客户端离线', '请先在目标机器启动代理，或改用服务器临时检出', 'warning')
+        return
+      }
+      if (!localAgent.configured) {
+        notify('执行客户端未绑定平台', '请先到账号中心完成客户端代理绑定', 'warning')
+        return
+      }
+      if (!localAgent.codexAvailable) {
+        notify(
+          '未找到 Codex CLI',
+          '请先在该执行客户端设置 CODEX_BIN 为 Codex 可执行文件绝对路径，再重启代理',
+          'warning',
+        )
+        return
+      }
+    } else if (!cloudReadiness?.available || cloudReadiness.busy) {
       notify(
-        '缺少客户端代码路径',
-        '请先到代码仓库配置绝对路径，或在所选执行客户端的 repoPaths 中配置本机路径',
+        '服务器执行暂不可用',
+        cloudReadiness?.busy ? '服务器已有临时交付任务运行，请稍后重试' : cloudReadiness?.reason || '服务器执行环境未就绪',
         'warning',
       )
       return
     }
-    if (!localAgent.online) {
-      notify('执行客户端离线', '请先在目标机器运行 npm run feishu:agent', 'warning')
-      return
-    }
-    if (!localAgent.configured) {
-      notify('执行客户端未绑定平台', '请先到账号中心完成客户端代理绑定', 'warning')
-      return
-    }
-    if (!localAgent.codexAvailable) {
-      notify(
-        '未找到 Codex CLI',
-        '请先在该执行客户端设置 CODEX_BIN 为 Codex 可执行文件绝对路径，再重启代理',
-        'warning',
-      )
-      return
+    const deliveryInput = {
+      workItemId,
+      repoId,
+      autoCommit: serverExecution || autoCommit,
+      pushAfterAcceptance: serverExecution || pushAfterAcceptance,
+      autoClose,
+      temporaryCheckout: serverExecution,
     }
     const controller = new AbortController()
     waitAbortRef.current = controller
     setLaunching(true)
     setDeliveryError('')
+    let usedServerFallback = false
     try {
       if (selectedItem?.type === 'requirement') {
         await api.saveWorkItemDeliveryContext(workItemId, {
@@ -528,71 +591,109 @@ export function DeliveryDialog({
         })
       }
       const pending = createPendingLocalDeliveryJob({
-        workItemId,
-        repoId,
-        autoCommit,
-        pushAfterAcceptance,
-        autoClose,
+        ...deliveryInput,
       })
       setDeliveryJob(pending)
-      const started = await startLocalDelivery(
-        {
-          workItemId,
-          repoId,
-          autoCommit,
-          pushAfterAcceptance,
-          autoClose,
-        },
-        clientId,
-      )
-      setDeliveryJob(started)
-      notify(
-        '客户端交付已启动',
-        `${workItemId} · ${selectedClient?.clientName ?? clientId} · ${selectedRepo.name}`,
-        'info',
-      )
-      const completed = await waitForLocalDelivery(
-        started.id,
-        clientId,
-        setDeliveryJob,
-        45 * 60_000,
-        controller.signal,
-      )
+      let completed: LocalDeliveryJob
+      if (serverExecution) {
+        const started = await startCloudDelivery(deliveryInput)
+        setDeliveryJob(started)
+        notify('服务器临时交付已启动', `${workItemId} · 服务器临时检出 · ${selectedRepo.name}`, 'info')
+        completed = await waitForCloudDelivery(started.id, setDeliveryJob, 60 * 60_000, controller.signal)
+      } else {
+        const started = await startLocalDelivery(deliveryInput, clientId!)
+        setDeliveryJob(started)
+        notify(
+          'Mac 本地交付已启动',
+          `${workItemId} · ${selectedClient?.clientName ?? clientId} · ${selectedRepo.name}`,
+          'info',
+        )
+        try {
+          completed = await waitForLocalDelivery(
+            started.id,
+            clientId!,
+            setDeliveryJob,
+            45 * 60_000,
+            controller.signal,
+          )
+        } catch (error) {
+          const localJob =
+            error instanceof Error
+              ? (error as Error & { localDeliveryJob?: LocalDeliveryJob }).localDeliveryJob
+              : undefined
+          const checkoutLog = localJob?.steps?.find((step) => step.key === 'checkout')?.log ?? ''
+          const repositoryMissing =
+            executionMode === 'auto' &&
+            localJob?.status === 'failed' &&
+            /尚未配置当前客户端的代码路径|不存在代码目录|不是 Git 工作区|读取 Git 工作区失败/.test(checkoutLog)
+          if (!repositoryMissing) throw error
+          if (!deliveryInput.autoCommit || !deliveryInput.pushAfterAcceptance) {
+            throw new Error('Mac 未找到该仓库；服务器临时检出需要启用自动提交和推送，请确认后重试')
+          }
+          if (!cloudReadiness?.available || cloudReadiness.busy) {
+            throw new Error(
+              `Mac 未找到该仓库，且服务器临时执行不可用：${cloudReadiness?.reason || '服务器正忙'}`,
+            )
+          }
+          usedServerFallback = true
+          setExecutionMode('server')
+          setDeliveryJob(localJob)
+          notify('Mac 未找到仓库，已回退服务器', '服务器将临时检出目标仓库，完成后清理', 'info')
+          const serverInput = {
+            ...deliveryInput,
+            autoCommit: true,
+            pushAfterAcceptance: true,
+            temporaryCheckout: true,
+          }
+          const cloudJob = await startCloudDelivery(serverInput)
+          setDeliveryJob(cloudJob)
+          completed = await waitForCloudDelivery(
+            cloudJob.id,
+            setDeliveryJob,
+            60 * 60_000,
+            controller.signal,
+          )
+        }
+      }
       setDeliveryJob(completed)
       await reload(true)
       await refreshWorkItems(true).catch(() => undefined)
       const run = pipelineFromDeliveryResult(completed.result)
       if (!run) {
         notify(
-          '本机交付完成',
-          '代码已在客户端执行完成，但平台未返回流水线记录，请刷新流水线列表查看',
+          '交付完成',
+          '代码已执行完成，但平台未返回流水线记录，请刷新流水线列表查看',
           'warning',
         )
         onClose()
         return
       }
-      notify('本机交付完成', `${run.id} · ${run.branch}`, 'success')
+      notify('交付完成', `${run.id} · ${run.branch}`, 'success')
       onClose()
       onStarted(run)
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         notify(
           '已停止等待',
-          '本机交付仍会在客户端后台继续执行，可稍后在流水线中查看结果',
+          serverExecution || usedServerFallback
+            ? '服务器任务仍会在后台运行，可稍后刷新查看结果'
+            : 'Mac 交付仍会在客户端后台继续执行，可稍后在流水线中查看结果',
           'info',
         )
         return
       }
-      const message = error instanceof Error ? error.message : '本机交付执行失败'
+      const message = error instanceof Error ? error.message : '交付执行失败'
       setDeliveryJob((current) => {
         if (!current || current.status === 'failed') return current
         return markLocalDeliveryStartFailed(current, message)
       })
       setDeliveryError(message)
-      notify('本机交付失败', message, 'warning')
-      void probeLocalDeliveryAgent(selectedFeishuAgentClientId).then((state) =>
-        setLocalAgent({ ...state, checking: false }),
-      )
+      notify('交付失败', message, 'warning')
+      if (macExecution && !usedServerFallback) {
+        void probeLocalDeliveryAgent(selectedFeishuAgentClientId).then((state) =>
+          setLocalAgent({ ...state, checking: false }),
+        )
+      }
     } finally {
       if (waitAbortRef.current === controller) waitAbortRef.current = null
       setLaunching(false)
@@ -604,39 +705,45 @@ export function DeliveryDialog({
       open={open}
       onClose={onClose}
       title="启动一键交付"
-      subtitle="在本机真实执行需求解析、设计、编码、集成验证与提交；构建、升级、测试仅在存在真实证据时完成"
+      subtitle="优先使用当前 Mac 的现有仓库；本机没有仓库路径时可在服务器临时检出并清理"
       size="lg"
       footer={
         <>
           <span className="modal-footer-hint">
             <ShieldCheck size={15} />{' '}
-            {localAgent.checking
-              ? '正在检测所选执行客户端'
-              : requirementContextIssue
-                ? requirementContextIssue
-              : !localFeishuAgentClientId
-                ? feishuAgentClients.length > 0
-                  ? '当前页面所在终端未注册执行代理；下方客户端属于其他机器。请先在本机项目目录运行 npm run feishu:agent'
-                  : '当前终端未检测到执行代理，请先在本机项目目录运行 npm run feishu:agent'
-              : !selectedFeishuAgentClientId
-                ? feishuAgentClients.length > 0
-                  ? '请先明确选择执行客户端，平台不会再自动选择机器'
-                  : '尚未发现执行客户端，请先在目标机器运行 npm run feishu:agent'
-              : !localAgent.platformReady
-                ? localAgent.error || '平台服务端未升级，当前无法下发本机交付'
-              : !localAgent.online
-                ? localAgent.error || '执行客户端离线，请先在目标机器运行 npm run feishu:agent'
-                : !localAgent.configured
-                  ? '执行客户端已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
-                  : !localAgent.codexAvailable
-                    ? '未检测到 Codex CLI，请设置 CODEX_BIN 为可执行文件绝对路径后重启代理'
-                    : '点击后由所选执行客户端在配置路径直接执行 Codex，只有真实代码变更才会创建提交'}
+            {requirementContextIssue
+              ? requirementContextIssue
+              : serverExecution
+                ? cloudReadinessChecking
+                  ? '正在检查服务器 Git、Codex 和仓库主机白名单'
+                  : !cloudReadiness?.available
+                    ? cloudReadiness?.reason || '服务器临时执行环境未就绪'
+                    : cloudReadiness.busy
+                      ? '服务器已有临时交付任务运行，请稍后重试'
+                      : '服务器会临时检出仓库，提交推送成功后清理工作区'
+                : localAgent.checking
+                  ? '正在检测 Mac 执行客户端'
+                  : !localFeishuAgentClientId
+                    ? '当前浏览器没有 Mac 执行客户端；可切换到自动模式使用服务器临时检出'
+                    : !selectedFeishuAgentClientId
+                      ? '请选择已绑定的 Mac 执行客户端'
+                      : !effectiveLocalPath
+                        ? 'Mac 代理会先按 Git 地址查找已有仓库；需要服务器回退时请使用自动模式'
+                        : !localAgent.platformReady
+                          ? localAgent.error || '平台服务端未升级，当前无法下发 Mac 交付'
+                          : !localAgent.online
+                            ? localAgent.error || 'Mac 执行客户端离线'
+                            : !localAgent.configured
+                              ? 'Mac 执行客户端尚未绑定平台同步密钥'
+                              : !localAgent.codexAvailable
+                                ? '未检测到 Mac 上的 Codex CLI，请设置 CODEX_BIN 后重启代理'
+                                : '将使用 Mac 已有仓库执行；只有真实代码变更才会创建提交'}
           </span>
           <div className="modal-footer-actions">
             <button
               className="btn btn-secondary"
               onClick={onClose}
-              title={launching ? '停止页面轮询，本机交付会在后台继续执行' : undefined}
+              title={launching ? '停止页面轮询，交付任务会在后台继续执行' : undefined}
             >
               {launching ? '停止等待' : '取消'}
             </button>
@@ -649,15 +756,19 @@ export function DeliveryDialog({
                 Boolean(requirementContextIssue) ||
                 compressingScreenshots ||
                 launching ||
-                !selectedFeishuAgentClientId ||
-                localAgent.checking ||
-                !localAgent.online ||
-                !localAgent.platformReady ||
-                !localAgent.configured ||
-                !localAgent.codexAvailable
+                (serverExecution
+                  ? cloudReadinessChecking || !cloudReadiness?.available || Boolean(cloudReadiness?.busy)
+                  : !selectedFeishuAgentClientId ||
+                    localAgent.checking ||
+                    !localAgent.online ||
+                    !localAgent.platformReady ||
+                    !localAgent.configured ||
+                    !localAgent.codexAvailable)
               }
             >
-              {launching ? '客户端执行中…' : '一键客户端执行'} <ArrowRight size={16} />
+              {launching
+                ? serverExecution ? '服务器执行中…' : 'Mac 执行中…'
+                : serverExecution ? '一键服务器临时执行' : '一键 Mac 执行'} <ArrowRight size={16} />
             </button>
           </div>
         </>
@@ -673,7 +784,7 @@ export function DeliveryDialog({
               <div className="delivery-progress-head">
                 <div>
                   <span className="eyebrow">
-                    <Terminal size={13} /> LOCAL EXECUTION
+                    <Terminal size={13} /> {serverExecution ? 'SERVER EXECUTION' : 'MAC EXECUTION'}
                   </span>
                   <h3>{deliveryStatusLabel(deliveryJob, deliveryError)}</h3>
                 </div>
@@ -856,41 +967,76 @@ export function DeliveryDialog({
             </section>
           )}
           <Field
-            label="执行客户端"
+            label="执行位置"
             required
             hint={
-              selectedClient
-                ? `${selectedClient.online ? '在线' : '离线'} · ${selectedClient.machineName || '未知机器'} · ${selectedClient.clientId.slice(0, 8)} · ${Object.keys(selectedClient.health?.config.repoPaths ?? {}).length} 个仓库专属路径`
-                : '请先启动至少一个 feishu:agent 客户端代理'
+              executionMode === 'auto'
+                ? serverExecution
+                  ? localAgent.checking
+                    ? '正在检测 Mac 代理；不可用时将使用服务器临时检出'
+                    : !macAgentReady
+                      ? 'Mac 代理未就绪，将使用服务器临时检出'
+                      : 'Mac 没有找到仓库，将使用服务器临时检出'
+                  : effectiveLocalPath
+                  ? '已配置 Mac 仓库路径，默认直接使用现有工作区；没有路径时自动回退到服务器临时检出'
+                  : 'Mac 代理会按 Git 地址搜索常用工作区；找不到该仓库时自动回退到服务器临时检出'
+                : serverExecution
+                  ? cloudReadinessChecking
+                    ? '正在检查服务器的 Git、Codex 和仓库主机白名单'
+                    : cloudReadiness?.reason || '服务器任务完成后会清理临时仓库，提交必须推送成功'
+                  : effectiveLocalPath
+                    ? '使用当前 Mac 已有仓库，不会临时检出或清理本机代码'
+                    : '当前仓库没有配置 Mac 路径，请选择自动或服务器临时检出'
             }
           >
             <select
-              value={selectedFeishuAgentClientId ?? ''}
-              onChange={(event) => handleClientChange(event.target.value)}
-              disabled={launching || feishuAgentClients.length === 0}
+              value={executionMode}
+              onChange={(event) => setExecutionMode(event.target.value as 'auto' | 'mac' | 'server')}
+              disabled={launching}
             >
-              {!selectedFeishuAgentClientId && (
-                <option value="">
-                  {feishuAgentClients.length > 0 ? '请选择执行客户端' : '未发现执行客户端'}
-                </option>
-              )}
-              {feishuAgentClients.map((client) => (
-                <option
-                  key={client.clientId}
-                  value={client.clientId}
-                  disabled={!client.online && client.clientId !== selectedFeishuAgentClientId}
-                >
-                  {client.clientName}
-                  {client.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}
-                  {client.machineName && client.machineName !== client.clientName
-                    ? ` · ${client.machineName}`
-                    : ''}{' '}
-                  · {client.online ? '在线' : '离线'} ·{' '}
-                  {client.clientId.slice(0, 8)}
-                </option>
-              ))}
+              <option value="auto">自动：优先使用 Mac 现有仓库，找不到时服务器临时检出</option>
+              <option value="mac">当前 Mac：使用已有仓库并自动查找路径</option>
+              <option value="server">服务器：临时检出并在结束后清理</option>
             </select>
           </Field>
+
+          {macExecution && (
+            <Field
+              label="执行客户端"
+              required
+              hint={
+                selectedClient
+                  ? `${selectedClient.online ? '在线' : '离线'} · ${selectedClient.machineName || '未知机器'} · ${selectedClient.clientId.slice(0, 8)} · ${Object.keys(selectedClient.health?.config.repoPaths ?? {}).length} 个仓库专属路径`
+                  : '请先启动至少一个 feishu:agent 客户端代理'
+              }
+            >
+              <select
+                value={selectedFeishuAgentClientId ?? ''}
+                onChange={(event) => handleClientChange(event.target.value)}
+                disabled={launching || feishuAgentClients.length === 0}
+              >
+                {!selectedFeishuAgentClientId && (
+                  <option value="">
+                    {feishuAgentClients.length > 0 ? '请选择执行客户端' : '未发现执行客户端'}
+                  </option>
+                )}
+                {feishuAgentClients.map((client) => (
+                  <option
+                    key={client.clientId}
+                    value={client.clientId}
+                    disabled={!client.online && client.clientId !== selectedFeishuAgentClientId}
+                  >
+                    {client.clientName}
+                    {client.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}
+                    {client.machineName && client.machineName !== client.clientName
+                      ? ` · ${client.machineName}`
+                      : ''}{' '}
+                    · {client.online ? '在线' : '离线'} · {client.clientId.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <div className="field-row">
             <Field label="目标代码仓库" required>
@@ -906,8 +1052,8 @@ export function DeliveryDialog({
               label="目标分支"
               hint={
                 deliveryJob?.branch
-                  ? '本机实际分支'
-                  : '平台默认值，执行时以本机实际分支为准'
+                  ? (serverExecution ? '服务器临时检出的目标分支' : 'Mac 本机实际分支')
+                  : '平台仓库默认分支'
               }
             >
               <div className="input-with-icon readonly-input">
@@ -917,41 +1063,48 @@ export function DeliveryDialog({
             </Field>
           </div>
 
-          <Field label="执行位置" hint="代码只在所选执行客户端运行，服务端不提供模拟交付入口">
-            <div className="input-with-icon readonly-input">
-              <Terminal size={15} />
-              <span>
-                客户端本地 ·{' '}
-                {selectedClient
-                  ? `${selectedClient.clientName}${selectedClient.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}${selectedClient.machineName && selectedClient.machineName !== selectedClient.clientName ? ` (${selectedClient.machineName})` : ''}`
-                  : selectedFeishuAgentClientId ?? '未选择'}
-              </span>
-            </div>
-          </Field>
-
-          <Field
-            label="客户端代码路径"
-            hint={
-              selectedClient && selectedClient.clientId !== localFeishuAgentClientId
-                ? `当前路径来自所选客户端 ${selectedClient.clientName}；代码会在这台客户端执行，不会在页面所在终端执行`
-                : localRepoPath
-                  ? '当前终端代理已为这个仓库配置专属路径，优先于平台共享路径'
-                  : effectiveLocalPath
-                    ? '使用平台仓库路径；如当前终端路径不同，请为代理配置 repoPaths'
-                    : '当前终端代理未配置代码路径，无法一键执行；请先到代码仓库填写'
-            }
-          >
-            <div className="input-with-icon readonly-input">
-              <FolderGit2 size={15} />
-              <span>{effectiveLocalPath || '未配置'}</span>
-            </div>
-          </Field>
+          {macExecution ? (
+            <Field
+              label="Mac 本机代码路径"
+              hint={
+                selectedClient && selectedClient.clientId !== localFeishuAgentClientId
+                  ? `路径来自所选客户端 ${selectedClient.clientName}；该机器需已存在此仓库`
+                  : localRepoPath
+                    ? '使用当前 Mac 代理的仓库专属路径'
+                    : effectiveLocalPath
+                      ? '使用平台仓库设置的本机路径'
+                      : 'Mac 代理会按 Git 地址查找常用工作区；找不到时请使用自动模式回退到服务器'
+              }
+            >
+              <div className="input-with-icon readonly-input">
+                <FolderGit2 size={15} />
+                <span>{effectiveLocalPath || '未配置'}</span>
+              </div>
+            </Field>
+          ) : (
+            <Field
+              label="服务器临时执行环境"
+              hint={cloudReadinessChecking ? '正在检查服务器环境' : cloudReadiness?.reason || '服务器工作区仅在任务期间保留'}
+            >
+              <div className="input-with-icon readonly-input">
+                <Terminal size={15} />
+                <span>
+                  {cloudReadiness?.available
+                    ? cloudReadiness.busy
+                      ? '服务器正在执行其他交付'
+                      : 'Git、Codex 和仓库白名单已就绪'
+                    : '服务器执行环境尚未就绪'}
+                </span>
+              </div>
+            </Field>
+          )}
 
           <div className="automation-options">
             <label className="check-row">
               <input
                 type="checkbox"
-                checked={autoCommit}
+                checked={serverExecution || autoCommit}
+                disabled={serverExecution}
                 onChange={(e) => {
                   setAutoCommit(e.target.checked)
                   if (!e.target.checked) setPushAfterAcceptance(false)
@@ -960,20 +1113,28 @@ export function DeliveryDialog({
               <span className="custom-check" />
               <span>
                 <strong>自动提交代码</strong>
-                <small>由本机执行脚本在客户端路径创建提交，验收通过后按授权推送目标分支</small>
+                <small>
+                  {serverExecution
+                    ? '服务器临时工作区必须创建提交并推送，才能在任务结束后安全清理'
+                    : '由本机执行脚本在现有仓库创建提交；可按授权推送目标分支'}
+                </small>
               </span>
             </label>
             <label className="check-row">
               <input
                 type="checkbox"
-                checked={pushAfterAcceptance}
-                disabled={!autoCommit}
+                checked={serverExecution || pushAfterAcceptance}
+                disabled={serverExecution || !autoCommit}
                 onChange={(e) => setPushAfterAcceptance(e.target.checked)}
               />
               <span className="custom-check" />
               <span>
                 <strong>验收通过后推送</strong>
-                <small>勾选即授权；Codex 成功结束后自动将本地提交推送到目标分支</small>
+                <small>
+                  {serverExecution
+                    ? '服务器临时检出完成后自动推送到配置分支'
+                    : '勾选即授权；Codex 成功结束后自动将本地提交推送到目标分支'}
+                </small>
               </span>
             </label>
             <label className="check-row">
@@ -988,16 +1149,18 @@ export function DeliveryDialog({
 
           {(deliveryJob || deliveryError) && (
             <Field
-              label={`${selectedClient?.clientName ?? '执行客户端'}状态`}
-              hint={`执行客户端 ${
-                localAgent.checking
-                  ? '检测中'
-                  : localAgent.online
-                    ? localAgent.configured
-                      ? '在线'
-                      : '未绑定'
-                    : '离线'
-              }`}
+              label={`${serverExecution ? '服务器' : selectedClient?.clientName ?? 'Mac 客户端'}状态`}
+              hint={serverExecution
+                ? cloudReadiness?.busy ? '执行中' : '服务器临时任务'
+                : `Mac 客户端 ${
+                    localAgent.checking
+                      ? '检测中'
+                      : localAgent.online
+                        ? localAgent.configured
+                          ? '在线'
+                          : '未绑定'
+                        : '离线'
+                  }`}
             >
               <div className="credential-note">
                 <Terminal size={16} />
@@ -1032,9 +1195,11 @@ export function DeliveryDialog({
           <div className="credential-note">
             <CheckCircle2 size={16} />
             <div>
-              <strong>客户端执行说明</strong>
+              <strong>{serverExecution ? '服务器执行说明' : 'Mac 执行说明'}</strong>
               <p>
-                点击“一键本机执行”后，页面通过平台命令队列把任务只下发给所选执行客户端的 <code>npm run feishu:agent</code> 代理。代理从平台读取仓库路径与分支，在本地校验 Git 工作区后调用 Codex 完成设计、编码、验证与提交；勾选验收后推送时才会写入远程分支。
+                {serverExecution
+                  ? '服务器从仓库 Git 地址临时检出目标分支，使用平台关联的 Git 账号与服务端 Codex 完成开发；自动提交并推送成功后清理临时工作区。'
+                  : `任务下发给 ${selectedClient?.clientName ?? '所选 Mac'} 的本机代理，使用已配置的现有仓库执行 Codex；按上方选项创建提交并推送。`}
               </p>
             </div>
           </div>

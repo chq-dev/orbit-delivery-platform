@@ -25,6 +25,18 @@ export interface LocalDeliveryStartInput {
   autoCommit: boolean
   pushAfterAcceptance: boolean
   autoClose: boolean
+  temporaryCheckout: boolean
+}
+
+export interface CloudDeliveryReadiness {
+  available: boolean
+  gitAvailable: boolean
+  runnerAvailable: boolean
+  codexAvailable: boolean
+  allowedGitHostsConfigured: boolean
+  platformUrlConfigured: boolean
+  busy: boolean
+  reason?: string
 }
 
 interface ApiResponse {
@@ -193,6 +205,46 @@ export async function startLocalDelivery(
   return queuedJobFromCommand(command, input)
 }
 
+export function getCloudDeliveryReadiness(): Promise<CloudDeliveryReadiness> {
+  return request<CloudDeliveryReadiness>('/deliveries/cloud/readiness')
+}
+
+export function startCloudDelivery(input: LocalDeliveryStartInput): Promise<LocalDeliveryJob> {
+  return request<LocalDeliveryJob>('/deliveries/cloud', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function waitForCloudDelivery(
+  jobId: string,
+  onUpdate: (job: LocalDeliveryJob) => void,
+  timeoutMs = 60 * 60_000,
+  signal?: AbortSignal,
+): Promise<LocalDeliveryJob> {
+  const deadline = Date.now() + timeoutMs
+  let consecutiveErrors = 0
+  throwIfAborted(signal)
+  while (Date.now() < deadline) {
+    await delay(1_500, signal)
+    throwIfAborted(signal)
+    let job: LocalDeliveryJob
+    try {
+      job = await request<LocalDeliveryJob>(`/deliveries/cloud/${encodeURIComponent(jobId)}`)
+      consecutiveErrors = 0
+    } catch (error) {
+      consecutiveErrors += 1
+      if (consecutiveErrors < 5) continue
+      throw error
+    }
+    throwIfAborted(signal)
+    onUpdate(job)
+    if (job.status === 'succeeded') return job
+    if (job.status === 'failed') throw new Error(job.error || '服务器临时交付执行失败')
+  }
+  throw new Error('服务器临时交付执行超时，请检查平台服务端日志与 Codex 配置')
+}
+
 export async function probeLocalDeliveryAgent(
   clientId?: string,
 ): Promise<LocalDeliveryAgentReadiness> {
@@ -274,7 +326,11 @@ export async function waitForLocalDelivery(
     if (job) {
       onUpdate(job)
       if (job.status === 'succeeded') return job
-      if (job.status === 'failed') throw new Error(job.error || '本机交付执行失败')
+      if (job.status === 'failed') {
+        throw Object.assign(new Error(job.error || 'Mac 本机交付执行失败'), {
+          localDeliveryJob: job,
+        })
+      }
       continue
     }
     if (command?.status === 'failed') {

@@ -100,31 +100,36 @@ Cookie；飞书同步和本机交付任务都通过平台命令队列由代理�
                  └─ 使用平台同步密钥写入 /api/integrations/feishu/ingest
 ```
 
-在客户端项目目录启动代理并保持运行：
+在客户端项目目录安装 Meegle CLI 并完成登录：
 
 ```bash
 npm install -g @lark-project/meegle@1.0.27
 meegle config set host project.feishu.cn
-npm run feishu:agent
+meegle auth login --device-code
 ```
 
-macOS 可安装为当前用户登录自启，代理退出后会自动重启：
+如果执行 Mac 没有检出 `orbit-delivery-platform`，账号中心的「添加执行客户端」面板提供独立安装命令。该安装器从平台的 `/downloads` 下载代理、同步器和本地交付程序，放入 `~/Library/Application Support/Orbit/feishu-agent` 并安装为登录自启动服务；执行 Mac 只需 Node.js、Meegle CLI、Codex 和目标仓库检出，无需平台源码。
+
+如果执行 Mac 已有本仓库检出，也可使用本地安装脚本：
 
 ```bash
 ./scripts/install-feishu-agent-macos.sh
 tail -f /tmp/orbit-feishu-agent.out /tmp/orbit-feishu-agent.err
 ```
 
-该脚本使用当前仓库路径、`npm` 和 Node.js 路径生成
-`~/Library/LaunchAgents/com.orbit.feishu-agent.plist`。如果更换了仓库目录或 Node 版本，
-重新执行脚本即可。
+本地安装脚本使用当前仓库路径生成 `~/Library/LaunchAgents/com.orbit.feishu-agent.plist`；
+独立安装器则从服务器下载打包后的客户端，不依赖仓库目录。重新运行对应安装器会更新并重启代理。
 
 打开平台「需求与缺陷」或「账号中心」页面，「本机飞书实时同步」卡片会通过同源接口显示代理
 是否在线、Meegle 是否已授权以及最近一次同步结果。代理每 10 秒上报一次心跳，超过 90 秒
 未上报才会显示离线，因此不会再受 Chrome 本地网络权限或跨来源回环地址限制影响。
 
-首次绑定平台同步密钥时，在服务器生成一次性密钥并写入客户端代理配置；之后页面中的
-「开始飞书授权」「立即同步」「轮换密钥」都会进入平台命令队列，由在线代理领取执行：
+首次登记 Mac 时，在账号中心打开「添加执行客户端」。本机代理会主动向平台提交待绑定请求，
+浏览器不需要访问 Mac 的 `127.0.0.1`。确认机器名和校验码后，填写该 Mac 上
+`basic-component-cloud` 的绝对路径并点击「批准并绑定」；代理领取加密配置后会自行写入凭据并上报
+心跳。代理已在运行但尚未实现设备登记时，重新运行账号中心提供的独立安装命令以更新并重启服务，然后在面板刷新申请。
+
+之后页面中的「开始飞书授权」「立即同步」「轮换密钥」都会进入平台命令队列，由在线代理领取执行：
 
 1. `开始飞书授权`：页面显示设备授权链接和用户码；代理轮询授权结果，成功后自动执行首次全量同步。
 2. 之后页面每 60 秒检查代理状态；页面初始化或重新可见时，若距上次成功同步超过 10 分钟会自动下发全量同步任务。
@@ -133,19 +138,19 @@ tail -f /tmp/orbit-feishu-agent.out /tmp/orbit-feishu-agent.err
 两个凭据的来源不同，均不需要从飞书网页 Cookie 中提取：
 
 - **飞书登录态**：由 `meegle auth login --device-code` 保存在本机 Meegle CLI；页面只驱动授权流程。
-- **平台同步密钥**：平台内部用于保护 ingest 和代理心跳接口。首次可由平台生成数据库密钥，
-  并一次性写入客户端代理配置；若服务器设置了 `FEISHU_INGEST_TOKEN`，则以环境变量为准，
-  页面不允许轮换，客户端代理需使用相同值启动。
+- **平台同步凭据**：每个登记客户端有独立凭据，平台只保存哈希；绑定配置使用客户端 RSA 公钥
+  加密后交给对应代理。已有 `FEISHU_INGEST_TOKEN` 的部署仍可继续使用全局凭据，设备绑定不需要
+  在浏览器查看或复制任何同步密钥。
 
 本机代理默认监听 `127.0.0.1:18787`。飞书同步、密钥轮换和客户端本地交付都通过平台命令队列
 执行。每台代理首次启动会生成并持久化唯一的 `clientId`，同时用 hostname 作为页面展示名；平台
 页面可从任意终端打开，并在“执行客户端”选择器里切换到真正要执行任务的机器。命令只下发给选定
-的 `clientId`，不会由其他在线客户端竞争领取。代理只接受工作项、仓库和布尔选项，分支从平台仓库
+的 `clientId`，不会由其他在线客户端竞争领取。设备登记完成后，账号中心会在当前浏览器保存本机
+客户端 ID；当前终端识别不依赖浏览器访问 Mac 的本地代理端口。代理只接受工作项、仓库和布尔选项，分支从平台仓库
 配置读取，本地路径优先使用该客户端的仓库路径映射、未配置时回退到平台仓库路径。代理主动访问
-平台并领取自己的命令，同时回传七步执行进度。页面加载时会通过浏览器访问当前机器的
-`http://127.0.0.1:18787/health`，如果本机代理已注册到平台，会优先选中当前终端对应的客户端；
-探针失败时不会猜测其他在线机器，必须由用户在“执行客户端”下拉框中明确选择。因此要在某台机器上
-执行代码，该机器必须自行运行代理并配置指向本机检出的 `repoPaths`：
+平台并领取自己的命令，同时回传七步执行进度。对于未登记的旧安装，页面仍可尝试探测
+`http://127.0.0.1:18787/health`；探测失败时不会猜测其他在线机器，必须由用户在“执行客户端”
+下拉框中明确选择。因此要在某台机器上执行代码，该机器必须自行运行代理并配置指向本机检出的 `repoPaths`：
 
 ```bash
 FEISHU_AGENT_PORT=18787
@@ -156,18 +161,17 @@ FEISHU_AGENT_CLIENT_ID=client-mac-harvey
 FEISHU_AGENT_CLIENT_NAME=交付 Mac
 ```
 
-代理配置默认写入 `~/.config/orbit/feishu-sync.json`（权限 `0600`），不会写入浏览器
-`localStorage` 或源码。页面提供“轮换密钥”操作，旧密钥在轮换后立即失效。首次生成密钥采用
-先到先得（TOFU）模型；生产环境建议由管理员在服务器设置 `FEISHU_INGEST_TOKEN`，并确保平台已
-启用登录认证与 HTTPS。
+代理配置默认写入 `~/.config/orbit/feishu-sync.json`（权限 `0600`），同步凭据不会写入浏览器
+`localStorage` 或源码。浏览器只记住当前执行客户端 ID。页面提供“轮换密钥”操作，旧凭据在轮换后
+立即失效；非本机 HTTP 配对地址会被拒绝，生产环境应启用登录认证与 HTTPS。
 
 如果不同客户端上同一仓库的绝对路径不同，不要让平台路径代表所有机器。可在对应客户端的代理
 配置 `~/.config/orbit/feishu-sync.json` 中增加 `repoPaths`：
 
 ```json
 {
-  "platformBaseUrl": "http://8.145.45.84:8787",
-  "syncToken": "由平台生成后一次性写入",
+  "platformBaseUrl": "https://8.145.45.84:8787",
+  "syncToken": "由账号中心设备登记加密下发",
   "projectKey": "rjcloud",
   "clientId": "client-mac-harvey",
   "clientName": "交付 Mac",
@@ -478,24 +482,41 @@ FEISHU_DEFAULT_REPO_ID=repo-1
 Use $rjcloud-local-delivery to deliver REQ-1082 locally.
 ```
 
-### 客户端本地执行
+### Mac 本地与服务器临时执行
 
-远端平台无法访问开发机上的 `/Users/...` 路径。需要在某个客户端检出中执行代码时，先在该机器运行
-并保持 `npm run feishu:agent`，然后在任意浏览器终端打开平台，在交付弹窗选择对应的“执行客户端”。点击
-“一键客户端执行”后，浏览器通过平台同源命令接口只向该 `clientId` 入队，代理领取后从平台仓库配置读取
-路径和分支并直接执行 `deliver:local`：
+交付弹窗默认选择“自动”：当前 Mac 已配置该仓库路径时，直接在已有工作区执行；未配置路径时，Mac
+代理会按 Git 地址在常用工作区查找现有仓库，并保存找到的路径。Mac 确实没有该仓库时才回退到服务器
+临时检出。也可以手动指定“当前 Mac”或“服务器”。服务器不要求预先存在 `basic-component-cloud`
+等业务仓库副本，它会从平台仓库 Git 地址临时检出目标分支，任务结束后清理工作区。
+
+Mac 执行需要在目标 Mac 安装登录自启动代理，并在交付弹窗选择对应的执行客户端。浏览器通过平台同源命令
+接口定向入队，代理领取后使用已配置的现有本机仓库路径：
 
 ```text
 浏览器页面 -> POST /api/integrations/feishu/agent/commands
            -> 平台按 clientId 定向队列 -> 目标客户端代理主动心跳领取
            -> 本机代理读取平台 /api/bootstrap
-           -> npm run deliver:local -- --path <仓库配置> --branch <仓库配置> --run ...
+           -> npm run deliver:local -- --path <Mac现有仓库路径> --branch <仓库配置> --run ...
            -> 代理回传步骤进度 -> 页面轮询所选客户端的 /api/integrations/feishu/agent/status
 ```
 
+服务器临时执行使用登录用户的网页会话启动、查看任务：
+
+```text
+浏览器页面 -> POST /api/deliveries/cloud
+           -> 服务器从凭据保险库读取仓库关联的 Git 账号
+           -> Git 主机白名单校验 -> 临时 clone -> 执行 deliver:local
+           -> 推送提交并回写流水线 -> 清理临时工作区和任务凭据
+```
+
+服务器临时执行需要服务器安装 Git、Codex CLI 和项目的 `tsx` 运行依赖，并在服务端 `.env` 配置 `CODEX_BIN`、
+`CLOUD_DELIVERY_PLATFORM_URL`（服务端可访问且证书可信的 HTTPS 地址）以及精确主机白名单
+`CLOUD_DELIVERY_GIT_HOSTS=cloudgit.rj.link`。仓库需关联平台中有效的 Git 账号，且该账号有目标仓库
+的读取和推送权限。临时模式强制自动提交和推送；若推送失败，任务会报错，避免把“已完成”误报为成功。
+
 执行弹窗会实时显示“读取平台 → 校验契约 → 校验仓库 → Codex 执行 → 检查证据 → 提交推送 → 回写平台”的步骤状态。平台健康检查遇到瞬时网络错误会自动重试；失败时停留在具体步骤并显示连接超时、路径、分支、Codex 或回写错误。旧服务端缺少 `deliveryContractVersion` 时会在启动 Codex 前明确拒绝。
 
-点击“一键本机执行”后页面会立即显示上述七步，不需要等待本机代理返回；失败后自动滚动到进度面板并高亮失败步骤。若点击后仍完全没有进度面板，说明浏览器加载的仍是旧版前端构建，请确认 `/api/health` 返回 `deliveryContractVersion: 3`，并在部署新构建后强制刷新页面。
+点击执行后页面会立即显示上述七步，并轮询对应的 Mac 客户端或服务器临时任务；失败后自动滚动到进度面板并高亮失败步骤。Mac 执行要求 `/api/health` 返回 `deliveryContractVersion: 3`。服务器模式无需 Mac 代理在线，但需要服务器执行环境就绪。
 
 需要手工排障时仍可执行同一脚本：
 

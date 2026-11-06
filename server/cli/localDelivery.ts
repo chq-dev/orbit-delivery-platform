@@ -91,6 +91,29 @@ interface DeliveryReportInput {
   content: string
 }
 
+const gitCredentialEnvironment: NodeJS.ProcessEnv = {}
+for (const key of [
+  'GIT_ASKPASS',
+  'GIT_TERMINAL_PROMPT',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_KEY_0',
+  'GIT_CONFIG_VALUE_0',
+  'ORBIT_GIT_ALLOWED_HOST',
+  'ORBIT_GIT_USERNAME',
+  'ORBIT_GIT_PASSWORD',
+]) {
+  if (process.env[key] !== undefined) gitCredentialEnvironment[key] = process.env[key]
+  delete process.env[key]
+}
+const platformSyncToken = process.env.PLATFORM_SYNC_TOKEN?.trim() ?? ''
+delete process.env.PLATFORM_SYNC_TOKEN
+const reportedDeliveryPath = process.env.ORBIT_DELIVERY_REPORTED_PATH?.trim() ?? ''
+delete process.env.ORBIT_DELIVERY_REPORTED_PATH
+const expectedRemoteUrl = process.env.ORBIT_DELIVERY_EXPECTED_REMOTE_URL?.trim() ?? ''
+delete process.env.ORBIT_DELIVERY_EXPECTED_REMOTE_URL
+const ephemeralCodex = process.env.ORBIT_CODEX_EPHEMERAL === 'true'
+delete process.env.ORBIT_CODEX_EPHEMERAL
+
 function usage(): string {
   return `Orbit client-local delivery
 
@@ -150,14 +173,14 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
 }
 
 function platformHeaders(): Record<string, string> {
-  const token = process.env.PLATFORM_SYNC_TOKEN?.trim()
-  return token ? { authorization: `Bearer ${token}` } : {}
+  return platformSyncToken ? { authorization: `Bearer ${platformSyncToken}` } : {}
 }
 
 function git(cwd: string, args: string[]): GitResult {
   const result = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...gitCredentialEnvironment },
   })
   if (result.error) throw result.error
   return {
@@ -307,6 +330,34 @@ function commitDeliveredChanges(checkout: string, item: WorkItem): string {
   return requireGit(checkout, ['rev-parse', 'HEAD'], '读取交付提交')
 }
 
+function assertExpectedRemote(checkout: string): void {
+  if (!expectedRemoteUrl) return
+  const expected = new URL(expectedRemoteUrl)
+  const remotes = [
+    requireGit(checkout, ['remote', 'get-url', 'origin'], '读取 origin 远端'),
+    requireGit(checkout, ['remote', 'get-url', '--push', 'origin'], '读取 origin 推送地址'),
+  ]
+  for (const remote of remotes) {
+    let actual: URL
+    try {
+      actual = new URL(remote)
+    } catch {
+      throw new Error('临时仓库 origin 地址已改变，已停止推送')
+    }
+    if (
+      actual.protocol !== 'https:' ||
+      actual.username ||
+      actual.password ||
+      actual.search ||
+      actual.hash ||
+      actual.host.toLowerCase() !== expected.host.toLowerCase() ||
+      actual.pathname.replace(/\/+$/, '') !== expected.pathname.replace(/\/+$/, '')
+    ) {
+      throw new Error('临时仓库 origin 地址已改变，已停止推送')
+    }
+  }
+}
+
 function readReportFile(path: string, title: string): DeliveryReportInput | undefined {
   if (!existsSync(path)) return undefined
   const content = readFileSync(path, 'utf8').trim()
@@ -418,7 +469,7 @@ async function recordPlatformDelivery(
       workItemId: item.id,
       repoId: repository.id,
       branch,
-      localPath: checkout,
+      localPath: reportedDeliveryPath || checkout,
       commit,
       autoClose: args.close && item.type === 'defect' && evidence.testReport,
       pushed: args.push,
@@ -623,11 +674,13 @@ async function main(): Promise<void> {
       lastMessagePath,
       imagePaths: screenshotPaths,
       mcpArgs,
+      ephemeral: ephemeralCodex,
     }),
     {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env },
     },
   )
   if (result.error) throw result.error
@@ -663,6 +716,7 @@ async function main(): Promise<void> {
   if (args.push) {
     await confirmPush(branch, args.yes)
     if (!checkout.remote) throw new Error('本地仓库没有 origin 远端，无法推送')
+    assertExpectedRemote(checkout.checkout)
     const push = git(checkout.checkout, ['push', 'origin', `HEAD:refs/heads/${branch}`])
     if (push.status !== 0) {
       throw new Error(`推送失败：${push.stderr || push.stdout || `退出码 ${push.status}`}`)

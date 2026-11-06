@@ -1,6 +1,7 @@
 import type {
   Account,
   FeishuInboxItem,
+  FeishuAgentPairingSummary,
   FeishuIntegrationStatus,
   FeishuSyncResult,
   FeishuSyncTokenBootstrapResult,
@@ -205,6 +206,13 @@ export const api = {
     }),
   getFeishuSyncTokenStatus: () =>
     request<FeishuSyncTokenStatus>('/integrations/feishu/sync-token'),
+  getFeishuAgentPairings: () =>
+    request<FeishuAgentPairingSummary[]>('/integrations/feishu/agent/pairings'),
+  approveFeishuAgentPairing: (clientId: string, repoPaths: Record<string, string>) =>
+    request<FeishuAgentPairingSummary>(
+      `/integrations/feishu/agent/pairings/${encodeURIComponent(clientId)}/approve`,
+      { method: 'POST', body: JSON.stringify({ repoPaths }) },
+    ),
   bootstrapFeishuSyncToken: () =>
     request<FeishuSyncTokenBootstrapResult>('/integrations/feishu/sync-token/bootstrap', {
       method: 'POST',

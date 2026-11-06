@@ -10,7 +10,7 @@ export function buildFeishuSyncInstruction(input: FeishuSyncInstructionInput): s
     `Use $feishu-project-sync to synchronize live ${projectKey} requirements and defects from Feishu into ${apiBase}.`,
     'The platform server cannot access Feishu; this machine is the authorized sync host.',
     '',
-    '0. Prefer the page-driven path: run `npm run feishu:agent`, bind the platform key from the page, and complete the page device authorization. Use the CLI fallback below only when the local agent cannot run.',
+    '0. Prefer the page-driven path: use Account Center → Add execution client to copy the standalone macOS installer command, run it once on the execution Mac, approve the pending device, then complete device authorization. The execution Mac does not need an orbit-delivery-platform checkout; the target repository must exist locally. Use the CLI fallback below only when the local agent cannot run.',
     '1. Check the official Meegle CLI with `meegle auth status --format json`.',
     '2. If it is not authenticated, ask me to complete the one-time `meegle auth login --device-code` authorization. Never read browser cookies or scrape Feishu HTML.',
     `3. Set PLATFORM_BASE_URL=${apiBase} and FEISHU_PROJECT_KEY=${projectKey}. Use the existing local agent configuration or the server FEISHU_INGEST_TOKEN as PLATFORM_SYNC_TOKEN; do not print the token and do not put the token in frontend code, logs, or Git.`,

@@ -1,23 +1,37 @@
 import 'dotenv/config'
 import { execFile } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import {
+  createDecipheriv,
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  privateDecrypt,
+  randomBytes,
+  randomUUID,
+  constants,
+} from 'node:crypto'
 import {
   chmodSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   realpathSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { homedir, hostname } from 'node:os'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { homedir, hostname, tmpdir } from 'node:os'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   parseFeishuAgentConfig,
   parseFeishuAgentRepoPaths,
   publicFeishuAgentConfig,
   validateFeishuAgentConfig,
+  type FeishuAgentPublicConfig,
   type FeishuAgentStoredConfig,
 } from '../services/feishuAgentConfig.js'
 import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
@@ -69,6 +83,16 @@ interface LastRun {
   status: 'success' | 'failed'
   summary?: unknown
   error?: string
+}
+
+interface PendingAgentPairing {
+  clientId: string
+  clientName: string
+  pairingSecret: string
+  platformBaseUrl: string
+  projectKey: string
+  publicKey: string
+  privateKey: string
 }
 
 interface AgentSyncResult {
@@ -134,12 +158,21 @@ const meegleCommand = process.env.MEEGLE_BIN?.trim() || 'meegle'
 const meegleHost = process.env.MEEGLE_HOST?.trim() || 'project.feishu.cn'
 const npmCommand = process.env.NPM_BIN?.trim() || 'npm'
 const workspaceRoot = process.cwd()
+const standaloneSyncCliPath = process.env.ORBIT_FEISHU_SYNC_CLI?.trim()
+const standaloneDeliveryCliPath = process.env.ORBIT_LOCAL_DELIVERY_CLI?.trim()
 const configPath = resolve(
   process.env.FEISHU_AGENT_CONFIG_PATH?.trim() ||
     resolve(homedir(), '.config', 'orbit', 'feishu-sync.json'),
 )
 const configuredClientId = process.env.FEISHU_AGENT_CLIENT_ID?.trim()
 const configuredClientName = process.env.FEISHU_AGENT_CLIENT_NAME?.trim()
+const pairingPlatformBaseUrl = (
+  process.env.FEISHU_AGENT_PLATFORM_URL?.trim() ||
+  process.env.PLATFORM_BASE_URL?.trim() ||
+  'https://8.145.45.84:8787'
+).replace(/\/$/, '')
+const pairingProjectKey = process.env.FEISHU_PROJECT_KEY?.trim() || 'rjcloud'
+const pairingStatePath = `${configPath}.pairing`
 const allowedOrigins = new Set(
   (
     process.env.FEISHU_AGENT_ALLOWED_ORIGINS ||
@@ -168,6 +201,9 @@ let running = false
 let lastRun: LastRun | null = null
 let deliveryJob: LocalDeliveryJob | null = null
 let heartbeatInFlight = false
+let pairingInFlight = false
+let meegleSetupInFlight = false
+let lastPairingError = ''
 let loginPollInFlight = false
 let lastHeartbeatError = ''
 let lastDeliveryProgressError = ''
@@ -268,6 +304,169 @@ function writeConfig(config: FeishuAgentStoredConfig): void {
     chmodSync(configPath, 0o600)
   } catch {
     // Best-effort protection on platforms without POSIX permissions.
+  }
+}
+
+function pairingVerificationCode(publicKey: string): string {
+  const fingerprint = createHash('sha256')
+    .update(createPublicKey(publicKey).export({ type: 'spki', format: 'der' }))
+    .digest('hex')
+    .slice(0, 12)
+    .toUpperCase()
+  return `${fingerprint.slice(0, 4)}-${fingerprint.slice(4, 8)}-${fingerprint.slice(8)}`
+}
+
+function readPendingAgentPairing(): PendingAgentPairing {
+  if (existsSync(pairingStatePath)) {
+    try {
+      const stored = JSON.parse(readFileSync(pairingStatePath, 'utf8')) as Partial<PendingAgentPairing>
+      if (
+        typeof stored.clientId === 'string' &&
+        typeof stored.clientName === 'string' &&
+        typeof stored.pairingSecret === 'string' &&
+        typeof stored.platformBaseUrl === 'string' &&
+        typeof stored.projectKey === 'string' &&
+        typeof stored.publicKey === 'string' &&
+        typeof stored.privateKey === 'string'
+      ) {
+        const pending = stored as PendingAgentPairing
+        if (
+          pending.platformBaseUrl !== pairingPlatformBaseUrl ||
+          pending.projectKey !== pairingProjectKey
+        ) {
+          const updated = {
+            ...pending,
+            platformBaseUrl: pairingPlatformBaseUrl,
+            projectKey: pairingProjectKey,
+          }
+          writeFileSync(pairingStatePath, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 })
+          try {
+            chmodSync(pairingStatePath, 0o600)
+          } catch {
+            // Best-effort protection on platforms without POSIX permissions.
+          }
+          return updated
+        }
+        return pending
+      }
+    } catch {
+      // Regenerate an invalid pending pairing file.
+    }
+  }
+
+  const keys = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  })
+  const clientId =
+    configuredClientId && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(configuredClientId)
+      ? configuredClientId
+      : randomUUID()
+  const state: PendingAgentPairing = {
+    clientId,
+    clientName: configuredClientName?.slice(0, 120) || hostname(),
+    pairingSecret: randomBytes(32).toString('hex'),
+    platformBaseUrl: pairingPlatformBaseUrl,
+    projectKey: pairingProjectKey,
+    publicKey: keys.publicKey,
+    privateKey: keys.privateKey,
+  }
+  mkdirSync(dirname(pairingStatePath), { recursive: true })
+  writeFileSync(pairingStatePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 })
+  try {
+    chmodSync(pairingStatePath, 0o600)
+  } catch {
+    // Best-effort protection on platforms without POSIX permissions.
+  }
+  return state
+}
+
+async function pollAgentPairing(): Promise<void> {
+  if (pairingInFlight || readConfig()) return
+  pairingInFlight = true
+  try {
+    const pairing = readPendingAgentPairing()
+    const response = await fetch(
+      `${pairing.platformBaseUrl}/api/integrations/feishu/agent/pairing/poll`,
+      {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          clientId: pairing.clientId,
+          clientName: pairing.clientName,
+          machineName: hostname(),
+          platformBaseUrl: pairing.platformBaseUrl,
+          projectKey: pairing.projectKey,
+          publicKey: pairing.publicKey,
+          pairingSecret: pairing.pairingSecret,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    )
+    if (!response.ok) throw new Error(`HTTP ${response.status}：${await responseMessage(response)}`)
+    const result = await response.json() as { status?: unknown; configCiphertext?: unknown }
+    if (result.status === 'pending') {
+      const message = `等待账号中心批准本机客户端 ${pairing.clientName}（${pairing.clientId.slice(0, 8)}），校验码 ${pairingVerificationCode(pairing.publicKey)}`
+      if (message !== lastPairingError) {
+        console.log(message)
+        lastPairingError = message
+      }
+      return
+    }
+    if (result.status !== 'approved' || typeof result.configCiphertext !== 'string') {
+      throw new Error('平台未返回有效的客户端绑定配置')
+    }
+
+    const envelope = JSON.parse(result.configCiphertext) as {
+      encryptedKey?: unknown
+      iv?: unknown
+      tag?: unknown
+      ciphertext?: unknown
+    }
+    if (
+      typeof envelope.encryptedKey !== 'string' ||
+      typeof envelope.iv !== 'string' ||
+      typeof envelope.tag !== 'string' ||
+      typeof envelope.ciphertext !== 'string'
+    ) {
+      throw new Error('平台返回的客户端配置密文格式不正确')
+    }
+    const key = privateDecrypt(
+      {
+        key: createPrivateKey(pairing.privateKey),
+        padding: constants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: 'sha256',
+      },
+      Buffer.from(envelope.encryptedKey, 'base64'),
+    )
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'))
+    decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'))
+    const configJson = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
+      decipher.final(),
+    ]).toString('utf8')
+    const configured = validateFeishuAgentConfig(JSON.parse(configJson))
+    if (configured.clientId !== pairing.clientId) {
+      throw new Error('平台代理返回了其他客户端的绑定配置')
+    }
+    writeConfig({
+      ...configured,
+      clientId: pairing.clientId,
+      clientName: pairing.clientName,
+    })
+    rmSync(pairingStatePath, { force: true })
+    lastPairingError = ''
+    console.log(`本机已完成平台登记：${pairing.clientName}（${pairing.clientId.slice(0, 8)}）`)
+    void sendHeartbeat()
+  } catch (error) {
+    const message = `平台客户端登记请求失败：${errorMessage(error)}`
+    if (message !== lastPairingError) {
+      console.error(message)
+      lastPairingError = message
+    }
+  } finally {
+    pairingInFlight = false
   }
 }
 
@@ -381,6 +580,8 @@ async function currentHealth(): Promise<{
   }
 }> {
   const config = readConfig()
+  const pendingPairing =
+    !config && existsSync(pairingStatePath) ? readPendingAgentPairing() : undefined
   const auth = await currentAuthStatus()
   const feishuMcp = await currentFeishuMcpStatus()
   const meegleMcp = resolveMeegleMcpRuntime()
@@ -388,7 +589,12 @@ async function currentHealth(): Promise<{
   return {
     ok: true,
     version: 8,
-    config: publicFeishuAgentConfig(config),
+    config: {
+      ...publicFeishuAgentConfig(config),
+      ...(pendingPairing
+        ? { clientId: pendingPairing.clientId, clientName: pendingPairing.clientName }
+        : {}),
+    },
     meegle: auth,
     running,
     lastRun,
@@ -442,8 +648,8 @@ async function runSync(): Promise<AgentSyncResult> {
   running = true
   try {
     const result = await runCommand(
-      npmCommand,
-      ['run', 'sync:feishu'],
+      standaloneSyncCliPath ? process.execPath : npmCommand,
+      standaloneSyncCliPath ? [standaloneSyncCliPath] : ['run', 'sync:feishu'],
       {
         ...process.env,
         PLATFORM_BASE_URL: config.platformBaseUrl,
@@ -548,6 +754,7 @@ async function fetchDeliveryBootstrap(
     repositories: payload.repositories.filter(isRecord).map((repository) => ({
       id: text(repository.id),
       name: optionalText(repository.name),
+      url: optionalText(repository.url),
       branch: optionalText(repository.branch),
       localPath: optionalText(repository.localPath),
     })),
@@ -606,6 +813,74 @@ async function validateClientCheckout(
       : `${checkout} · ${resolved.branch}`,
   )
   return { checkout, branch: resolved.branch }
+}
+
+function gitRemoteIdentity(value: string): string {
+  let host = ''
+  let pathname = ''
+  try {
+    const url = new URL(value)
+    host = url.host.toLowerCase()
+    pathname = url.pathname
+  } catch {
+    const match = value.match(/^(?:[^@]+@)?([^:]+):(.+)$/)
+    if (!match) return ''
+    host = match[1].toLowerCase()
+    pathname = `/${match[2]}`
+  }
+  return `${host}${pathname.replace(/\/+$/, '').replace(/\.git$/i, '')}`
+}
+
+async function findExistingRepositoryCheckout(repository: {
+  name?: string
+  url?: string
+}): Promise<string | undefined> {
+  const remoteIdentity = gitRemoteIdentity(repository.url ?? '')
+  if (!remoteIdentity) return undefined
+  const repositoryName = (() => {
+    try {
+      return basename(new URL(repository.url ?? '').pathname).replace(/\.git$/i, '')
+    } catch {
+      return basename(repository.name ?? '')
+    }
+  })()
+  const roots = [
+    dirname(workspaceRoot),
+    join(homedir(), 'Documents', 'workspace', 'ORBIT'),
+    join(homedir(), 'workspace', 'ORBIT'),
+    join(homedir(), 'Projects'),
+    join(homedir(), 'Documents', 'workspace'),
+  ]
+  const candidates = new Set<string>()
+  for (const root of roots) {
+    if (!existsSync(root)) continue
+    if (repositoryName) candidates.add(join(root, repositoryName))
+    try {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory()) candidates.add(join(root, entry.name))
+      }
+    } catch {
+      // Ignore inaccessible or concurrently removed workspace directories.
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!existsSync(join(candidate, '.git'))) continue
+    const topLevel = await runCommand('git', ['-C', candidate, 'rev-parse', '--show-toplevel'], process.env, 5_000)
+    if (topLevel.exitCode !== 0) continue
+    let checkout: string
+    try {
+      checkout = realpathSync(topLevel.stdout.trim())
+    } catch {
+      continue
+    }
+    if (checkout !== resolve(candidate)) continue
+    const remote = await runCommand('git', ['-C', checkout, 'remote', 'get-url', 'origin'], process.env, 5_000)
+    if (remote.exitCode === 0 && gitRemoteIdentity(remote.stdout.trim()) === remoteIdentity) {
+      return checkout
+    }
+  }
+  return undefined
 }
 
 function localDeliveryEnvironment(syncToken: string): NodeJS.ProcessEnv {
@@ -692,6 +967,7 @@ async function executeLocalDelivery(
   config: FeishuAgentStoredConfig,
   request: LocalDeliveryAgentRequest,
 ): Promise<void> {
+  let temporaryCheckoutRoot = ''
   try {
     job.steps = createLocalDeliveryAgentSteps()
     setStep(job, 'platform', 'running', '正在连接平台健康检查接口')
@@ -708,8 +984,57 @@ async function executeLocalDelivery(
     job.stage = '读取平台工作项与仓库配置'
     const bootstrap = await fetchDeliveryBootstrap(job, config)
     setStep(job, 'platform', 'success', '已读取工作项与仓库配置')
-    const target = resolveLocalDeliveryTarget(bootstrap, request, config.repoPaths)
-    const checkout = await validateClientCheckout(job, target.localPath, target.branch)
+    const configuredRepository = bootstrap.repositories.find((entry) => entry.id === request.repoId)
+    let repoPaths = config.repoPaths
+    const configuredPath = configuredRepository
+      ? text(repoPaths[configuredRepository.id]) || text(configuredRepository.localPath)
+      : ''
+    if (
+      configuredRepository &&
+      (!configuredPath || !existsSync(join(configuredPath, '.git'))) &&
+      !request.temporaryCheckout
+    ) {
+      setStep(job, 'checkout', 'running', '正在常用 Mac 工作区中查找已有 Git 仓库')
+      const detectedPath = await findExistingRepositoryCheckout(configuredRepository)
+      if (detectedPath) {
+        repoPaths = { ...repoPaths, [configuredRepository.id]: detectedPath }
+        writeConfig({
+          ...config,
+          repoPaths: { ...config.repoPaths, [configuredRepository.id]: detectedPath },
+        })
+        setStep(job, 'checkout', 'running', `已按 Git 地址找到 Mac 现有仓库：${detectedPath}`)
+      }
+    }
+    const target = resolveLocalDeliveryTarget(bootstrap, request, repoPaths)
+    let targetPath = target.localPath
+    if (target.temporaryCheckout) {
+      if (!target.repository.url || !target.branch) {
+        throw new Error('临时检出需要在平台仓库配置 Git 地址和目标分支')
+      }
+      const gitUrl = new URL(target.repository.url)
+      if (
+        (gitUrl.protocol !== 'https:' && gitUrl.protocol !== 'http:') ||
+        gitUrl.username ||
+        gitUrl.password ||
+        gitUrl.search ||
+        gitUrl.hash
+      ) {
+        throw new Error('临时检出只接受不含内嵌凭据的 HTTP(S) Git 地址')
+      }
+      temporaryCheckoutRoot = mkdtempSync(join(tmpdir(), 'orbit-mac-delivery-'))
+      targetPath = join(temporaryCheckoutRoot, 'checkout')
+      setStep(job, 'checkout', 'running', `正在 ${gitUrl.host} 临时检出 ${target.repository.name ?? target.repository.id} · ${target.branch}`)
+      const cloned = await runCommand(
+        'git',
+        ['clone', '--depth', '1', '--single-branch', '--branch', target.branch, gitUrl.href, targetPath],
+        process.env,
+        10 * 60_000,
+      )
+      if (cloned.exitCode !== 0) {
+        throw new Error(`Git 临时检出失败：${commandFailureMessage(cloned)}；请确认本机 Git 登录态有仓库读取权限`)
+      }
+    }
+    const checkout = await validateClientCheckout(job, targetPath, target.branch)
     job.localPath = checkout.checkout
     job.branch = checkout.branch
     setStep(job, 'codex', 'running', 'Codex 正在分析需求、生成设计与代码')
@@ -722,8 +1047,13 @@ async function executeLocalDelivery(
       branch: checkout.branch,
     })
     const result = await runCommand(
-      npmCommand,
-      args,
+      standaloneDeliveryCliPath ? process.execPath : npmCommand,
+      standaloneDeliveryCliPath
+        ? [
+            standaloneDeliveryCliPath,
+            ...(args.indexOf('--') >= 0 ? args.slice(args.indexOf('--') + 1) : args),
+          ]
+        : args,
       localDeliveryEnvironment(config.syncToken),
       deliveryTimeoutMs,
     )
@@ -766,11 +1096,33 @@ async function executeLocalDelivery(
     job.status = 'succeeded'
     job.stage = '本机交付完成'
   } catch (error) {
-    const message = errorMessage(error)
+    let message = errorMessage(error)
+    if (temporaryCheckoutRoot) {
+      message = message.split(temporaryCheckoutRoot).join('[Mac 临时工作区]')
+    }
     markDeliveryFailure(job, message)
     job.status = 'failed'
     job.error = message
   } finally {
+    if (temporaryCheckoutRoot) {
+      let cleaned = false
+      try {
+        rmSync(temporaryCheckoutRoot, { recursive: true, force: true })
+        cleaned = true
+        const checkoutStep = job.steps.find((step) => step.key === 'checkout')
+        if (checkoutStep?.status === 'success') {
+          checkoutStep.log = `${checkoutStep.log ?? ''}；临时检出目录已清理`.slice(0, 2_000)
+        }
+      } catch (error) {
+        const message = `临时检出目录清理失败：${errorMessage(error).split(temporaryCheckoutRoot).join('[Mac 临时工作区]')}`
+        job.status = 'failed'
+        job.error = [job.error, message].filter(Boolean).join('；')
+        job.stage = message
+      }
+      if (cleaned) {
+        job.localPath = 'Mac 临时工作区（任务结束后已清理）'
+      }
+    }
     job.finishedAt = new Date().toISOString()
   }
   scheduleDeliveryProgress(job)
@@ -883,9 +1235,22 @@ async function reportCommandResult(
   }
 }
 
+function configureRepoPaths(input: unknown): FeishuAgentPublicConfig {
+  const config = readConfig()
+  if (!config) throw new Error('本机代理尚未绑定平台同步密钥')
+  if (!isRecord(input) || !isRecord(input.repoPaths)) {
+    throw new Error('代理仓库路径配置格式不正确')
+  }
+  const paths = parseFeishuAgentRepoPaths(input.repoPaths, true)
+  if (Object.keys(paths).length === 0) throw new Error('请配置至少一个本机仓库绝对路径')
+  const next = { ...config, repoPaths: { ...config.repoPaths, ...paths } }
+  writeConfig(next)
+  return publicFeishuAgentConfig(next)
+}
+
 async function executeCommand(command: {
   id: string
-  type: 'login_start' | 'sync' | 'rotate_token' | 'delivery_start'
+  type: 'login_start' | 'sync' | 'rotate_token' | 'configure_repo_paths' | 'delivery_start'
   payload?: unknown
 }): Promise<void> {
   try {
@@ -896,6 +1261,8 @@ async function executeCommand(command: {
       result = await runSync()
     } else if (command.type === 'delivery_start') {
       result = { job: deliveryJobSummary(startLocalDelivery(command.payload, command.id)) }
+    } else if (command.type === 'configure_repo_paths') {
+      result = { config: configureRepoPaths(command.payload) }
     } else {
       result = await rotateToken()
     }
@@ -958,6 +1325,7 @@ async function sendHeartbeat(): Promise<void> {
         (type !== 'login_start' &&
           type !== 'sync' &&
           type !== 'rotate_token' &&
+          type !== 'configure_repo_paths' &&
           type !== 'delivery_start')
       ) {
         continue
@@ -1038,6 +1406,10 @@ async function rotateToken(): Promise<unknown> {
 }
 
 async function startLogin(): Promise<LoginChallenge> {
+  const auth = await authStatus()
+  if (!auth.available) {
+    throw new Error('当前 Mac 未安装 Meegle CLI，请安装 @lark-project/meegle@1.0.27 后重新检测')
+  }
   const result = await runCommand(
     meegleCommand,
     [
@@ -1080,6 +1452,51 @@ async function startLogin(): Promise<LoginChallenge> {
     verificationUriComplete,
     userCode,
     expiresAt: pendingLogin.expiresAt,
+  }
+}
+
+async function setupMeegleCli(): Promise<{
+  installed: boolean
+  status: Awaited<ReturnType<typeof authStatus>>
+}> {
+  if (meegleSetupInFlight) throw new Error('Meegle CLI 正在配置，请稍后重试')
+  meegleSetupInFlight = true
+  try {
+    let status = await authStatus()
+    let installed = false
+    if (!status.available) {
+      const install = await runCommand(
+        npmCommand,
+        ['install', '-g', '@lark-project/meegle@1.0.27'],
+        process.env,
+        5 * 60_000,
+      )
+      if (install.exitCode !== 0) {
+        throw new Error(install.stderr.trim() || install.stdout.trim() || 'Meegle CLI 安装失败')
+      }
+      installed = true
+    }
+
+    const host = await runCommand(
+      meegleCommand,
+      ['config', 'set', 'host', meegleHost],
+      process.env,
+      30_000,
+    )
+    if (host.exitCode !== 0) {
+      throw new Error(host.stderr.trim() || host.stdout.trim() || 'Meegle host 配置失败')
+    }
+
+    cachedAuth = null
+    cachedAuthAt = 0
+    cachedMcpAuth = null
+    cachedMcpAuthAt = 0
+    status = await authStatus()
+    if (!status.available) throw new Error('安装完成但代理尚未发现 Meegle CLI，请重新检测本机代理')
+    await sendHeartbeat()
+    return { installed, status }
+  } finally {
+    meegleSetupInFlight = false
   }
 }
 
@@ -1189,6 +1606,29 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     sendJson(response, 403, { ok: false, error: '本机交付接口仅允许本机页面访问' })
     return
   }
+  if (request.method === 'GET' && path === '/identity') {
+    const config = readConfig()
+    const pendingPairing =
+      !config && existsSync(pairingStatePath) ? readPendingAgentPairing() : undefined
+    sendJson(response, 200, {
+      ok: true,
+      configured: Boolean(config),
+      clientId: config?.clientId ?? pendingPairing?.clientId,
+      clientName: config?.clientName ?? pendingPairing?.clientName,
+    })
+    return
+  }
+  if (request.method === 'POST' && path === '/setup/meegle') {
+    const origin = text(request.headers.origin)
+    if (!isLoopbackRequest(request) || !allowedOrigins.has(origin)) {
+      sendJson(response, 403, { ok: false, error: 'Meegle 快捷配置仅允许已授权的本机页面发起' })
+      return
+    }
+    await readBody(request)
+    const result = await setupMeegleCli()
+    sendJson(response, 200, { ok: true, installed: result.installed, status: result.status })
+    return
+  }
   if (request.method === 'GET' && (path === '/health' || path === '/status')) {
     sendJson(response, 200, await currentHealth())
     return
@@ -1276,10 +1716,19 @@ server.listen(agentPort, agentHost, () => {
   console.log(`配置路径：${configPath}`)
   console.log(`允许的页面来源：${[...allowedOrigins].join(', ')}`)
   console.log(`平台代理心跳间隔：${heartbeatIntervalMs}ms`)
-  void sendHeartbeat()
+  console.log(`未绑定时将向平台 ${pairingPlatformBaseUrl} 申请客户端登记`)
+  void clientRegistrationTick()
 })
 
-const heartbeatTimer = setInterval(() => void sendHeartbeat(), heartbeatIntervalMs)
+function clientRegistrationTick(): void {
+  if (readConfig()) {
+    void sendHeartbeat()
+  } else {
+    void pollAgentPairing()
+  }
+}
+
+const heartbeatTimer = setInterval(clientRegistrationTick, heartbeatIntervalMs)
 const loginPollTimer = setInterval(() => void pollPendingLogin(), loginPollIntervalMs)
 
 function shutdown(): void {

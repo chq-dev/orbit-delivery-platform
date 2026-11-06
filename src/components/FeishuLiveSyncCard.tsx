@@ -3,30 +3,57 @@ import {
   CheckCircle2,
   Clipboard,
   ExternalLink,
-  KeyRound,
   Laptop,
   LoaderCircle,
   LogIn,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
   ShieldCheck,
-  Terminal,
   WifiOff,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { api } from '../api'
+import {
+  discoverLocalFeishuAgentClientId,
+  rememberLocalFeishuAgentClientId,
+} from '../localAgentDiscovery'
 import { useData } from '../store'
-import type { Repository } from '../types'
+import type { FeishuAgentPairingSummary, Repository } from '../types'
 import { StatusBadge } from './ui'
 
-type BusyAction = 'refresh' | 'bind' | 'path' | 'login' | 'sync' | 'rotate' | null
-
-const BASIC_COMPONENT_LOCAL_PATH =
-  '/Users/shinya/Documents/workspace/SME/basic-component-cloud'
+type BusyAction = 'refresh' | 'path' | 'pairing' | 'login' | 'sync' | 'rotate' | null
 
 function isBasicComponentRepository(repository: Repository): boolean {
   return repository.name.trim().toLowerCase() === 'basic-component-cloud' ||
     repository.url.toLowerCase().includes('/basic-component-cloud')
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'"
+}
+
+function resolveInstallerUrls(): { platformBaseUrl: string; downloadBaseUrl: string } {
+  const browserOrigin = window.location.origin
+  const apiBase = import.meta.env.VITE_API_BASE?.trim() ?? ''
+  const proxyTarget = import.meta.env.DEV
+    ? import.meta.env.VITE_API_PROXY_TARGET?.trim() ?? ''
+    : ''
+  const defaultDevApiUrl = window.location.protocol === 'https:'
+    ? 'https://127.0.0.1:8787'
+    : 'http://localhost:8787'
+  const platformCandidate = /^https?:\/\//i.test(apiBase)
+    ? apiBase
+    : proxyTarget || (import.meta.env.DEV ? defaultDevApiUrl : browserOrigin)
+  try {
+    return {
+      platformBaseUrl: new URL(platformCandidate).origin,
+      downloadBaseUrl: browserOrigin,
+    }
+  } catch {
+    return { platformBaseUrl: browserOrigin, downloadBaseUrl: browserOrigin }
+  }
 }
 
 function formatRunTime(value: string | undefined): string {
@@ -46,10 +73,9 @@ export function FeishuLiveSyncCard() {
     feishuAgentLogin,
     feishuSyncToken,
     refreshFeishuAgent,
-    selectFeishuAgentClient,
     refreshFeishuSyncToken,
-    bindFeishuAgent,
     saveFeishuAgentRepoPaths,
+    selectFeishuAgentClient,
     beginFeishuAgentLogin,
     syncFeishuAgent,
     rotateFeishuSyncToken,
@@ -57,8 +83,11 @@ export function FeishuLiveSyncCard() {
   } = useData()
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState('')
-  const [issuedToken, setIssuedToken] = useState('')
   const [repoPath, setRepoPath] = useState('')
+  const [pairings, setPairings] = useState<FeishuAgentPairingSummary[]>([])
+  const [pairingPanelOpen, setPairingPanelOpen] = useState(false)
+  const [pairingBusyClientId, setPairingBusyClientId] = useState('')
+  const [pairingsRefreshing, setPairingsRefreshing] = useState(false)
 
   const health = feishuAgent.health
   const agentConfigured = Boolean(health?.config.configured)
@@ -76,7 +105,14 @@ export function FeishuLiveSyncCard() {
     localFeishuAgentClientId && selectedFeishuAgentClientId === localFeishuAgentClientId,
   )
   const ready = feishuAgent.online && agentConfigured && meegleAuthenticated
-  const command = 'npm run feishu:agent'
+  const { platformBaseUrl, downloadBaseUrl } = resolveInstallerUrls()
+  const installerUrl = `${downloadBaseUrl}/downloads/install-orbit-agent-macos.sh`
+  const installCommand =
+    `curl --fail --silent --show-error --location ${shellQuote(installerUrl)} ` +
+    `--output /tmp/install-orbit-agent-macos.sh && ` +
+    `/bin/bash /tmp/install-orbit-agent-macos.sh ${shellQuote(platformBaseUrl)} ${shellQuote(downloadBaseUrl)}`
+  const meegleInstallCommand =
+    'npm install -g @lark-project/meegle@1.0.27 && meegle config set host project.feishu.cn'
   const lastRun = health?.lastRun
   const lastRunFailed = lastRun?.status === 'failed'
   const status = selectedFeishuAgentClientId && ready
@@ -87,7 +123,7 @@ export function FeishuLiveSyncCard() {
   const statusLabel = !selectedFeishuAgentClientId
     ? localFeishuAgentClientId
       ? '未选择执行客户端'
-      : '当前终端未注册代理'
+      : '当前 Mac 尚未登记代理'
     : ready
       ? '自动同步就绪'
       : !feishuAgent.online
@@ -98,11 +134,7 @@ export function FeishuLiveSyncCard() {
 
   useEffect(() => {
     if (!basicComponentRepository) return
-    setRepoPath(
-      configuredRepoPath ||
-        basicComponentRepository.localPath ||
-        BASIC_COMPONENT_LOCAL_PATH,
-    )
+    setRepoPath(configuredRepoPath || '')
   }, [basicComponentRepository?.id, basicComponentRepository?.localPath, configuredRepoPath])
 
   const run = async (action: BusyAction, operation: () => Promise<unknown>) => {
@@ -131,21 +163,91 @@ export function FeishuLiveSyncCard() {
       await Promise.all([refreshFeishuAgent(), refreshFeishuSyncToken()])
     })
 
-  const bind = () =>
-    run('bind', async () => {
-      if (!basicComponentRepository) {
-        throw new Error('平台仓库列表中找不到 basic-component-cloud')
+  const refreshPairings = async () => {
+    setPairingsRefreshing(true)
+    try {
+      setPairings(await api.getFeishuAgentPairings())
+    } finally {
+      setPairingsRefreshing(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!pairingPanelOpen) return
+    const timer = window.setInterval(() => {
+      void api.getFeishuAgentPairings().then(setPairings).catch(() => undefined)
+    }, 5_000)
+    return () => window.clearInterval(timer)
+  }, [pairingPanelOpen])
+
+  const togglePairingPanel = () => {
+    const opening = !pairingPanelOpen
+    setPairingPanelOpen(opening)
+    if (opening) {
+      void run('pairing', refreshPairings)
+    }
+  }
+
+  const approvePairingRequest = async (pairing: FeishuAgentPairingSummary) => {
+    const path = basicComponentRepository ? repoPath.trim() : ''
+    if (path && !path.startsWith('/')) throw new Error('本机仓库路径必须是绝对路径')
+    const repoPaths = path && basicComponentRepository
+      ? { [basicComponentRepository.id]: path }
+      : {}
+    if (!window.confirm(
+      `确认绑定当前客户端？\n\n设备：${pairing.machineName}（${pairing.clientName}）\n校验码：${pairing.verificationCode}\n\n平台会将专属密钥加密发送给此客户端。`,
+    )) return
+
+    setPairingBusyClientId(pairing.clientId)
+    try {
+      await api.approveFeishuAgentPairing(pairing.clientId, repoPaths)
+      rememberLocalFeishuAgentClientId(pairing.clientId)
+      await selectFeishuAgentClient(pairing.clientId)
+      await refreshPairings()
+      notify(
+        '客户端绑定已批准',
+        `${pairing.machineName} 正在领取本机配置，完成后会出现在执行客户端列表中`,
+        'info',
+      )
+    } finally {
+      setPairingBusyClientId('')
+    }
+  }
+
+  const approvePairing = (pairing: FeishuAgentPairingSummary) =>
+    run('pairing', () => approvePairingRequest(pairing))
+
+  const bindCurrentMac = () =>
+    run('pairing', async () => {
+      const clientId = await discoverLocalFeishuAgentClientId(true)
+      if (!clientId) {
+        setPairingPanelOpen(true)
+        await refreshPairings()
+        throw new Error('无法读取当前 Mac 代理的登记信息。若 18787 已被占用但健康检查无响应，请先恢复现有代理，再重试绑定。')
       }
-      const path = repoPath.trim()
-      if (!path.startsWith('/')) throw new Error('本机仓库路径必须是绝对路径')
-      const result = await bindFeishuAgent({
-        repoPaths: { [basicComponentRepository.id]: path },
-        syncToken: issuedToken || undefined,
-      })
-      if (result.token) setIssuedToken(result.token)
-      if (result.error) throw new Error(result.error)
-      setIssuedToken('')
-      notify('本机代理已绑定', '平台密钥和 basic-component-cloud 本机路径已写入代理配置')
+
+      const existingClient = feishuAgentClients.find((client) => client.clientId === clientId)
+      if (existingClient) {
+        rememberLocalFeishuAgentClientId(clientId)
+        await selectFeishuAgentClient(clientId)
+        notify('当前 Mac 已登记', `${existingClient.clientName} 已加入执行客户端列表`)
+        return
+      }
+
+      const currentPairings = await api.getFeishuAgentPairings()
+      setPairings(currentPairings)
+      setPairingPanelOpen(true)
+      const pairing = currentPairings.find((item) => item.clientId === clientId)
+      if (!pairing) {
+        throw new Error('已检测到当前 Mac 代理，但绑定申请还未到达平台。请稍等几秒后重试。')
+      }
+      if (pairing.status === 'approved') {
+        rememberLocalFeishuAgentClientId(clientId)
+        await selectFeishuAgentClient(clientId)
+        notify('绑定申请已批准', '当前 Mac 正在领取客户端配置')
+        return
+      }
+      await approvePairingRequest(pairing)
     })
 
   const saveRepoPath = () =>
@@ -166,7 +268,6 @@ export function FeishuLiveSyncCard() {
     run('rotate', async () => {
       if (!window.confirm('确认轮换平台同步密钥？旧密钥会立即失效。')) return
       await rotateFeishuSyncToken()
-      setIssuedToken('')
     })
 
   return (
@@ -194,7 +295,7 @@ export function FeishuLiveSyncCard() {
             {feishuAgentClients.map((client) => (
               <option key={client.clientId} value={client.clientId}>
                 {client.clientName}
-                {client.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}
+                {client.clientId === localFeishuAgentClientId ? '（当前 Mac）' : ''}
                 {client.machineName && client.machineName !== client.clientName
                   ? ` · ${client.machineName}`
                   : ''}{' '}
@@ -223,7 +324,7 @@ export function FeishuLiveSyncCard() {
               ? '检测中…'
               : feishuAgent.online
                 ? selectedClient
-                  ? `${selectedClient.clientName}${selectedClient.clientId === localFeishuAgentClientId ? '（当前终端）' : ''}${selectedClient.machineName && selectedClient.machineName !== selectedClient.clientName ? ` (${selectedClient.machineName})` : ''}`
+                  ? `${selectedClient.clientName}${selectedClient.clientId === localFeishuAgentClientId ? '（当前 Mac）' : ''}${selectedClient.machineName && selectedClient.machineName !== selectedClient.clientName ? ` (${selectedClient.machineName})` : ''}`
                   : '未选择'
                 : selectedClient?.clientName || '未选择'}
           </strong>
@@ -267,11 +368,11 @@ export function FeishuLiveSyncCard() {
           </strong>
         </span>
         <span>
-          <small>平台同步密钥</small>
+          <small>全局同步凭据</small>
           <strong className={feishuSyncToken.configured ? 'is-ok' : 'is-warn'}>
             {feishuSyncToken.configured
               ? `${feishuSyncToken.hint ?? '已配置'} · ${feishuSyncToken.source === 'env' ? '服务器环境变量' : '平台生成'}`
-              : '尚未生成'}
+              : '未配置（客户端可使用独立凭据）'}
           </strong>
         </span>
         <span>
@@ -302,42 +403,40 @@ export function FeishuLiveSyncCard() {
           <div>
             <strong>{feishuAgent.lastSeenAt ? '同步代理暂时离线' : '尚未收到同步代理心跳'}</strong>
             <p>
-              {feishuAgent.lastSeenAt
+              {localFeishuAgentClientId
+                ? '已检测到当前 Mac 上的代理。点击“绑定当前 Mac”完成登记。'
+                : feishuAgent.lastSeenAt
                 ? `最近心跳：${formatRunTime(feishuAgent.lastSeenAt)}。请确认 launchd 服务仍在运行，恢复后页面会自动上线。`
-                : '在已登录飞书的电脑上启动代理，保持服务运行后会通过平台心跳自动上线。'}
+                : '代理能响应时，点击“绑定当前 Mac”即可登记。首次安装才运行安装命令；若 18787 已占用，请先恢复现有代理。'}
             </p>
           </div>
-          <code>{command}</code>
-          <button className="btn btn-secondary btn-xs" onClick={() => void copy(command, '启动命令已复制')}>
-            <Clipboard size={12} /> 复制
-          </button>
+          {!localFeishuAgentClientId && (
+            <div className="feishu-live-offline-actions">
+              <a className="btn btn-secondary btn-xs" href={installerUrl} download>
+                下载 Mac 安装脚本
+              </a>
+              <button className="btn btn-secondary btn-xs" onClick={() => void copy(installCommand, '安装命令已复制')}>
+                <Clipboard size={12} /> 复制安装命令
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {feishuAgent.online && !agentConfigured && feishuSyncToken.source === 'env' && (
-        <div className="feishu-live-warning">
-          <AlertTriangle size={15} />
-          <span>
-            服务器使用环境变量管理密钥。请让服务器管理员提供该值，并在本机启动代理时设置
-            <code> PLATFORM_SYNC_TOKEN </code>，或在服务器改用页面生成的数据库密钥。
-          </span>
-        </div>
-      )}
-
-      {localClientSelected && feishuAgent.online && (
+      {localClientSelected && feishuAgent.online && basicComponentRepository && (
         <div className="feishu-local-repo-path">
           <label>
             <span>basic-component-cloud 本机仓库路径</span>
             <input
               value={repoPath}
               onChange={(event) => setRepoPath(event.target.value)}
-              placeholder="/Users/用户名/Documents/workspace/SME/basic-component-cloud"
+              placeholder="/Users/用户名/.../basic-component-cloud"
               aria-label="basic-component-cloud 本机仓库路径"
             />
           </label>
           <small>
             {basicComponentRepository
-              ? `仓库标识：${basicComponentRepository.id}。路径只写入当前 Mac 的代理。`
+              ? `仓库标识：${basicComponentRepository.id}。填写后优先使用该 Mac 路径；留空时代理会按 Git 地址查找常用工作区，找不到再回退服务器临时检出。路径只写入当前 Mac 的代理。`
               : '平台仓库列表中找不到 basic-component-cloud。'}
           </small>
           {agentConfigured && (
@@ -350,6 +449,79 @@ export function FeishuLiveSyncCard() {
               保存本机路径
             </button>
           )}
+        </div>
+      )}
+
+      {pairingPanelOpen && (
+        <div className="feishu-agent-pairing-panel">
+          <div className="feishu-agent-pairing-head">
+            <div>
+              <strong>添加执行客户端</strong>
+              <p>本机代理主动向平台申请绑定，浏览器无需访问 Mac 的本地端口。</p>
+            </div>
+            <button
+              className="btn btn-secondary btn-xs"
+              onClick={() => void run('pairing', refreshPairings)}
+              disabled={pairingsRefreshing || busy !== null}
+            >
+              <RefreshCw size={13} className={pairingsRefreshing ? 'spin' : ''} />
+              刷新申请
+            </button>
+          </div>
+
+          {basicComponentRepository ? (
+            <label className="feishu-agent-pairing-path">
+              <span>本机仓库路径（可选）</span>
+              <input
+                value={repoPath}
+                onChange={(event) => setRepoPath(event.target.value)}
+                placeholder="留空则自动查找 Mac 上已有仓库"
+                aria-label="待绑定客户端的 basic-component-cloud 本机路径"
+              />
+              <small>
+                登记后优先使用该 Mac 路径；留空时先自动查找已有工作区，找不到再由服务器临时检出。
+              </small>
+            </label>
+          ) : (
+            <div className="feishu-agent-pairing-empty">
+              先绑定客户端，之后可在“代码仓库”添加 basic-component-cloud。
+            </div>
+          )}
+
+          {pairings.length === 0 ? (
+            <div className="feishu-agent-pairing-empty">
+              尚无待绑定申请。已运行的 Mac 代理会自动申请；点击“绑定当前 Mac”后可确认设备和校验码。
+            </div>
+          ) : (
+            <div className="feishu-agent-pairing-list">
+              {pairings.map((pairing) => (
+                <div className="feishu-agent-pairing-row" key={pairing.clientId}>
+                  <div>
+                    <strong>{pairing.clientName}</strong>
+                    <span>{pairing.machineName} · ID {pairing.clientId.slice(0, 8)}</span>
+                    <small>校验码 {pairing.verificationCode} · 到期 {formatRunTime(pairing.expiresAt)}</small>
+                  </div>
+                  {pairing.status === 'approved' ? (
+                    <span className="feishu-agent-pairing-approved">等待客户端接入</span>
+                  ) : (
+                    <button
+                      className="btn btn-primary btn-xs"
+                      onClick={() => void approvePairing(pairing)}
+                      disabled={busy !== null}
+                    >
+                      {pairingBusyClientId === pairing.clientId
+                        ? <LoaderCircle size={13} className="spin" />
+                        : <CheckCircle2 size={13} />}
+                      批准并绑定
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          <small className="feishu-agent-pairing-security">
+            批准前请确认机器名和校验码与本机代理输出一致；同步密钥只会加密后发给申请它的客户端。
+          </small>
         </div>
       )}
 
@@ -381,19 +553,6 @@ export function FeishuLiveSyncCard() {
         </div>
       )}
 
-      {issuedToken && (
-        <div className="feishu-token-once">
-          <div>
-            <strong><KeyRound size={15} /> 一次性平台同步密钥</strong>
-            <p>仅在本机代理绑定失败时使用。关闭页面后不会再次显示，请勿写入仓库或聊天记录。</p>
-          </div>
-          <code>{issuedToken}</code>
-          <button className="btn btn-secondary btn-xs" onClick={() => void copy(issuedToken, '同步密钥已复制')}>
-            <Clipboard size={12} /> 复制密钥
-          </button>
-        </div>
-      )}
-
       {error && (
         <div className="feishu-live-warning">
           <AlertTriangle size={15} />
@@ -405,8 +564,7 @@ export function FeishuLiveSyncCard() {
         <div className="feishu-live-warning">
           <AlertTriangle size={15} />
           <span>
-            当前页面所在终端未检测到执行代理；下方客户端属于其他机器。请先在本机项目目录运行
-            <code> npm run feishu:agent</code>，否则任务不会在页面所在机器执行。
+            当前选择的执行客户端不在这台 Mac 上。点击“绑定当前 Mac”可加入已运行的本机代理；需要登录后自动运行时，再安装自启动服务。
           </span>
         </div>
       )}
@@ -418,25 +576,34 @@ export function FeishuLiveSyncCard() {
         </div>
       )}
 
+      {feishuAgent.online && agentConfigured && health?.meegle.available === false && (
+        <div className="feishu-live-warning">
+          <AlertTriangle size={15} />
+          <span>当前 Mac 未安装 Meegle CLI。安装并配置后，点击“重新检测”再开始飞书授权。</span>
+          <button
+            className="btn btn-secondary btn-xs"
+            onClick={() => void copy(meegleInstallCommand, 'Meegle CLI 安装命令已复制')}
+          >
+            <Clipboard size={12} /> 复制安装命令
+          </button>
+        </div>
+      )}
+
       <div className="feishu-live-actions">
         <button className="btn btn-secondary" onClick={() => void refresh()} disabled={busy !== null}>
           <RefreshCw size={14} className={busy === 'refresh' || feishuAgent.checking ? 'spin' : ''} />
           重新检测
         </button>
-        {feishuAgent.online && localClientSelected && !agentConfigured &&
-          (feishuSyncToken.source === 'none' || Boolean(issuedToken)) && (
-          <button className="btn btn-primary" onClick={() => void bind()} disabled={busy !== null}>
-            {busy === 'bind' ? <LoaderCircle size={14} className="spin" /> : <KeyRound size={14} />}
-            {issuedToken ? '重试本机绑定' : '生成密钥并绑定'}
+        {!localClientSelected && (
+          <button className="btn btn-primary" onClick={() => void bindCurrentMac()} disabled={busy !== null}>
+            {busy === 'pairing' ? <LoaderCircle size={14} className="spin" /> : <Laptop size={14} />}
+            绑定当前 Mac
           </button>
         )}
-        {feishuAgent.online && localClientSelected && !agentConfigured &&
-          feishuSyncToken.source === 'database' && !issuedToken && (
-          <span className="feishu-live-ready is-warn">
-            平台已有密钥，需从原代理轮换后才能绑定这台 Mac
-          </span>
-        )}
-        {feishuAgent.online && agentConfigured && !meegleAuthenticated && (
+        <button className="btn btn-secondary" onClick={togglePairingPanel} disabled={busy !== null}>
+          <Plus size={14} /> {pairingPanelOpen ? '收起客户端登记' : '添加其他客户端'}
+        </button>
+        {feishuAgent.online && agentConfigured && health?.meegle.available && !meegleAuthenticated && (
           <button className="btn btn-primary" onClick={() => void login()} disabled={busy !== null}>
             {busy === 'login' ? <LoaderCircle size={14} className="spin" /> : <LogIn size={14} />}
             开始飞书授权
@@ -448,7 +615,7 @@ export function FeishuLiveSyncCard() {
             立即同步
           </button>
         )}
-        {agentConfigured && feishuSyncToken.source === 'database' && (
+        {agentConfigured && feishuSyncToken.source !== 'env' && (
           <button className="btn btn-secondary" onClick={() => void rotate()} disabled={busy !== null}>
             <RotateCcw size={14} /> 轮换密钥
           </button>
@@ -457,9 +624,6 @@ export function FeishuLiveSyncCard() {
           <span className="feishu-live-ready">
             <CheckCircle2 size={14} /> 每 60 秒检查代理，距上次同步超过 10 分钟自动更新
           </span>
-        )}
-        {!feishuAgent.online && (
-          <span className="feishu-live-command"><Terminal size={14} /> {command}</span>
         )}
       </div>
     </article>

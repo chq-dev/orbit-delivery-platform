@@ -39,6 +39,12 @@ import {
   updateFeishuAgentCommandProgress,
 } from './services/feishuAgentBridgeService.js'
 import {
+  approveFeishuAgentPairing,
+  completeFeishuAgentPairing,
+  listFeishuAgentPairings,
+  requestFeishuAgentPairing,
+} from './services/feishuAgentPairingService.js'
+import {
   bootstrapFeishuSyncToken,
   getFeishuSyncTokenStatus,
   rotateFeishuSyncToken,
@@ -51,6 +57,11 @@ import {
   listPipelines,
 } from './services/pipelineService.js'
 import { recordLocalDelivery } from './services/localDeliveryService.js'
+import {
+  getCloudDeliveryJob,
+  getCloudDeliveryReadiness,
+  startCloudDelivery,
+} from './services/cloudDeliveryService.js'
 import {
   LOCAL_DELIVERY_CONTRACT_VERSION,
   parseLocalDeliveryAgentRequest,
@@ -100,13 +111,10 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   }
 
   const assertSyncTokenAuthorized = (request: Request): void => {
-    const tokenStatus = getFeishuSyncTokenStatus(db)
     assertFeishuIngestAuthorized(
       { headers: request.headers, ip: request.ip },
       config.feishuIngestToken,
-      tokenStatus.source === 'database'
-        ? (token) => verifyFeishuSyncToken(db, token)
-        : undefined,
+      (token) => verifyFeishuSyncToken(db, token),
     )
   }
 
@@ -177,6 +185,13 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       return
     }
     const path = request.path
+    if (
+      request.method === 'POST' &&
+      path === '/integrations/feishu/agent/pairing/poll'
+    ) {
+      next()
+      return
+    }
     const serviceRoute =
       (request.method === 'GET' &&
         (path === '/bootstrap' ||
@@ -284,11 +299,46 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.json(getFeishuAgentBridgeStatus(db, request.query.clientId))
   })
 
+  router.get('/deliveries/cloud/readiness', (_request, response) => {
+    response.json(getCloudDeliveryReadiness())
+  })
+
+  router.post('/deliveries/cloud', (request, response) => {
+    const payload = parseLocalDeliveryAgentRequest({
+      ...(request.body ?? {}),
+      temporaryCheckout: true,
+    })
+    assertRequirementDeliveryContextReady(db, payload.workItemId)
+    response.status(202).json(startCloudDelivery(db, vault, payload))
+  })
+
+  router.get('/deliveries/cloud/:jobId', (request, response) => {
+    const job = getCloudDeliveryJob(request.params.jobId)
+    if (!job) throw new AppError(404, 'CLOUD_DELIVERY_NOT_FOUND', '服务器临时交付任务不存在')
+    response.json(job)
+  })
+
+  router.post('/integrations/feishu/agent/pairing/poll', (request, response) => {
+    response.json(requestFeishuAgentPairing(db, request.body, request.ip ?? ''))
+  })
+
+  router.get('/integrations/feishu/agent/pairings', (_request, response) => {
+    response.json(listFeishuAgentPairings(db))
+  })
+
+  router.post('/integrations/feishu/agent/pairings/:clientId/approve', (request, response) => {
+    response.json(
+      approveFeishuAgentPairing(db, request.params.clientId, request.body?.repoPaths),
+    )
+  })
+
   router.post('/integrations/feishu/agent/heartbeat', (request, response) => {
     assertSyncTokenAuthorized(request)
+    const heartbeat = recordFeishuAgentHeartbeat(db, request.body)
+    completeFeishuAgentPairing(db, request.body?.clientId)
     response.json({
       ok: true,
-      ...recordFeishuAgentHeartbeat(db, request.body),
+      ...heartbeat,
     })
   })
 
