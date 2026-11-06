@@ -55,10 +55,18 @@ export async function bootstrapFeishuIntegration(
     defaultOwner: config.feishuDefaultOwner,
     closeTransitionId: config.feishuCloseTransitionId || status.closeTransitionId || undefined,
   })
+  const repositoryOwner = db
+    .prepare('SELECT owner_user_id FROM repositories WHERE id = ?')
+    .get(defaultRepoId) as { owner_user_id: string } | undefined
   return {
     connected: true,
     configuredFromEnvironment: true,
-    sync: await syncFeishu(db, vault, 'schedule'),
+    sync: await syncFeishu(
+      db,
+      vault,
+      'schedule',
+      repositoryOwner?.owner_user_id || undefined,
+    ),
   }
 }
 

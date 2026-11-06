@@ -71,13 +71,14 @@ export function createApp(db: AppDatabase, vault: CredentialVault) {
   app.get('/feishu-work-items.json', (request, response, next) => {
     try {
       const token = parseSessionCookie(request.headers.cookie)
-      if (!userForSessionToken(db, token)) {
+      const user = userForSessionToken(db, token)
+      if (!user) {
         response.status(401).json({
           error: { code: 'AUTH_REQUIRED', message: '请先登录后再访问飞书快照' },
         })
         return
       }
-      const snapshot = readFeishuSnapshotFromDatabase(db, config.feishuProjectKey)
+      const snapshot = readFeishuSnapshotFromDatabase(db, config.feishuProjectKey, user.id)
       if (!snapshot) {
         next()
         return

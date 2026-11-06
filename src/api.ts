@@ -1,5 +1,7 @@
 import type {
   Account,
+  BuildJobInfo,
+  BuildTriggerResult,
   FeishuInboxItem,
   FeishuAgentPairingSummary,
   FeishuIntegrationStatus,
@@ -48,6 +50,8 @@ export interface RepositoryInput {
   url: string
   branch: string
   localPath?: string
+  buildEnabled?: boolean
+  buildAccountId?: string
   language: string
   accountId: string
 }
@@ -55,6 +59,8 @@ export interface RepositoryInput {
 export interface RepositorySettingsInput {
   branch?: string
   localPath?: string
+  buildEnabled?: boolean
+  buildAccountId?: string
 }
 
 export interface AccountInput {
@@ -62,6 +68,15 @@ export interface AccountInput {
   username: string
   password: string
   label: string
+  serviceUrl?: string
+}
+
+export interface AccountUpdateInput {
+  platform?: PlatformKey
+  username?: string
+  password?: string
+  label?: string
+  serviceUrl?: string
 }
 
 export interface WorkItemInput {
@@ -168,6 +183,24 @@ export const api = {
     }),
   createAccount: (input: AccountInput) =>
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(input) }),
+  updateAccount: (id: string, input: AccountUpdateInput) =>
+    request<Account>(`/accounts/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteAccount: (id: string) =>
+    request<{ ok: true }>(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getBuildJob: (id: string, clientId?: string) =>
+    request<BuildJobInfo>(
+      `/accounts/${encodeURIComponent(id)}/build-job${
+        clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''
+      }`,
+    ),
+  triggerBuild: (id: string, parameters: Record<string, string>, clientId?: string) =>
+    request<BuildTriggerResult>(`/accounts/${encodeURIComponent(id)}/build`, {
+      method: 'POST',
+      body: JSON.stringify({ parameters, ...(clientId ? { clientId } : {}) }),
+    }),
   importAccounts: (accounts: AccountInput[]) =>
     request<ImportResult<Account>>('/accounts/import', {
       method: 'POST',

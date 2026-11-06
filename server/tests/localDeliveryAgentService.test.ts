@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  buildFailedDeliveryPipelinePayload,
   buildCodexExecArgs,
   buildLocalDeliveryCommand,
   classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
+  deliveryTimeoutFailureMessage,
   describeFetchError,
+  failedDeliveryStageIndex,
   fetchJsonWithRetry,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryBranch,
+  resolveLocalDeliveryFailureStep,
   resolveLocalDeliveryTarget,
   supportsLocalDeliveryContract,
   updateLocalDeliveryAgentStep,
@@ -19,11 +23,16 @@ const request = {
   repoId: 'repo-1',
   autoCommit: true,
   pushAfterAcceptance: true,
+  runBuild: true,
   autoClose: true,
 }
 
 test('一键交付请求只接受受控参数，不允许浏览器下发本地路径', () => {
   assert.deepEqual(parseLocalDeliveryAgentRequest(request), request)
+  assert.equal(
+    parseLocalDeliveryAgentRequest({ ...request, runBuild: false }).runBuild,
+    false,
+  )
   assert.throws(
     () =>
       parseLocalDeliveryAgentRequest({
@@ -39,6 +48,14 @@ test('一键交付请求只接受受控参数，不允许浏览器下发本地�
   assert.throws(
     () => parseLocalDeliveryAgentRequest({ ...request, autoCommit: false }),
     /未启用自动提交时不能推送/,
+  )
+  assert.throws(
+    () =>
+      parseLocalDeliveryAgentRequest({
+        ...request,
+        pushAfterAcceptance: false,
+      }),
+    /自动关闭飞书缺陷需要启用提交后推送/,
   )
 })
 
@@ -155,6 +172,7 @@ test('一键交付命令通过 argv 传递并自动授权推送确认', () => {
       '--run',
       '--push',
       '--yes',
+      '--build',
       '--close',
     ],
   )
@@ -172,6 +190,29 @@ test('一键交付命令通过 argv 传递并自动授权推送确认', () => {
   assert.equal(localOnly.includes('--push'), false)
   assert.equal(localOnly.includes('--yes'), false)
   assert.equal(localOnly.includes('--close'), false)
+
+  const withoutBuild = buildLocalDeliveryCommand({
+    platformBaseUrl: 'http://8.145.45.84:8787',
+    ...request,
+    runBuild: false,
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    branch: 'dev-harvey',
+  })
+  assert.equal(withoutBuild.includes('--no-build'), true)
+  assert.equal(withoutBuild.includes('--build'), false)
+
+  assert.throws(
+    () =>
+      buildLocalDeliveryCommand({
+        platformBaseUrl: 'http://8.145.45.84:8787',
+        ...request,
+        pushAfterAcceptance: false,
+        autoClose: true,
+        localPath: '/Users/chenhuaqu/sme/sme-main',
+        branch: 'dev-harvey',
+      }),
+    /自动关闭飞书缺陷需要启用提交后推送/,
+  )
 })
 
 test('Codex 参数用 -- 隔离图片参数与提示词，避免提示词被当作图片吞掉', () => {
@@ -187,6 +228,17 @@ test('Codex 参数用 -- 隔离图片参数与提示词，避免提示词被当�
   assert.equal(args[separator + 1], '实现需求并生成报告')
   assert.equal(args.at(-1), '实现需求并生成报告')
   assert.equal(args.includes('/tmp/design shot.jpg'), true)
+  assert.equal(args[args.indexOf('--sandbox') + 1], 'workspace-write')
+
+  const commitArgs = buildCodexExecArgs({
+    checkout: '/Users/example/sme-main',
+    prompt: '创建 AICR 提交',
+    lastMessagePath: '/tmp/codex-commit-last-message.md',
+    imagePaths: [],
+    mcpArgs: [],
+    sandbox: 'danger-full-access',
+  })
+  assert.equal(commitArgs[commitArgs.indexOf('--sandbox') + 1], 'danger-full-access')
 })
 
 test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', () => {
@@ -201,6 +253,70 @@ test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', ()
     'evidence',
   )
   assert.equal(classifyLocalDeliveryFailure('推送失败：remote rejected'), 'commit')
+  assert.equal(classifyLocalDeliveryFailure('未启用自动提交代码；代码保留在工作区'), 'commit')
+  assert.equal(
+    classifyLocalDeliveryFailure('平台已记录失败流水线 RUN-2411，但本次交付失败'),
+    'writeback',
+  )
+})
+
+test('连通性、需求分析、LDD 与编码失败会落到新步骤和对应平台阶段', () => {
+  assert.equal(
+    resolveLocalDeliveryFailureStep('deliveryContractVersion 不支持', 'connectivity'),
+    'connectivity',
+  )
+  assert.equal(failedDeliveryStageIndex('契约失败', 'connectivity'), 0)
+  assert.equal(resolveLocalDeliveryFailureStep('Codex 执行失败：超时', 'analysis'), 'analysis')
+  assert.equal(failedDeliveryStageIndex('Codex 执行失败', 'analysis'), 0)
+  assert.equal(resolveLocalDeliveryFailureStep('Codex 执行失败：超时', 'ldd'), 'ldd')
+  assert.equal(failedDeliveryStageIndex('Codex 执行失败', 'ldd'), 1)
+  assert.equal(resolveLocalDeliveryFailureStep('Codex 执行失败：超时', 'coding'), 'coding')
+  assert.equal(failedDeliveryStageIndex('Codex 执行失败', 'coding'), 2)
+})
+
+test('提交失败会定位到提交阶段，并由本机代理生成失败流水线兜底载荷', () => {
+  const message =
+    '创建本地交付提交失败：提交者姓名检查失败：git user.name 必须为中文真实姓名'
+  const failedStepKey = resolveLocalDeliveryFailureStep(message, 'codex')
+  assert.equal(failedStepKey, 'commit')
+  assert.equal(failedDeliveryStageIndex(message, failedStepKey), 4)
+
+  const steps = createLocalDeliveryAgentSteps()
+  updateLocalDeliveryAgentStep(steps, 'connectivity', 'success', '平台与仓库校验通过')
+  updateLocalDeliveryAgentStep(steps, 'analysis', 'success', '需求分析完成')
+  updateLocalDeliveryAgentStep(steps, 'ldd', 'success', '业务 LDD 已生成')
+  updateLocalDeliveryAgentStep(steps, 'coding', 'success', '业务编码完成')
+  const payload = buildFailedDeliveryPipelinePayload({
+    workItemId: 'REQ-1082',
+    repoId: 'repo-1',
+    branch: 'main-harvey',
+    localPath: '/Users/chenhuaqu/sme/sme-main',
+    error: message,
+    failedStepKey,
+    autoCommit: true,
+    steps,
+  })
+  assert.equal(payload.outcome, 'failed')
+  assert.equal(payload.failedStageIndex, 4)
+  const stageResults = payload.stageResults as Array<{ index: number; status: string }>
+  assert.equal(stageResults[0].status, 'success')
+  assert.equal(stageResults[2].status, 'success')
+  assert.equal(stageResults[4].status, 'failed')
+  assert.equal(stageResults[5].status, 'pending')
+})
+
+test('失败流水线兜底载荷会截断超长错误并标记对应证据阶段', () => {
+  const message = `缺少 delivery-artifacts 中的设计报告：${'x'.repeat(5_000)}`
+  assert.equal(failedDeliveryStageIndex(message, 'evidence'), 1)
+  const payload = buildFailedDeliveryPipelinePayload({
+    workItemId: 'REQ-1082',
+    repoId: 'repo-1',
+    error: message,
+    failedStepKey: 'evidence',
+    autoCommit: true,
+  })
+  assert.equal(String(payload.error).length, 4_000)
+  assert.equal(payload.failedStageIndex, 1)
 })
 
 test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {
@@ -210,17 +326,22 @@ test('旧服务端缺少交付契约字段时拒绝执行本机交付', () => {
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 0 }), false)
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 1 }), false)
   assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: '2' }), false)
-  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 3 }), true)
+  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 3 }), false)
+  assert.equal(supportsLocalDeliveryContract({ deliveryContractVersion: 4 }), true)
 })
 
 test('本机交付步骤会记录运行、成功、失败与日志', () => {
   const steps = createLocalDeliveryAgentSteps()
   assert.equal(steps.length, 7)
+  assert.deepEqual(
+    steps.map((step) => step.name),
+    ['连通性校验', '需求分析', '业务 LDD', '业务编码', '检查证据', '提交推送', '回写并关闭缺陷'],
+  )
   assert.equal(steps.every((step) => step.status === 'pending'), true)
-  const running = updateLocalDeliveryAgentStep(steps, 'platform', 'running', '连接平台')
+  const running = updateLocalDeliveryAgentStep(steps, 'connectivity', 'running', '连接平台')
   assert.equal(running?.status, 'running')
   assert.ok(running?.startedAt)
-  const failed = updateLocalDeliveryAgentStep(steps, 'platform', 'failed', '连接超时')
+  const failed = updateLocalDeliveryAgentStep(steps, 'connectivity', 'failed', '连接超时')
   assert.equal(failed?.status, 'failed')
   assert.equal(failed?.log, '连接超时')
   assert.ok(failed?.finishedAt)
@@ -258,4 +379,45 @@ test('平台请求遇到瞬时连接失败会重试并返回成功结果', async
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('交付超时按已进入的阶段生成可分类的失败信息', () => {
+  const connectivity = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:connectivity\n',
+    45 * 60_000,
+  )
+  assert.match(connectivity, /读取平台失败：本机交付执行超时/)
+  assert.equal(classifyLocalDeliveryFailure(connectivity), 'platform')
+  assert.equal(resolveLocalDeliveryFailureStep(connectivity, 'connectivity'), 'connectivity')
+
+  const coding = deliveryTimeoutFailureMessage('LOCAL_DELIVERY_STAGE:codex\n', 45 * 60_000)
+  assert.match(coding, /Codex 执行失败：本机交付执行超时/)
+  assert.equal(classifyLocalDeliveryFailure(coding), 'codex')
+
+  const evidence = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:codex\nLOCAL_DELIVERY_STAGE:evidence\n',
+    45 * 60_000,
+  )
+  assert.match(evidence, /检查交付证据失败：本机交付执行超时/)
+
+  const commit = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:codex\nLOCAL_DELIVERY_STAGE:commit\n',
+    45 * 60_000,
+  )
+  assert.match(commit, /创建本地交付提交失败.*aicr-commit 未完成/)
+  assert.equal(classifyLocalDeliveryFailure(commit), 'commit')
+
+  const push = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:commit\nLOCAL_DELIVERY_STAGE:push\n',
+    45 * 60_000,
+  )
+  assert.match(push, /推送失败：本机交付执行超时/)
+  assert.equal(classifyLocalDeliveryFailure(push), 'commit')
+
+  const writeback = deliveryTimeoutFailureMessage(
+    'LOCAL_DELIVERY_STAGE:push\nLOCAL_DELIVERY_STAGE:writeback\n',
+    45 * 60_000,
+  )
+  assert.match(writeback, /回写平台超时/)
+  assert.equal(classifyLocalDeliveryFailure(writeback), 'writeback')
 })

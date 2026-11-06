@@ -32,10 +32,15 @@ the following is mandatory: a requirement breakdown of 20+ characters, a design
 reference, or 1-3 screenshots (max 500KB each, 1.2MB total). Defects are exempt.
 The runner writes screenshots under `delivery-artifacts/<work-item>/requirement-assets/`
 and passes every image to `codex exec --image`. The agent reports seven step states through
-`POST /api/integrations/feishu/agent/commands/:id/progress`: platform, contract,
-checkout, Codex, evidence, commit/push and platform write-back. Inspect the failed
-step and its log instead of treating `fetch failed` as a Codex error. Platform
-health/bootstrap reads retry transient network failures automatically.
+`POST /api/integrations/feishu/agent/commands/:id/progress`: connectivity
+(platform + contract + checkout), requirement analysis, business LDD, business
+coding, evidence, commit/push and platform write-back. At the start of each phase
+Codex writes `delivery-artifacts/<work-item>/.phase-current` with
+`analysis|ldd|coding` and prints the matching `LOCAL_DELIVERY_PHASE` marker. The
+agent polls that marker and infers the phase from real workspace changes, so the
+live step state can move even while `codex exec` buffers its output. Inspect the failed step and its log instead of treating
+`fetch failed` as a Codex error. Platform health/bootstrap reads retry transient
+network failures automatically.
 
 Set `CODEX_BIN` to the absolute Codex executable when launchd/systemd does not
 inherit the user's shell `PATH`. The agent health endpoint must show
@@ -90,14 +95,53 @@ local defect as closed and reuses the platform's Feishu close outbox.
   acceptance evidence, and do not use write operations without explicit approval.
 - Read the nearest `AGENTS.md` before editing `web/` or `lua/`.
 - Produce real design, integration and test reports. Never fabricate results.
-- Codex must not create, stage, amend, or push Git commits; the runner owns commit
-  creation after Codex exits. The runner fails when Codex changes no non-Markdown
-  source file, even if design or report documents were generated. Build,
+- Commit stage follows the sme-main `/aicr-commit` contract (`$aicr-commit` when
+  the Codex session exposes it). Read `.claude/skills-overlay/aicr-commit/SKILL.md`,
+  `.claude/skills/aicr-workflow/SKILL.md` and
+  `.claude/skills/aicr-pr/references/title-rules.md` before relying on it. The
+  staged AICR review must report `approved: true` for the current diff; never
+  commit secrets or `.env*`, and never use `--force` or an unauthorized amend.
+- Use the shared AICR commit title format: `【缺陷修复】{id} {description}` for
+  defects, `【需求实现】{id} {description}` for requirements, and an appropriate
+  `【工程】` / `【AI】` / `【国际化】` / `【样式】` / `【重构】` / `【性能】` /
+  `【文档】` / `【NA】` prefix when there is no work-item id.
+- Mode-switch work uses the LDD at
+  `web/docs/ldd/SME-模式切换-LDD.md`. Read it before design or coding and trace
+  the frontend (`web/components/views/modeSwitch`), Lua module
+  (`lua/luci/modules/mode_switch`), menu registration, confirmation and failure
+  states described by the LDD.
+- The coding Codex pass must not create, stage, amend, or push Git commits. After it
+  exits, the runner starts a second Codex pass in the same checkout that executes
+  `/aicr-commit` (staged AICR review + `.git/aicr-ai-review-latest.json` gate +
+  AICR-compliant commit title) and never pushes; only an authorized runner `--push` writes the
+  remote branch. The runner fails when Codex changes no non-Markdown source file,
+  even if design or report documents were generated, and it fails instead of
+  creating a commit when AICR review is missing, stale, or not `approved: true`.
+  The commit pass must never stage `.env*`, secrets, `delivery-artifacts/**`, logs,
+  build output, test files (`__tests__/**`, `*.test.*`, `*.spec.*`) or unrelated files.
+  Tests may be executed as verification evidence but must remain uncommitted. Build,
   device-upgrade and test stages stay `pending` unless `build-report.md`/`build.log`,
   `upgrade-report.md`/`upgrade.log`, and `test-report.md` actually exist.
 - The server rejects `POST /api/pipelines` and `/advance`; only
   `POST /api/pipelines/local` may record a client result.
+- Every one-click run must leave a pipeline record. Successful runs, failed runs and
+  runs that intentionally skip commit (`--no-commit`) all write to
+  `POST /api/pipelines/local`; failures keep the actual failed stage and error instead of
+  disappearing from the pipeline history.
 - The runner commits only after validating real source changes and the design and
   integration reports. Do not push unless the runner was invoked with `--push`
   and the user authorized the external write.
+- Delivery has independent budgets: coding Codex defaults to 150 minutes
+  (`LOCAL_DELIVERY_CODEX_TIMEOUT_MS`), `/aicr-commit` defaults to 30 minutes
+  (`LOCAL_DELIVERY_COMMIT_TIMEOUT_MS`), and the agent outer budget defaults to
+  210 minutes (`FEISHU_AGENT_DELIVERY_TIMEOUT_MS`). The runner prints
+  `LOCAL_DELIVERY_STAGE:codex|commit|push|writeback` markers and writes
+  `codex.log` / `codex-commit.log` under `delivery-artifacts/<work-item>/` so a
+  timeout is attributed to the real stage instead of the initial JSON output.
 - Keep credentials and Feishu/Git tokens out of prompts, logs and reports.
+- The local agent exposes the authoritative live job at `GET /status` (and
+  `GET /delivery/status/<job-id>`). A job is still running only while
+  `status=running` and `processAlive=true`; `running` with `processAlive=false`
+  is a stale state that needs agent restart or cleanup. `POST /delivery/cancel`
+  kills the local delivery process group; closing the delivery dialog only stops
+  browser polling and must not be described as terminating the task.

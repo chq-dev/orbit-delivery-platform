@@ -39,7 +39,9 @@ import {
   type CloudDeliveryReadiness,
   type LocalDeliveryAgentReadiness,
 } from '../localDeliveryAgent'
+import { cancelLocalDeliveryJob, fetchLocalDeliveryJob } from '../feishuAgent'
 import { prepareScreenshot } from '../screenshotCompression'
+import { displayDeliveryStages } from '../deliveryStages'
 import { useData } from '../store'
 import type { LocalDeliveryJob, PipelineRun, WorkItem } from '../types'
 import { searchWorkItems } from '../workItemSearch'
@@ -53,6 +55,44 @@ function deliveryStatusLabel(job: LocalDeliveryJob | null, error: string): strin
   if (job?.status === 'succeeded') return '交付执行完成'
   if (job?.status === 'running') return '交付执行中'
   return '等待交付执行'
+}
+
+function activityLabel(value?: string): string {
+  if (!value) return '未知'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return '未知'
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1_000))
+  if (seconds < 60) return `${seconds} 秒前`
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)} 分钟前`
+  return `${Math.floor(seconds / 3_600)} 小时前`
+}
+
+function elapsedLabel(value?: string, finishedAt?: string): string {
+  if (!value) return '未知'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return '未知'
+  const finishedTimestamp = finishedAt ? Date.parse(finishedAt) : Date.now()
+  const seconds = Math.max(
+    0,
+    Math.round(((Number.isFinite(finishedTimestamp) ? finishedTimestamp : Date.now()) - timestamp) / 1_000),
+  )
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`
+}
+
+function stepDurationLabel(
+  step: NonNullable<LocalDeliveryJob['steps']>[number],
+): string {
+  if (!step.startedAt) return step.status === 'running' ? '执行中' : '未开始'
+  return elapsedLabel(step.startedAt, step.finishedAt)
+}
+
+function ageSeconds(value?: string): number | undefined {
+  if (!value) return undefined
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? Math.max(0, Math.round((Date.now() - timestamp) / 1_000)) : undefined
 }
 
 function WorkItemPicker({
@@ -251,6 +291,7 @@ export function DeliveryDialog({
   const {
     workItems,
     repositories,
+    accounts,
     notify,
     reload,
     refreshWorkItems,
@@ -263,6 +304,7 @@ export function DeliveryDialog({
   const [repoId, setRepoId] = useState('')
   const [autoCommit, setAutoCommit] = useState(true)
   const [pushAfterAcceptance, setPushAfterAcceptance] = useState(true)
+  const [runBuild, setRunBuild] = useState(true)
   const [autoClose, setAutoClose] = useState(true)
   const [executionMode, setExecutionMode] = useState<'auto' | 'mac' | 'server'>('auto')
   const [cloudReadiness, setCloudReadiness] = useState<CloudDeliveryReadiness | null>(null)
@@ -275,11 +317,53 @@ export function DeliveryDialog({
   const [launching, setLaunching] = useState(false)
   const [deliveryJob, setDeliveryJob] = useState<LocalDeliveryJob | null>(null)
   const [deliveryError, setDeliveryError] = useState('')
+  const [localDeliveryJob, setLocalDeliveryJob] = useState<LocalDeliveryJob | null>(null)
+  const [terminatingLocal, setTerminatingLocal] = useState(false)
   const progressRef = useRef<HTMLDivElement | null>(null)
   const waitAbortRef = useRef<AbortController | null>(null)
+  const terminationRequestedRef = useRef(false)
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
-  const progressVisible = Boolean(deliveryJob || deliveryError)
+  const canControlLocalAgent = Boolean(
+    localFeishuAgentClientId &&
+      selectedFeishuAgentClientId === localFeishuAgentClientId,
+  )
+  const localJobInScope =
+    localDeliveryJob && localDeliveryJob.workItemId === workItemId
+      ? localDeliveryJob
+      : null
+  const localJobRunning = localJobInScope?.status === 'running'
+  const localJobIsNewer = Boolean(
+    localJobInScope &&
+      (!deliveryJob ||
+        Date.parse(localJobInScope.startedAt) >= Date.parse(deliveryJob.startedAt)),
+  )
+  const effectiveDeliveryJob = localJobIsNewer ? localJobInScope : deliveryJob
+  const effectiveDeliveryError =
+    localJobIsNewer && localJobInScope && localJobInScope.status !== 'running'
+      ? localJobInScope.error ?? ''
+      : deliveryError
+  const heartbeatAgeSeconds = ageSeconds(effectiveDeliveryJob?.lastActivityAt)
+  const workspaceAgeSeconds = ageSeconds(effectiveDeliveryJob?.workspaceChangedAt)
+  const artifactAgeSeconds = ageSeconds(effectiveDeliveryJob?.artifactChangedAt)
+  const jobAgeSeconds = ageSeconds(effectiveDeliveryJob?.startedAt)
+  const codingStepRunning =
+    effectiveDeliveryJob?.steps?.find((step) => step.key === 'coding')?.status === 'running'
+  const processExited =
+    effectiveDeliveryJob?.status === 'running' && effectiveDeliveryJob.processAlive === false
+  const heartbeatStale =
+    effectiveDeliveryJob?.status === 'running' &&
+    heartbeatAgeSeconds !== undefined &&
+    heartbeatAgeSeconds > 30
+  const workspaceStale =
+    codingStepRunning &&
+    !processExited &&
+    (Math.min(
+      workspaceAgeSeconds ?? Number.POSITIVE_INFINITY,
+      artifactAgeSeconds ?? Number.POSITIVE_INFINITY,
+      jobAgeSeconds ?? Number.POSITIVE_INFINITY,
+    ) > 5 * 60)
+  const progressVisible = Boolean(deliveryJob || deliveryError || localJobInScope)
   const [localAgent, setLocalAgent] = useState<
     LocalDeliveryAgentReadiness & { checking: boolean }
   >({
@@ -298,11 +382,26 @@ export function DeliveryDialog({
   )
   const selectedItem = workItems.find((item) => item.id === workItemId)
   const selectedRepo = repositories.find((repo) => repo.id === repoId)
+  const buildAccounts = accounts.filter(
+    (account) => account.platform === 'build' && Boolean(account.serviceUrl),
+  )
+  const selectedBuildAccount =
+    accounts.find(
+      (account) =>
+        account.id === selectedRepo?.buildAccountId && account.platform === 'build',
+    ) ?? buildAccounts[0]
+  const buildAvailable = Boolean(
+    selectedRepo?.buildEnabled !== false && selectedBuildAccount?.serviceUrl,
+  )
   const selectedClient = feishuAgentClients.find(
     (client) => client.clientId === selectedFeishuAgentClientId,
   )
   const localMacSelected = Boolean(
     localFeishuAgentClientId && selectedFeishuAgentClientId === localFeishuAgentClientId,
+  )
+  const deliveryWaitTimeoutMs = Math.max(
+    60 * 60_000,
+    (selectedClient?.health?.deliveryTimeoutMs ?? 210 * 60_000) + 5 * 60_000,
   )
   const localRepoPath = localAgent.repoPaths[repoId]
   const effectiveLocalPath = localRepoPath || selectedRepo?.localPath
@@ -330,15 +429,42 @@ export function DeliveryDialog({
         })
       : undefined
   const deliveryStages = useMemo(
-    () =>
-      (deliveryJob?.steps ?? []).map((step) => ({
+    () => {
+      const stages = (effectiveDeliveryJob?.steps ?? []).map((step) => ({
         key: step.key,
         name: step.name,
         description: step.description,
         status: step.status,
         log: step.log,
-      })),
-    [deliveryJob?.steps],
+      }))
+      const evidence = effectiveDeliveryJob?.result?.evidence
+      const optionalStages: typeof stages = []
+      if (evidence?.buildReport) {
+        optionalStages.push({
+          key: 'build',
+          name: '自动编译',
+          description: '推送后触发项目配置的编译系统',
+          status: 'success',
+          log: '内部编译已按项目配置触发',
+        })
+      }
+      if (evidence?.upgradeReport) {
+        optionalStages.push({
+          key: 'upgrade',
+          name: '设备升级',
+          description: '推送固件到测试设备并完成升级',
+          status: 'success',
+          log: '检测到真实设备升级证据',
+        })
+      }
+      if (optionalStages.length > 0) {
+        const writebackIndex = stages.findIndex((stage) => stage.key === 'writeback')
+        if (writebackIndex >= 0) stages.splice(writebackIndex, 0, ...optionalStages)
+        else stages.push(...optionalStages)
+      }
+      return displayDeliveryStages(stages)
+    },
+    [effectiveDeliveryJob?.result?.evidence, effectiveDeliveryJob?.steps],
   )
 
   useEffect(() => {
@@ -347,6 +473,8 @@ export function DeliveryDialog({
     setWorkItemId(preferred?.id ?? '')
     const preferredRepoId = preferred?.repoId ?? repositories[0]?.id ?? ''
     setRepoId(preferredRepoId)
+    const preferredRepo = repositories.find((repo) => repo.id === preferredRepoId)
+    setRunBuild(preferredRepo?.buildEnabled ?? true)
     setAutoCommit(true)
     setPushAfterAcceptance(true)
     setAutoClose(true)
@@ -438,9 +566,37 @@ export function DeliveryDialog({
   }, [open])
 
   useEffect(() => {
+    if (!open || !canControlLocalAgent) {
+      setLocalDeliveryJob(null)
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const job = await fetchLocalDeliveryJob()
+        if (!cancelled) setLocalDeliveryJob(job)
+      } catch {
+        if (!cancelled) setLocalDeliveryJob(null)
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 3_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [open, canControlLocalAgent])
+
+  useEffect(() => {
     if (open) return
     waitAbortRef.current?.abort()
   }, [open])
+
+  useEffect(() => {
+    if (terminatingLocal && localJobInScope?.status !== 'running') {
+      setTerminatingLocal(false)
+    }
+  }, [localJobInScope?.status, terminatingLocal])
 
   useEffect(
     () => () => {
@@ -471,6 +627,8 @@ export function DeliveryDialog({
 
   const handleRepoChange = (id: string) => {
     setRepoId(id)
+    const repository = repositories.find((repo) => repo.id === id)
+    setRunBuild(repository?.buildEnabled ?? true)
     setDeliveryJob(null)
     setDeliveryError('')
   }
@@ -574,10 +732,27 @@ export function DeliveryDialog({
       repoId,
       autoCommit: serverExecution || autoCommit,
       pushAfterAcceptance: serverExecution || pushAfterAcceptance,
-      autoClose,
+      runBuild:
+        runBuild &&
+        (serverExecution || pushAfterAcceptance) &&
+        (serverExecution || autoCommit) &&
+        buildAvailable,
+      autoClose:
+        autoClose &&
+        (serverExecution || pushAfterAcceptance) &&
+        (serverExecution || autoCommit),
       temporaryCheckout: serverExecution,
     }
+    if (canControlLocalAgent && localDeliveryJob?.status === 'running') {
+      notify(
+        '本机已有执行中的任务',
+        `当前本机代理仍报告 ${localDeliveryJob.workItemId} 正在执行（PID ${localDeliveryJob.processId ?? '未知'}），请先等待完成或终止该任务`,
+        'warning',
+      )
+      return
+    }
     const controller = new AbortController()
+    terminationRequestedRef.current = false
     waitAbortRef.current = controller
     setLaunching(true)
     setDeliveryError('')
@@ -591,7 +766,12 @@ export function DeliveryDialog({
         })
       }
       const pending = createPendingLocalDeliveryJob({
-        ...deliveryInput,
+        workItemId,
+        repoId,
+        autoCommit: deliveryInput.autoCommit,
+        pushAfterAcceptance: deliveryInput.pushAfterAcceptance,
+        runBuild: deliveryInput.runBuild,
+        autoClose: deliveryInput.autoClose,
       })
       setDeliveryJob(pending)
       let completed: LocalDeliveryJob
@@ -599,10 +779,16 @@ export function DeliveryDialog({
         const started = await startCloudDelivery(deliveryInput)
         setDeliveryJob(started)
         notify('服务器临时交付已启动', `${workItemId} · 服务器临时检出 · ${selectedRepo.name}`, 'info')
-        completed = await waitForCloudDelivery(started.id, setDeliveryJob, 60 * 60_000, controller.signal)
+        completed = await waitForCloudDelivery(
+          started.id,
+          setDeliveryJob,
+          60 * 60_000,
+          controller.signal,
+        )
       } else {
         const started = await startLocalDelivery(deliveryInput, clientId!)
         setDeliveryJob(started)
+        void reload(true)
         notify(
           'Mac 本地交付已启动',
           `${workItemId} · ${selectedClient?.clientName ?? clientId} · ${selectedRepo.name}`,
@@ -613,7 +799,7 @@ export function DeliveryDialog({
             started.id,
             clientId!,
             setDeliveryJob,
-            45 * 60_000,
+            deliveryWaitTimeoutMs,
             controller.signal,
           )
         } catch (error) {
@@ -673,14 +859,37 @@ export function DeliveryDialog({
       onStarted(run)
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        notify(
-          '已停止等待',
-          serverExecution || usedServerFallback
-            ? '服务器任务仍会在后台运行，可稍后刷新查看结果'
-            : 'Mac 交付仍会在客户端后台继续执行，可稍后在流水线中查看结果',
-          'info',
-        )
+        if (!terminationRequestedRef.current) {
+          notify(
+            '已停止等待',
+            serverExecution || usedServerFallback
+              ? '服务器任务仍会在后台运行，可稍后刷新查看结果'
+              : 'Mac 交付仍在客户端后台继续执行，可稍后重新打开查看',
+            'info',
+          )
+        }
         return
+      }
+      if (canControlLocalAgent && !serverExecution && !usedServerFallback) {
+        try {
+          const localJob = await fetchLocalDeliveryJob()
+          if (
+            localJob?.status === 'running' &&
+            localJob.workItemId === workItemId &&
+            localJob.processAlive !== false
+          ) {
+            setLocalDeliveryJob(localJob)
+            setDeliveryError('')
+            notify(
+              '平台状态已中断，但本机仍在执行',
+              `本机 Codex 进程 PID ${localJob.processId ?? '未知'} 仍存活，最近活动于 ${activityLabel(localJob.lastActivityAt)}；可在弹窗中查看或终止`,
+              'warning',
+            )
+            return
+          }
+        } catch {
+          // The platform error remains authoritative when the local agent cannot be reached.
+        }
       }
       const message = error instanceof Error ? error.message : '交付执行失败'
       setDeliveryJob((current) => {
@@ -688,7 +897,8 @@ export function DeliveryDialog({
         return markLocalDeliveryStartFailed(current, message)
       })
       setDeliveryError(message)
-      notify('交付失败', message, 'warning')
+      await reload(true).catch(() => undefined)
+      notify(serverExecution || usedServerFallback ? '交付失败' : '本机交付失败', message, 'warning')
       if (macExecution && !usedServerFallback) {
         void probeLocalDeliveryAgent(selectedFeishuAgentClientId).then((state) =>
           setLocalAgent({ ...state, checking: false }),
@@ -700,12 +910,46 @@ export function DeliveryDialog({
     }
   }
 
+  const closeDeliveryView = () => {
+    waitAbortRef.current?.abort()
+    onClose()
+  }
+
+  const terminateLocalTask = async () => {
+    if (!localJobInScope || terminatingLocal) return
+    terminationRequestedRef.current = true
+    setTerminatingLocal(true)
+    try {
+      const job = await cancelLocalDeliveryJob(localJobInScope.id)
+      waitAbortRef.current?.abort()
+      setLocalDeliveryJob(job)
+      setDeliveryJob(job)
+      setDeliveryError('')
+      notify(
+        '已终止全部操作',
+        '已停止本机 Codex 进程组、阶段追踪和页面等待；未提交的代码变更会保留在工作区',
+        'info',
+      )
+    } catch (error) {
+      terminationRequestedRef.current = false
+      const message = error instanceof Error ? error.message : '终止本机任务失败'
+      setDeliveryError(message)
+      notify('终止本机任务失败', message, 'warning')
+    } finally {
+      if (!terminationRequestedRef.current) setTerminatingLocal(false)
+    }
+  }
+
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={closeDeliveryView}
+      closeOnBackdrop={false}
+      closeOnEscape
       title="启动一键交付"
-      subtitle="优先使用当前 Mac 的现有仓库；本机没有仓库路径时可在服务器临时检出并清理"
+      subtitle={serverExecution
+        ? '优先使用 Mac 已有仓库；找不到时可在服务器临时检出，任务完成后清理'
+        : '在所选客户端执行需求分析、业务 LDD、编码、验证、提交与推送；推送后可按项目配置触发系统编译'}
       size="lg"
       footer={
         <>
@@ -721,31 +965,53 @@ export function DeliveryDialog({
                     : cloudReadiness.busy
                       ? '服务器已有临时交付任务运行，请稍后重试'
                       : '服务器会临时检出仓库，提交推送成功后清理工作区'
-                : localAgent.checking
-                  ? '正在检测 Mac 执行客户端'
-                  : !localFeishuAgentClientId
-                    ? '当前浏览器没有 Mac 执行客户端；可切换到自动模式使用服务器临时检出'
-                    : !selectedFeishuAgentClientId
-                      ? '请选择已绑定的 Mac 执行客户端'
-                      : !effectiveLocalPath
-                        ? 'Mac 代理会先按 Git 地址查找已有仓库；需要服务器回退时请使用自动模式'
-                        : !localAgent.platformReady
-                          ? localAgent.error || '平台服务端未升级，当前无法下发 Mac 交付'
-                          : !localAgent.online
-                            ? localAgent.error || 'Mac 执行客户端离线'
-                            : !localAgent.configured
-                              ? 'Mac 执行客户端尚未绑定平台同步密钥'
-                              : !localAgent.codexAvailable
-                                ? '未检测到 Mac 上的 Codex CLI，请设置 CODEX_BIN 后重启代理'
-                                : '将使用 Mac 已有仓库执行；只有真实代码变更才会创建提交'}
+                : effectiveDeliveryJob?.status === 'running'
+              ? `任务正在 ${selectedClient?.clientName ?? '执行客户端'} 执行；页面刷新或关闭只影响查看，不会终止本机 Codex`
+              : localAgent.checking
+              ? '正在检测所选执行客户端'
+              : !localFeishuAgentClientId
+                ? feishuAgentClients.length > 0
+                  ? '当前 Mac 尚未登记代理；请选择已在线的执行客户端，或先完成本机代理绑定'
+                  : '尚未发现执行客户端；请先完成本机代理绑定或选择服务器临时执行'
+              : !selectedFeishuAgentClientId
+                ? feishuAgentClients.length > 0
+                  ? '请先明确选择执行客户端，平台不会再自动选择机器'
+                  : '尚未发现执行客户端，请先登记并绑定一台客户端'
+              : !localAgent.platformReady
+                ? localAgent.error || '平台服务端未升级，当前无法下发客户端交付'
+              : !localAgent.online
+                ? localAgent.error || '执行客户端离线，请选择在线客户端或改用服务器临时执行'
+                : !localAgent.configured
+                  ? '执行客户端已启动但尚未绑定平台同步密钥，请先到账号中心完成绑定'
+                  : !localAgent.codexAvailable
+                    ? '未检测到 Codex CLI，请设置 CODEX_BIN 为可执行文件绝对路径后重启代理'
+                    : localJobRunning
+                      ? `本机任务仍在执行${localJobInScope?.processId ? `（PID ${localJobInScope.processId}）` : ''}；最近活动 ${activityLabel(localJobInScope?.lastActivityAt)}`
+                : effectiveLocalPath
+                  ? '将使用所选客户端的仓库路径执行；只有真实代码变更才会创建提交'
+                  : '客户端会先按 Git 地址寻找已有仓库；自动模式可在找不到时回退服务器'}
           </span>
           <div className="modal-footer-actions">
+            {canControlLocalAgent && localJobInScope?.status === 'running' && (
+              <button
+                className="btn btn-danger"
+                onClick={() => void terminateLocalTask()}
+                disabled={terminatingLocal}
+                title="终止本机 Codex 进程组、全部子进程、阶段追踪和页面等待"
+              >
+                {terminatingLocal ? '正在终止…' : '终止全部操作'}
+              </button>
+            )}
             <button
               className="btn btn-secondary"
-              onClick={onClose}
-              title={launching ? '停止页面轮询，交付任务会在后台继续执行' : undefined}
+              onClick={closeDeliveryView}
+              title={
+                effectiveDeliveryJob?.status === 'running'
+                  ? '只关闭当前视图并停止页面等待，本机执行继续运行；可从右下角执行入口重新打开'
+                  : undefined
+              }
             >
-              {launching ? '停止等待' : '取消'}
+              {effectiveDeliveryJob?.status === 'running' ? '仅关闭视图' : '关闭'}
             </button>
             <button
               className="btn btn-primary"
@@ -763,7 +1029,8 @@ export function DeliveryDialog({
                     !localAgent.online ||
                     !localAgent.platformReady ||
                     !localAgent.configured ||
-                    !localAgent.codexAvailable)
+                    !localAgent.codexAvailable ||
+                    (canControlLocalAgent && localJobRunning))
               }
             >
               {launching
@@ -776,41 +1043,161 @@ export function DeliveryDialog({
     >
       <div className="delivery-dialog-grid">
         <div className="delivery-form">
-          {(deliveryJob || deliveryError) && (
+          {(effectiveDeliveryJob || effectiveDeliveryError || localJobInScope) && (
             <div
               ref={progressRef}
-              className={`delivery-progress-panel ${deliveryJob?.status ?? 'failed'}`}
+              className={`delivery-progress-panel ${effectiveDeliveryJob?.status ?? 'failed'}`}
             >
               <div className="delivery-progress-head">
                 <div>
                   <span className="eyebrow">
                     <Terminal size={13} /> {serverExecution ? 'SERVER EXECUTION' : 'MAC EXECUTION'}
                   </span>
-                  <h3>{deliveryStatusLabel(deliveryJob, deliveryError)}</h3>
+                  <h3>{deliveryStatusLabel(effectiveDeliveryJob, effectiveDeliveryError)}</h3>
                 </div>
-                {deliveryJob && (
-                  <span className={`delivery-progress-status ${deliveryJob.status}`}>
-                    {deliveryJob.status === 'running'
+                {effectiveDeliveryJob && (
+                  <span className={`delivery-progress-status ${effectiveDeliveryJob.status}`}>
+                    {effectiveDeliveryJob.status === 'running'
                       ? '执行中'
-                      : deliveryJob.status === 'succeeded'
+                      : effectiveDeliveryJob.status === 'succeeded'
                         ? '已完成'
                         : '已失败'}
                   </span>
                 )}
               </div>
+              {effectiveDeliveryJob && (
+                <div className="delivery-progress-metrics">
+                  <div>
+                    <span>{effectiveDeliveryJob.status === 'running' ? '已运行' : '总耗时'}</span>
+                    <strong>
+                      {elapsedLabel(effectiveDeliveryJob.startedAt, effectiveDeliveryJob.finishedAt)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>最近心跳</span>
+                    <strong className={heartbeatStale ? 'warning' : ''}>
+                      {activityLabel(effectiveDeliveryJob.lastActivityAt)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>本机进程</span>
+                    <strong className={processExited ? 'warning' : ''}>
+                      {processExited
+                        ? '已退出'
+                        : effectiveDeliveryJob.status !== 'running'
+                          ? effectiveDeliveryJob.status === 'succeeded'
+                            ? '已完成'
+                            : '已结束'
+                          : effectiveDeliveryJob.processAlive
+                            ? `存活${effectiveDeliveryJob.processId ? ` #${effectiveDeliveryJob.processId}` : ''}`
+                            : '等待上报'}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>代码变更</span>
+                    <strong>
+                      {effectiveDeliveryJob.changedFileCount === undefined
+                        ? effectiveDeliveryJob.status === 'running'
+                          ? '等待检测'
+                          : '未采集'
+                        : `${effectiveDeliveryJob.changedFileCount} 个文件`}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>最近产物</span>
+                    <strong>
+                      {activityLabel(effectiveDeliveryJob.artifactChangedAt)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>差异行</span>
+                    <strong>
+                      +{effectiveDeliveryJob.diffAddedLines ?? 0} / -{effectiveDeliveryJob.diffRemovedLines ?? 0}
+                    </strong>
+                  </div>
+                </div>
+              )}
+              {effectiveDeliveryJob?.status === 'running' && (
+                <p className="delivery-progress-note">
+                  <ShieldCheck size={13} />
+                  “仅关闭视图”只会关闭当前界面，执行会继续；“终止全部操作”会停止本机 Codex 进程组、全部子进程和页面等待。
+                </p>
+              )}
+              {effectiveDeliveryJob?.status === 'running' && heartbeatStale && (
+                <p className="delivery-progress-warning">
+                  <AlertTriangle size={14} />
+                  已超过 30 秒没有收到本机进度上报，可能是网络或代理心跳延迟。
+                </p>
+              )}
+              {processExited && (
+                <p className="delivery-progress-warning">
+                  <AlertTriangle size={14} />
+                  本机 Codex 进程已退出，但平台仍显示执行中；代理可能正在收尾，或需要重新检查执行日志。
+                </p>
+              )}
+              {workspaceStale && (
+                <p className="delivery-progress-warning">
+                  <AlertTriangle size={14} />
+                  {effectiveDeliveryJob?.changedFileCount
+                    ? '代码和交付产物已连续 5 分钟没有更新'
+                    : '编码阶段已运行 5 分钟，仍未检测到代码或交付产物更新'}
+                  ，可能正在执行测试/构建，也可能已停在等待状态。
+                  {effectiveDeliveryJob?.workspaceChangedAt
+                    ? ` 最近文件变化：${activityLabel(effectiveDeliveryJob.workspaceChangedAt)}`
+                    : ''}
+                </p>
+              )}
+              {(effectiveDeliveryJob?.recentChangedFiles?.length ?? 0) > 0 && (
+                <p className="delivery-progress-files">
+                  最近变更：{effectiveDeliveryJob?.recentChangedFiles?.join('、')}
+                </p>
+              )}
+              {effectiveDeliveryJob?.artifactChangedFile && (
+                <p className="delivery-progress-files">
+                  最近更新产物：{effectiveDeliveryJob.artifactChangedFile}
+                  {effectiveDeliveryJob.artifactChangedAt
+                    ? ` · ${activityLabel(effectiveDeliveryJob.artifactChangedAt)}`
+                    : ''}
+                </p>
+              )}
+              {localJobInScope && (
+                <div className={`delivery-local-process ${localJobInScope.status}`}>
+                  <div>
+                    <strong>
+                      本机代理：{localJobInScope.status === 'running'
+                        ? localJobInScope.processAlive === false
+                          ? '进程已退出，代理状态尚未收尾'
+                          : 'Codex 仍在执行'
+                        : localJobInScope.status === 'succeeded'
+                          ? '已执行完成'
+                          : '已执行失败'}
+                    </strong>
+                    <span>
+                      PID {localJobInScope.processId ?? '未知'} · 最近活动{' '}
+                      {activityLabel(localJobInScope.lastActivityAt)}
+                    </span>
+                  </div>
+                  {localJobInScope.stage && <p>{localJobInScope.stage}</p>}
+                </div>
+              )}
               {deliveryStages.length > 0 && <PipelineSteps stages={deliveryStages} compact />}
               <div className="delivery-progress-logs">
-                {(deliveryJob?.steps ?? []).map((step) => (
+                {(effectiveDeliveryJob?.steps ?? []).map((step) => (
                   <div className={`delivery-progress-log ${step.status}`} key={step.key}>
                     <span className="delivery-progress-log-dot" />
                     <strong>{step.name}</strong>
-                    <span>{step.log ?? step.description}</span>
+                    <span className="delivery-progress-log-copy">
+                      {step.log ?? step.description}
+                    </span>
+                    <span className="delivery-progress-log-duration">
+                      {stepDurationLabel(step)}
+                    </span>
                   </div>
                 ))}
-                {deliveryError && (
+                {effectiveDeliveryError && (
                   <div className="delivery-progress-error">
                     <AlertTriangle size={15} />
-                    <span>{deliveryError}</span>
+                    <span>{effectiveDeliveryError}</span>
                   </div>
                 )}
               </div>
@@ -1107,7 +1494,10 @@ export function DeliveryDialog({
                 disabled={serverExecution}
                 onChange={(e) => {
                   setAutoCommit(e.target.checked)
-                  if (!e.target.checked) setPushAfterAcceptance(false)
+                  if (!e.target.checked) {
+                    setPushAfterAcceptance(false)
+                    setAutoClose(false)
+                  }
                 }}
               />
               <span className="custom-check" />
@@ -1125,7 +1515,10 @@ export function DeliveryDialog({
                 type="checkbox"
                 checked={serverExecution || pushAfterAcceptance}
                 disabled={serverExecution || !autoCommit}
-                onChange={(e) => setPushAfterAcceptance(e.target.checked)}
+                onChange={(e) => {
+                  setPushAfterAcceptance(e.target.checked)
+                  if (!e.target.checked) setAutoClose(false)
+                }}
               />
               <span className="custom-check" />
               <span>
@@ -1133,21 +1526,45 @@ export function DeliveryDialog({
                 <small>
                   {serverExecution
                     ? '服务器临时检出完成后自动推送到配置分支'
-                    : '勾选即授权；Codex 成功结束后自动将本地提交推送到目标分支'}
+                    : '勾选即授权；推送成功后按本次选择决定是否触发系统编译'}
                 </small>
               </span>
             </label>
             <label className="check-row">
-              <input type="checkbox" checked={autoClose} onChange={(e) => setAutoClose(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={runBuild && pushAfterAcceptance && buildAvailable}
+                disabled={!pushAfterAcceptance || !buildAvailable}
+                onChange={(event) => setRunBuild(event.target.checked)}
+              />
+              <span className="custom-check" />
+              <span>
+                <strong>执行系统编译</strong>
+                <small>
+                  {selectedRepo && selectedRepo.buildEnabled === false
+                    ? '仓库已关闭“推送后执行系统编译”；本次交付跳过编译，提交、推送与缺陷关闭继续执行'
+                    : selectedBuildAccount
+                    ? `${selectedBuildAccount.label} · ${selectedBuildAccount.serviceUrl}；关闭后本次交付不触发编译`
+                    : '当前项目未绑定带服务地址的编译系统，请先到代码仓库配置'}
+                </small>
+              </span>
+            </label>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={autoClose && pushAfterAcceptance}
+                disabled={!pushAfterAcceptance}
+                onChange={(e) => setAutoClose(e.target.checked)}
+              />
               <span className="custom-check" />
               <span>
                 <strong>自动关闭缺陷</strong>
-                <small>测试通过后同步关闭飞书缺陷单</small>
+                <small>代码提交并推送成功后，将飞书缺陷状态更新为已解决</small>
               </span>
             </label>
           </div>
 
-          {(deliveryJob || deliveryError) && (
+          {(effectiveDeliveryJob || effectiveDeliveryError) && (
             <Field
               label={`${serverExecution ? '服务器' : selectedClient?.clientName ?? 'Mac 客户端'}状态`}
               hint={serverExecution
@@ -1165,26 +1582,32 @@ export function DeliveryDialog({
               <div className="credential-note">
                 <Terminal size={16} />
                 <div>
-                  <strong>{deliveryStatusLabel(deliveryJob, deliveryError)}</strong>
-                  <p>{deliveryError || deliveryJob?.error || deliveryJob?.stage || '正在准备执行'}</p>
-                  {deliveryJob?.localPath && (
+                  <strong>{deliveryStatusLabel(effectiveDeliveryJob, effectiveDeliveryError)}</strong>
+                  <p>{effectiveDeliveryError || effectiveDeliveryJob?.error || effectiveDeliveryJob?.stage || '正在准备执行'}</p>
+                  {localJobInScope && (
                     <p>
-                      <code>{deliveryJob.localPath}</code>
-                      {deliveryJob.branch ? ` · ${deliveryJob.branch}` : ''}
+                      本机代理 PID <code>{localJobInScope.processId ?? '未知'}</code> · 最近活动 {activityLabel(localJobInScope.lastActivityAt)}
+                      {localJobInScope.processAlive === false ? ' · 进程已退出' : ''}
                     </p>
                   )}
-                  {deliveryJob?.result?.commit && (
+                  {effectiveDeliveryJob?.localPath && (
                     <p>
-                      提交 <code>{deliveryJob.result.commit.slice(0, 12)}</code>
-                      {deliveryJob.result.changedFiles?.length
-                        ? ` · ${deliveryJob.result.changedFiles.length} 个代码文件有变更`
+                      <code>{effectiveDeliveryJob.localPath}</code>
+                      {effectiveDeliveryJob.branch ? ` · ${effectiveDeliveryJob.branch}` : ''}
+                    </p>
+                  )}
+                  {effectiveDeliveryJob?.result?.commit && (
+                    <p>
+                      提交 <code>{effectiveDeliveryJob.result.commit.slice(0, 12)}</code>
+                      {effectiveDeliveryJob.result.changedFiles?.length
+                        ? ` · ${effectiveDeliveryJob.result.changedFiles.length} 个代码文件有变更`
                         : ''}
                     </p>
                   )}
-                  {deliveryJob?.result?.changedFiles && deliveryJob.result.changedFiles.length > 0 && (
+                  {effectiveDeliveryJob?.result?.changedFiles && effectiveDeliveryJob.result.changedFiles.length > 0 && (
                     <p>
-                      {deliveryJob.result.changedFiles.slice(0, 8).join(', ')}
-                      {deliveryJob.result.changedFiles.length > 8 ? ' …' : ''}
+                      {effectiveDeliveryJob.result.changedFiles.slice(0, 8).join(', ')}
+                      {effectiveDeliveryJob.result.changedFiles.length > 8 ? ' …' : ''}
                     </p>
                   )}
                 </div>
@@ -1224,17 +1647,17 @@ export function DeliveryDialog({
             </div>
             <div>
               <FileText size={15} />
-              <span>解析 · 设计报告 · 自动编码</span>
-              <small>生成技术方案、改动范围与测试策略</small>
+              <span>需求分析 · 业务 LDD · 自动编码</span>
+              <small>确认影响范围、生成本次业务 LDD 并实现代码</small>
             </div>
             <div>
               <GitMerge size={15} />
-              <span>集成报告 · 提交 · 编译 · 升级 · 测试</span>
-              <small>验证通过后推送本机实际分支并生成测试报告</small>
+              <span>检查证据 · 提交推送 · 回写并关闭缺陷</span>
+              <small>验证通过后推送本机实际分支，并按配置追加编译与设备升级</small>
             </div>
           </div>
           <div className="preview-footer">
-            <span>9 个自动化阶段</span>
+            <span>{deliveryStages.length || 7} 个执行阶段</span>
             <span>3 份交付报告</span>
           </div>
         </aside>

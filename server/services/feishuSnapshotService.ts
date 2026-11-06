@@ -68,6 +68,7 @@ interface SnapshotRow {
 export function readFeishuSnapshotFromDatabase(
   db: AppDatabase,
   projectKey: string,
+  ownerUserId?: string,
 ): FeishuSnapshotFile | null {
   const rows = db
     .prepare(
@@ -75,10 +76,10 @@ export function readFeishuSnapshotFromDatabase(
               external_id, feishu_status, project_line, updated_at
        FROM work_items
        WHERE source = 'feishu' AND external_id IS NOT NULL AND external_id <> ''
-         AND archived_at IS NULL
+         AND archived_at IS NULL${ownerUserId === undefined ? '' : ' AND owner_user_id = ?'}
        ORDER BY updated_at DESC, id DESC`,
     )
-    .all() as SnapshotRow[]
+    .all(...(ownerUserId === undefined ? [] : [ownerUserId])) as SnapshotRow[]
   if (rows.length === 0) return null
 
   const fallbackTime = new Date().toISOString()

@@ -7,9 +7,8 @@ import { createApp } from './app.js'
 import { config } from './config.js'
 import { createDatabase } from './db/database.js'
 import {
-  getFeishuStatus,
   processFeishuOutbox,
-  syncFeishu,
+  syncAllFeishuIntegrations,
 } from './services/feishuIntegrationService.js'
 import { bootstrapFeishuIntegration } from './services/feishuBootstrapService.js'
 import { CredentialVault } from './security/vault.js'
@@ -85,9 +84,7 @@ const pipelineTimer = setInterval(() => {
 }, config.pipelineStepMs)
 
 const feishuSyncTimer = setInterval(() => {
-  const status = getFeishuStatus(db)
-  if (status.authMode !== 'token' && status.authMode !== 'plugin') return
-  void syncFeishu(db, vault, 'schedule').catch((error) => {
+  void syncAllFeishuIntegrations(db, vault, 'schedule').catch((error) => {
     console.error('飞书定时同步失败', error)
   })
 }, config.feishuSyncIntervalMs)
@@ -112,8 +109,8 @@ function shutdown(exitCode = 0): void {
   server.close(finish)
 }
 
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
+process.on('SIGINT', () => shutdown(0))
+process.on('SIGTERM', () => shutdown(0))
 process.on('SIGHUP', () => {
   console.info('收到 SIGHUP；生产环境由 systemd/launchd 托管，服务保持运行')
 })

@@ -4,6 +4,7 @@ import {
   deliveryCodeFiles,
   deliveryCommitMessage,
   isDeliveryCodeFile,
+  isDeliveryTestFile,
   normalizeDeliveryPath,
 } from '../services/localDeliveryEvidence.js'
 
@@ -14,6 +15,9 @@ test('交付成功判定排除提示词、设计报告和其他 Markdown 说明�
   assert.equal(isDeliveryCodeFile('docs/REQ-1082/verify.txt'), false)
   assert.equal(isDeliveryCodeFile('web/components/utils/metrics.ts'), true)
   assert.equal(isDeliveryCodeFile('lua/service/dhcp.lua'), true)
+  assert.equal(isDeliveryCodeFile('web/components/utils/metrics.test.ts'), false)
+  assert.equal(isDeliveryCodeFile('web/components/__tests__/metrics.ts'), false)
+  assert.equal(isDeliveryTestFile('web/components/utils/metrics.spec.js'), true)
 })
 
 test('交付代码文件去重并兼容 Windows 路径分隔符', () => {
@@ -23,6 +27,7 @@ test('交付代码文件去重并兼容 Windows 路径分隔符', () => {
       'web\\components\\utils\\metrics.ts',
       'docs/REQ-1082/design.md',
       'delivery-artifacts/REQ-1082/codex-prompt.md',
+      'web/components/utils/metrics.test.ts',
       'lua/service/dhcp.lua',
     ]),
     ['web/components/utils/metrics.ts', 'lua/service/dhcp.lua'],
@@ -30,10 +35,15 @@ test('交付代码文件去重并兼容 Windows 路径分隔符', () => {
   assert.equal(normalizeDeliveryPath('.\\web\\a.ts'), 'web/a.ts')
 })
 
-test('交付提交标题使用工作项编号且保持单行', () => {
+test('交付提交标题遵循 AICR 前缀规范且保持单行', () => {
   assert.equal(
-    deliveryCommitMessage('REQ-1082', '  第三方纳管\n私有监控指标  '),
-    'REQ-1082: 第三方纳管 私有监控指标',
+    deliveryCommitMessage('REQ-1082', '  第三方纳管\n私有监控指标  ', 'requirement'),
+    '【需求实现】REQ-1082 第三方纳管 私有监控指标',
   )
-  assert.equal(deliveryCommitMessage('REQ-1', ''), 'REQ-1: 本地交付')
+  assert.equal(
+    deliveryCommitMessage('BUG-236', '修复临时上网状态', 'defect'),
+    '【缺陷修复】BUG-236 修复临时上网状态',
+  )
+  assert.equal(deliveryCommitMessage('REQ-1', ''), '【需求实现】REQ-1 本地交付')
+  assert.equal(deliveryCommitMessage('TASK-1', ''), '【工程】TASK-1 本地交付')
 })

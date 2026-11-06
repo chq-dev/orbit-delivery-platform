@@ -20,10 +20,10 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useState, type CSSProperties } from 'react'
-import { DeliveryDialog } from '../components/DeliveryDialog'
 import { PipelineSteps } from '../components/PipelineSteps'
 import { SectionHeading, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
+import { useDeliveryUi } from '../deliveryUi'
 import { useData } from '../store'
 import type { PageKey } from '../types'
 
@@ -71,7 +71,7 @@ function recentStageLabel(stages: { status: string; name: string }[]) {
 
 export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: string) => void }) {
   const { repositories, workItems, pipelines, reports } = useData()
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
+  const { openDeliveryDialog } = useDeliveryUi()
   const [workItemOpen, setWorkItemOpen] = useState(false)
   const activePipelines = pipelines.filter((run) => run.status === 'running')
   const pendingItems = workItems.filter(
@@ -112,7 +112,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
           <button className="btn btn-secondary" onClick={() => setWorkItemOpen(true)}>
             <Plus size={16} /> 新建工作项
           </button>
-          <button className="btn btn-primary btn-glow" onClick={() => setDeliveryOpen(true)}>
+          <button className="btn btn-primary btn-glow" onClick={() => openDeliveryDialog()}>
             <Rocket size={16} /> 启动交付
           </button>
         </div>
@@ -231,7 +231,7 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
             </span>
             <h2>暂无交付流水线</h2>
             <p>创建账号、接入代码仓库并录入工作项后，即可发起首次交付。</p>
-            <button className="hero-link" onClick={() => setDeliveryOpen(true)}>
+            <button className="hero-link" onClick={() => openDeliveryDialog()}>
               启动交付 <ArrowRight size={15} />
             </button>
           </article>
@@ -472,11 +472,6 @@ export function Dashboard({ onNavigate }: { onNavigate: (page: PageKey, runId?: 
         </div>
       </article>
 
-      <DeliveryDialog
-        open={deliveryOpen}
-        onClose={() => setDeliveryOpen(false)}
-        onStarted={(run) => onNavigate('pipelines', run.id)}
-      />
       <WorkItemDialog open={workItemOpen} onClose={() => setWorkItemOpen(false)} />
     </div>
   )

@@ -2,6 +2,8 @@ import type {
   FeishuAgentBridgeStatus,
   FeishuAgentCommand,
   FeishuAgentCommandType,
+  FeishuClientAgentHealth,
+  LocalDeliveryJob,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
@@ -39,5 +41,71 @@ export async function enqueueFeishuAgentCommand(
   return request<FeishuAgentCommand>('/integrations/feishu/agent/commands', {
     method: 'POST',
     body: JSON.stringify({ type, clientId, ...(payload === undefined ? {} : { payload }) }),
+  })
+}
+
+async function requestLocalAgent<T>(path: string, init?: RequestInit): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(`${LOCAL_AGENT_BASE}${path}`, {
+      ...init,
+      headers: {
+        accept: 'application/json',
+        ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    })
+  } catch {
+    throw new Error('无法连接当前 Mac 的本机代理，请确认 npm run feishu:agent 正在运行')
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | { error?: string; message?: string; config?: unknown }
+    | null
+  if (!response.ok) {
+    throw new Error(payload?.message || payload?.error || `本机代理请求失败（HTTP ${response.status}）`)
+  }
+  return payload as T
+}
+
+export function fetchLocalFeishuAgentHealth(): Promise<FeishuClientAgentHealth> {
+  return requestLocalAgent<FeishuClientAgentHealth>('/health')
+}
+
+export async function fetchLocalDeliveryJob(): Promise<LocalDeliveryJob | null> {
+  const health = await fetchLocalFeishuAgentHealth()
+  return health.delivery ?? null
+}
+
+export async function cancelLocalDeliveryJob(jobId?: string): Promise<LocalDeliveryJob> {
+  const payload = await requestLocalAgent<{ ok: true; job: LocalDeliveryJob }>(
+    '/delivery/cancel',
+    {
+      method: 'POST',
+      body: JSON.stringify(jobId ? { jobId } : {}),
+    },
+  )
+  return payload.job
+}
+
+export function configureLocalFeishuAgent(input: {
+  platformBaseUrl: string
+  syncToken: string
+  projectKey: string
+  repoPaths: Record<string, string>
+}): Promise<{ ok: true; config: FeishuClientAgentHealth['config'] }> {
+  return requestLocalAgent('/configure', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function configureLocalFeishuAgentRepoPaths(
+  repoPaths: Record<string, string>,
+): Promise<{ ok: true; config: FeishuClientAgentHealth['config'] }> {
+  return requestLocalAgent('/repo-paths', {
+    method: 'POST',
+    body: JSON.stringify({ repoPaths }),
   })
 }

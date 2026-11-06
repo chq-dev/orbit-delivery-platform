@@ -2,7 +2,9 @@ import {
   codingSkills,
   codingSkillsSource,
   organizationSkillManual,
+  smeCommitSkill,
   smeDeliveryStageChain,
+  smeModeSwitchDesignReference,
   smeSkillSpecialties,
 } from './codingSkills'
 import type { Repository, WorkItem } from './types'
@@ -25,6 +27,12 @@ export function buildLocalSkillInstruction(
   const designReference =
     deliveryContext.designReference?.trim() || item.designReference?.trim() || ''
   const screenshotPaths = (deliveryContext.screenshotPaths ?? []).filter(Boolean)
+  const localCheckout = repository?.localPath?.replace(/[\\/]+$/, '') || '/Users/chenhuaqu/sme/sme-main'
+  const phaseMarkerPath = `${localCheckout}/delivery-artifacts/${item.id}/.phase-current`
+  const modeSwitchLddPath = `${localCheckout}/${smeModeSwitchDesignReference.relativePath}`
+  const projectSkillPaths = smeCommitSkill.projectPaths
+    .map((path) => `${localCheckout}/${path}`)
+    .join('\n- ')
   return [
     `Use $rjcloud-local-delivery to deliver ${item.id} locally.`,
     '',
@@ -55,9 +63,16 @@ export function buildLocalSkillInstruction(
     `Authoritative SME stage chain: ${smeDeliveryStageChain.map((entry) => `${entry.stage}=${entry.entry}`).join(' → ')}.`,
     `Stage handoffs: ${smeDeliveryStageChain.map((entry) => `${entry.stage}=${entry.artifact}`).join('; ')}.`,
     'Use the stage entry that matches this work item. Do not skip the requirement card, design/case, implementation self-check, integration evidence, independent E2E evidence, or AICR review.',
+    `Commit-stage skill: ${smeCommitSkill.invocation} (${smeCommitSkill.codexEntry} when the current Codex session exposes it). This coding run must not stage or commit; after it finishes, the local delivery runner starts a separate Codex pass that executes the commit skill and creates the local commit.`,
+    'The /aicr-commit contract requires a staged review report for the current diff with approved: true before commit. Never commit .env* files, credentials, tokens, or other secrets; never use --force or an unauthorized amend; push only when the runner was invoked with --push and the user authorized the external write.',
+    'Commit message follows the shared AICR title rules: 【缺陷修复】{id} {description} for defects, 【需求实现】{id} {description} for requirements, otherwise use 【工程】, 【AI】, 【国际化】, 【样式】, 【重构】, 【性能】, 【文档】 or 【NA】. Do not add a second feat:/fix: prefix.',
+    `Read the project-provided AICR skill contract before relying on it; the sme-main copies are:\n- ${projectSkillPaths}`,
+    'If /aicr-commit is not exposed in this Codex session, follow its contract manually and never claim that the skill ran.',
     'If a named organization skill is unavailable in the current Codex session, follow that stage contract manually and never claim the skill ran.',
     `SME Web specialties (select only what the task needs): ${smeSkillSpecialties.web.join(', ')}.`,
     `SME Lua specialty: ${smeSkillSpecialties.lua.join(', ')}. SME local entries: ${smeSkillSpecialties.local.join(', ')}.`,
+    `SME mode-switch LDD design reference: ${modeSwitchLddPath}`,
+    `For mode-switch scope, read that LDD before design or coding and trace the change through: ${smeModeSwitchDesignReference.implementationPaths.join(', ')}. Keep the API -> service -> middle -> utils layering and cover GET/POST /api/mode-switch, menu registration, confirmation, unsupported-mode, and failure states described by the LDD. If the file is missing, report that instead of fabricating its content.`,
     'Design references and screenshots are implementation inputs, never acceptance evidence. Acceptance requires executed tests or other observed evidence.',
     'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages needed for the requirement. Meegle work items remain platform-provided and authoritative; MCP output is supporting input, not acceptance evidence.',
     'If the Codex session exposes a Meegle MCP server named "meegle", use it for live requirement or defect detail lookup when the platform context is incomplete. The platform-provided work item remains authoritative for delivery scope; Meegle MCP output is not acceptance evidence.',
@@ -71,9 +86,10 @@ export function buildLocalSkillInstruction(
     '',
     'Work only in the configured local checkout. For web/ changes read web/AGENTS.md first; for lua/ changes read lua/AGENTS.md and preserve the api -> service -> middle -> utils layering.',
     'Keep the whole workflow local. First analyze the requirement and produce a development design report covering requirement interpretation, affected modules, implementation plan, compatibility, and test strategy.',
+    `Run the delivery in three visible phases: requirement analysis, business LDD generation (generate or update the LDD affected by this work item), then business coding. At the start of each phase write its name to ${phaseMarkerPath}: \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. The marker is progress telemetry only and is never delivery evidence.`,
     'Then implement the code changes and targeted unit tests according to that design.',
     'Run integration validation next: project-native type checks, Lua module tests, static analysis, firmware/web build checks, and the narrowest useful regression. Produce an integration report with actual results, compatibility findings, and remaining risks.',
-    'Do not create, stage, amend, or push Git commits. Leave validated code changes in the working tree; the local delivery runner creates the work-item commit after checking the reports and real code changes.',
+    'Do not create, stage, amend, or push Git commits. Leave validated code changes in the working tree; after checking the reports and real code changes, the local delivery runner runs a separate Codex pass that follows the /aicr-commit contract and creates the work-item commit.',
     'Build the artifact, run the authorized AC/AP or switch firmware upgrade and automated tests, then archive the test report with real evidence.',
     'Store the design report, integration report, and test report under the project report directory (or delivery-artifacts/<work-item-id>/ if the project has no convention). Never fabricate report content or results.',
     'Do not open Git or Feishu web pages. Ask before a shared-branch change, production OTA, or any external write other than the configured acceptance push.',

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
 import { config } from '../config.js'
+import { defaultOwnerUserId } from '../db/ownership.js'
 import { notFound, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
 import type { Priority, WorkItemStatus, WorkItemType } from '../domain/types.js'
@@ -14,8 +15,6 @@ import {
 const workItemTypes = ['requirement', 'defect'] as const
 const priorities = ['紧急', '高', '中', '低'] as const
 const workItemStatuses = ['待处理', '进行中', '已交付', '已关闭'] as const
-const INTEGRATION_ID = 'feishu-main'
-
 export interface FeishuIngestInput {
   projectKey: unknown
   repoId: unknown
@@ -106,18 +105,19 @@ export function ingestFeishuWorkItems(
   }
 
   const repository = db
-    .prepare('SELECT id FROM repositories WHERE id = ?')
-    .get(repoId) as { id: string } | undefined
+    .prepare('SELECT id, owner_user_id FROM repositories WHERE id = ?')
+    .get(repoId) as { id: string; owner_user_id: string } | undefined
   if (!repository) throw notFound('关联仓库')
+  const ownerUserId = defaultOwnerUserId(db, repository.owner_user_id)
 
   const items = rawItems.map((item) => normalizeItem(item, projectKey))
   const now = nowIso()
   const result = db.transaction(() => {
     const upsertInbox = db.prepare(
       `INSERT INTO feishu_inbox
-        (external_id, type, title, description, priority, repo_id, owner, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(external_id) DO UPDATE SET
+        (external_id, owner_user_id, type, title, description, priority, repo_id, owner, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(owner_user_id, external_id) DO UPDATE SET
          type = excluded.type,
          title = excluded.title,
          description = excluded.description,
@@ -129,6 +129,7 @@ export function ingestFeishuWorkItems(
     for (const item of items) {
       upsertInbox.run(
         item.externalId,
+        ownerUserId,
         item.type,
         item.title,
         item.description,
@@ -141,29 +142,33 @@ export function ingestFeishuWorkItems(
 
     const upserted = upsertFeishuWorkItems(db, repoId, items)
     const reconciled = reconcile
-      ? reconcileFeishuWorkItems(db, activeExternalIds)
+      ? reconcileFeishuWorkItems(db, activeExternalIds, now, ownerUserId)
       : { archived: 0, inboxRemoved: 0 }
     const message = `已接收外部飞书同步 ${items.length} 条工作项，新增 ${upserted.created} 条、更新 ${upserted.updated} 条${
       reconciled.archived > 0 ? `，归档 ${reconciled.archived} 条飞书已删除项` : ''
     }`
 
     const integration = db
-      .prepare('SELECT id FROM feishu_integrations WHERE id = ?')
-      .get(INTEGRATION_ID) as { id: string } | undefined
+      .prepare(
+        `SELECT id FROM feishu_integrations
+         WHERE owner_user_id = ?
+         ORDER BY created_at ASC, id ASC LIMIT 1`,
+      )
+      .get(ownerUserId) as { id: string } | undefined
     if (integration) {
       db.prepare(
         `UPDATE feishu_integrations
          SET status = 'active', last_sync_at = ?, last_sync_status = 'success',
              last_sync_message = ?, updated_at = ?
          WHERE id = ?`,
-      ).run(now, message, now, INTEGRATION_ID)
+      ).run(now, message, now, integration.id)
       db.prepare(
         `INSERT INTO feishu_sync_logs
           (id, integration_id, trigger_type, status, fetched, upserted, skipped, message, created_at)
          VALUES (?, ?, 'manual', 'success', ?, ?, 0, ?, ?)`,
       ).run(
         randomUUID(),
-        INTEGRATION_ID,
+        integration.id,
         items.length,
         items.length,
         message,
@@ -186,22 +191,24 @@ export function ingestFeishuWorkItems(
   return result
 }
 
-export function getExternalFeishuStatus(db: AppDatabase) {
+export function getExternalFeishuStatus(db: AppDatabase, ownerUserId?: string) {
+  const ownerClause = ownerUserId === undefined ? '' : ' AND owner_user_id = ?'
+  const ownerArgs = ownerUserId === undefined ? [] : [ownerUserId]
   const count = db
     .prepare(
       `SELECT COUNT(*) AS count FROM work_items
-       WHERE source = 'feishu' AND archived_at IS NULL`,
+       WHERE source = 'feishu' AND archived_at IS NULL${ownerClause}`,
     )
-    .get() as { count: number }
+    .get(...ownerArgs) as { count: number }
   if (count.count === 0) return undefined
 
   const latest = db
     .prepare(
       `SELECT repo_id, updated_at FROM work_items
-       WHERE source = 'feishu' AND archived_at IS NULL
+       WHERE source = 'feishu' AND archived_at IS NULL${ownerClause}
        ORDER BY updated_at DESC, id DESC LIMIT 1`,
     )
-    .get() as { repo_id: string; updated_at: string } | undefined
+    .get(...ownerArgs) as { repo_id: string; updated_at: string } | undefined
 
   return {
     connected: true as const,

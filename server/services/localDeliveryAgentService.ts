@@ -1,6 +1,8 @@
 import { isAbsolute } from 'node:path'
+import { describeFetchError } from '../domain/network.js'
+import { unprocessable } from '../domain/errors.js'
 
-export const LOCAL_DELIVERY_CONTRACT_VERSION = 3
+export const LOCAL_DELIVERY_CONTRACT_VERSION = 4
 
 export type LocalDeliveryAgentStepStatus = 'pending' | 'running' | 'success' | 'failed'
 
@@ -18,13 +20,17 @@ export interface LocalDeliveryAgentStep extends LocalDeliveryAgentStepDefinition
 }
 
 export const LOCAL_DELIVERY_AGENT_STEPS: readonly LocalDeliveryAgentStepDefinition[] = [
-  { key: 'platform', name: '读取平台', description: '加载工作项、仓库路径与目标分支' },
-  { key: 'contract', name: '校验契约', description: '确认服务端支持真实阶段证据' },
-  { key: 'checkout', name: '校验仓库', description: '校验客户端路径、Git 根目录与分支' },
-  { key: 'codex', name: 'Codex 执行', description: '分析、设计、编码并生成执行证据' },
-  { key: 'evidence', name: '检查证据', description: '确认代码变更、报告与提交' },
-  { key: 'commit', name: '提交推送', description: '记录本地提交并按授权推送' },
-  { key: 'writeback', name: '回写平台', description: '写入真实 commit 与阶段结果' },
+  { key: 'connectivity', name: '连通性校验', description: '读取平台、校验契约并确认客户端仓库与分支' },
+  { key: 'analysis', name: '需求分析', description: '识别需求意图、验收条件与影响模块' },
+  { key: 'ldd', name: '业务 LDD', description: '生成或更新本次业务涉及的 LDD 设计' },
+  { key: 'coding', name: '业务编码', description: '按 LDD 与设计实现代码变更和单元测试' },
+  { key: 'evidence', name: '检查证据', description: '确认代码变更、设计报告与集成报告' },
+  { key: 'commit', name: '提交推送', description: 'AICR 审查、本地提交并按授权推送' },
+  {
+    key: 'writeback',
+    name: '回写并关闭缺陷',
+    description: '写入真实 commit 与阶段结果，并按授权提交飞书缺陷关闭',
+  },
 ]
 
 export function createLocalDeliveryAgentSteps(): LocalDeliveryAgentStep[] {
@@ -55,24 +61,7 @@ export interface FetchJsonOptions {
   onRetry?: (context: { attempt: number; attempts: number; error: string; delayMs: number }) => void
 }
 
-function errorCause(error: unknown): Record<string, unknown> | undefined {
-  if (!(error instanceof Error)) return undefined
-  const cause = (error as Error & { cause?: unknown }).cause
-  return typeof cause === 'object' && cause !== null
-    ? (cause as Record<string, unknown>)
-    : undefined
-}
-
-export function describeFetchError(error: unknown): string {
-  if (!(error instanceof Error)) return String(error)
-  const cause = errorCause(error)
-  const parts = [error.name === 'TimeoutError' ? '请求超时' : error.message]
-  for (const value of [cause?.code, cause?.message, cause?.errno]) {
-    const detail = typeof value === 'string' || typeof value === 'number' ? String(value) : ''
-    if (detail && !parts.includes(detail)) parts.push(detail)
-  }
-  return parts.filter(Boolean).join('；')
-}
+export { describeFetchError }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -130,6 +119,7 @@ export interface LocalDeliveryAgentRequest {
   repoId: string
   autoCommit: boolean
   pushAfterAcceptance: boolean
+  runBuild: boolean
   autoClose: boolean
   temporaryCheckout?: boolean
 }
@@ -174,6 +164,7 @@ export interface LocalDeliveryCommandInput {
   repoId: string
   autoCommit: boolean
   pushAfterAcceptance: boolean
+  runBuild: boolean
   autoClose: boolean
   localPath: string
   branch: string
@@ -186,6 +177,7 @@ export interface CodexExecArgsInput {
   imagePaths: string[]
   mcpArgs: string[]
   ephemeral?: boolean
+  sandbox?: 'workspace-write' | 'danger-full-access'
 }
 
 const REQUEST_KEYS = new Set([
@@ -193,6 +185,7 @@ const REQUEST_KEYS = new Set([
   'repoId',
   'autoCommit',
   'pushAfterAcceptance',
+  'runBuild',
   'autoClose',
   'temporaryCheckout',
 ])
@@ -207,41 +200,46 @@ function text(value: unknown): string {
 
 function requiredIdentifier(value: unknown, label: string): string {
   const candidate = text(value)
-  if (!candidate) throw new Error(`缺少${label}`)
+  if (!candidate) throw unprocessable(`缺少${label}`)
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(candidate)) {
-    throw new Error(`${label}格式不正确`)
+    throw unprocessable(`${label}格式不正确`)
   }
   return candidate
 }
 
 function booleanOption(value: unknown, label: string, fallback: boolean): boolean {
   if (value === undefined) return fallback
-  if (typeof value !== 'boolean') throw new Error(`${label}必须是布尔值`)
+  if (typeof value !== 'boolean') throw unprocessable(`${label}必须是布尔值`)
   return value
 }
 
 export function parseLocalDeliveryAgentRequest(input: unknown): LocalDeliveryAgentRequest {
-  if (!isRecord(input)) throw new Error('请求体必须是 JSON 对象')
+  if (!isRecord(input)) throw unprocessable('请求体必须是 JSON 对象')
   const unknownKeys = Object.keys(input).filter((key) => !REQUEST_KEYS.has(key))
   if (unknownKeys.length > 0) {
-    throw new Error(`不支持交付参数：${unknownKeys.join(', ')}`)
+    throw unprocessable(`不支持交付参数：${unknownKeys.join(', ')}`)
   }
 
   const autoCommit = booleanOption(input.autoCommit, '自动提交', true)
   const pushAfterAcceptance = booleanOption(input.pushAfterAcceptance, '验收后推送', false)
   const temporaryCheckout = booleanOption(input.temporaryCheckout, '临时检出', false)
   if (pushAfterAcceptance && !autoCommit) {
-    throw new Error('未启用自动提交时不能推送')
+    throw unprocessable('未启用自动提交时不能推送')
+  }
+  const autoClose = booleanOption(input.autoClose, '自动关闭缺陷', false)
+  if (autoClose && !pushAfterAcceptance) {
+    throw unprocessable('自动关闭飞书缺陷需要启用提交后推送')
   }
   if (temporaryCheckout && (!autoCommit || !pushAfterAcceptance)) {
-    throw new Error('临时检出必须启用自动提交和推送，避免清理工作区时丢失代码')
+    throw unprocessable('临时检出必须启用自动提交和推送，避免清理工作区时丢失代码')
   }
   return {
     workItemId: requiredIdentifier(input.workItemId, '工作项'),
     repoId: requiredIdentifier(input.repoId, '代码仓库'),
     autoCommit,
     pushAfterAcceptance,
-    autoClose: booleanOption(input.autoClose, '自动关闭缺陷', false),
+    runBuild: booleanOption(input.runBuild, '系统编译', true),
+    autoClose,
     temporaryCheckout,
   }
 }
@@ -295,6 +293,9 @@ export function buildLocalDeliveryCommand(input: LocalDeliveryCommandInput): str
     throw new Error(`客户端代码路径必须是绝对路径：${input.localPath}`)
   }
   if (!text(input.branch)) throw new Error('目标分支不能为空')
+  if (input.autoClose && !input.pushAfterAcceptance) {
+    throw new Error('自动关闭飞书缺陷需要启用提交后推送')
+  }
 
   const args = [
     'run',
@@ -313,7 +314,10 @@ export function buildLocalDeliveryCommand(input: LocalDeliveryCommandInput): str
     '--run',
   ]
   if (!input.autoCommit) args.push('--no-commit')
-  else if (input.pushAfterAcceptance) args.push('--push', '--yes')
+  else if (input.pushAfterAcceptance) {
+    args.push('--push', '--yes')
+    args.push(input.runBuild ? '--build' : '--no-build')
+  }
   if (input.autoClose) args.push('--close')
   return args
 }
@@ -330,7 +334,7 @@ export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
     input.checkout,
     '--skip-git-repo-check',
     '--sandbox',
-    'workspace-write',
+    input.sandbox ?? 'workspace-write',
     '--output-last-message',
     input.lastMessagePath,
     ...input.imagePaths.flatMap((path) => ['--image', path]),
@@ -342,7 +346,7 @@ export function buildCodexExecArgs(input: CodexExecArgsInput): string[] {
 export function classifyLocalDeliveryFailure(message: string): string {
   if (/契约|deliveryContractVersion/i.test(message)) return 'contract'
   if (
-    /不支持交付参数|缺少工作项|缺少代码仓库|自动提交|布尔值|未启用自动提交/.test(message)
+    /不支持交付参数|缺少工作项|缺少代码仓库|布尔值/.test(message)
   ) {
     return 'contract'
   }
@@ -353,10 +357,14 @@ export function classifyLocalDeliveryFailure(message: string): string {
   if (/Codex 执行失败|No prompt provided|Reading prompt from stdin/i.test(message)) {
     return 'codex'
   }
-  if (/HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败/.test(message)) {
+  if (
+    /HEAD 没有变化|创建本地交付提交失败|暂存交付变更|没有可提交的交付变更|推送失败|未启用自动提交|AICR.*审查|aicr-commit|未创建新的提交/.test(
+      message,
+    )
+  ) {
     return 'commit'
   }
-  if (/回写平台|平台未返回|流水线记录/.test(message)) return 'writeback'
+  if (/回写平台|平台未返回|平台已记录.*流水线|流水线记录/.test(message)) return 'writeback'
   if (/路径|分支|Git 工作区|工作区根目录/.test(message)) return 'checkout'
   if (
     /读取平台|尚未绑定平台|本机代理|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
@@ -366,4 +374,134 @@ export function classifyLocalDeliveryFailure(message: string): string {
     return 'platform'
   }
   return 'codex'
+}
+
+export function deliveryTimeoutFailureMessage(stdout: string, timeoutMs: number): string {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000))
+  const stage = Array.from(
+    stdout.matchAll(/LOCAL_DELIVERY_STAGE:(connectivity|codex|evidence|commit|push|writeback)/g),
+  ).at(-1)?.[1]
+  const suffix = '；代码变更可能仍保留在客户端工作区，请检查 delivery-artifacts 与 Codex 日志'
+  if (stage === 'connectivity') {
+    return `读取平台失败：本机交付执行超时（超过 ${minutes} 分钟），平台连接或仓库校验未完成${suffix}`
+  }
+  if (stage === 'commit') {
+    return `创建本地交付提交失败：本机交付执行超时（超过 ${minutes} 分钟），/aicr-commit 未完成${suffix}`
+  }
+  if (stage === 'evidence') {
+    return `检查交付证据失败：本机交付执行超时（超过 ${minutes} 分钟）${suffix}`
+  }
+  if (stage === 'push') {
+    return `推送失败：本机交付执行超时（超过 ${minutes} 分钟）${suffix}`
+  }
+  if (stage === 'writeback') {
+    return `回写平台超时（超过 ${minutes} 分钟）${suffix}`
+  }
+  return `Codex 执行失败：本机交付执行超时（超过 ${minutes} 分钟），需求分析/LDD/编码阶段未完成${suffix}`
+}
+
+const FAILED_STEP_STAGE_INDEX: Record<string, number> = {
+  connectivity: 0,
+  analysis: 0,
+  ldd: 1,
+  coding: 2,
+  evidence: 3,
+  commit: 4,
+  writeback: 8,
+}
+
+const CONNECTIVITY_FAILURE_KEYS = new Set(['platform', 'contract', 'checkout'])
+const CODEX_PHASE_KEYS = new Set(['analysis', 'ldd', 'coding'])
+
+export function resolveLocalDeliveryFailureStep(
+  message: string,
+  runningStepKey?: string,
+): string {
+  const failedKey = classifyLocalDeliveryFailure(message)
+  if (CONNECTIVITY_FAILURE_KEYS.has(failedKey)) return 'connectivity'
+  if (failedKey !== 'codex') return failedKey
+  if (runningStepKey && CODEX_PHASE_KEYS.has(runningStepKey)) return runningStepKey
+  if (runningStepKey === 'connectivity' || runningStepKey === 'evidence') return runningStepKey
+  return 'coding'
+}
+
+export function failedDeliveryStageIndex(message: string, failedStepKey: string): number {
+  if (/design-report|缺少 delivery-artifacts 中的设计报告/.test(message)) return 1
+  if (/integration-report|缺少 delivery-artifacts 中的集成报告/.test(message)) return 3
+  return FAILED_STEP_STAGE_INDEX[failedStepKey] ?? 2
+}
+
+export interface FailedDeliveryPipelineInput {
+  workItemId: string
+  repoId: string
+  deliveryJobId?: string
+  branch?: string
+  localPath?: string
+  error: string
+  failedStepKey: string
+  autoCommit: boolean
+  steps?: LocalDeliveryAgentStep[]
+}
+
+export function buildFailedDeliveryPipelinePayload(
+  input: FailedDeliveryPipelineInput,
+): Record<string, unknown> {
+  const error = input.error.trim().slice(0, 4_000) || '本机交付失败，平台未收到客户端错误详情'
+  const failedStageIndex = failedDeliveryStageIndex(error, input.failedStepKey)
+  const stepStatus = (key: string): LocalDeliveryAgentStepStatus | undefined =>
+    input.steps?.find((step) => step.key === key)?.status
+  const stageResults: Array<{
+    index: number
+    status: LocalDeliveryAgentStepStatus
+    log: string
+  }> = Array.from({ length: 9 }, (_, index) => ({
+    index,
+    status: 'pending' as const,
+    log: '本机代理兜底记录：未检测到该阶段真实证据',
+  }))
+  if (stepStatus('connectivity') === 'success' || stepStatus('analysis') === 'success') {
+    stageResults[0] = {
+      index: 0,
+      status: 'success',
+      log: '本机代理已读取工作项与仓库配置',
+    }
+  }
+  if (stepStatus('ldd') === 'success') {
+    stageResults[1] = {
+      index: 1,
+      status: 'success',
+      log: 'Codex 已生成本次业务涉及的 LDD 与开发设计',
+    }
+  }
+  if (stepStatus('coding') === 'success') {
+    stageResults[2] = {
+      index: 2,
+      status: 'success',
+      log: 'Codex 已完成业务编码，失败阶段由本机代理兜底记录',
+    }
+  }
+  if (stepStatus('evidence') === 'success') {
+    stageResults[3] = {
+      index: 3,
+      status: 'success',
+      log: '本机代理已确认代码变更与交付报告',
+    }
+  }
+  stageResults[failedStageIndex] = {
+    index: failedStageIndex,
+    status: 'failed',
+    log: error,
+  }
+  return {
+    ...(input.deliveryJobId ? { deliveryJobId: input.deliveryJobId } : {}),
+    outcome: 'failed',
+    workItemId: input.workItemId,
+    repoId: input.repoId,
+    ...(input.branch ? { branch: input.branch } : {}),
+    ...(input.localPath ? { localPath: input.localPath } : {}),
+    error,
+    failedStageIndex,
+    autoCommit: input.autoCommit,
+    stageResults,
+  }
 }

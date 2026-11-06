@@ -74,6 +74,22 @@ function extractItems(payload: unknown): unknown[] {
   return []
 }
 
+function collectNamedArrays(value: unknown, name: string, output: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    for (const item of value) collectNamedArrays(item, name, output)
+    return output
+  }
+  if (!isRecord(value)) return output
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === name && Array.isArray(entry)) {
+      output.push(...entry)
+      continue
+    }
+    collectNamedArrays(entry, name, output)
+  }
+  return output
+}
+
 function scalarText(value: unknown): string {
   if (value === null || value === undefined) return ''
   if (typeof value === 'string') return value.trim()
@@ -505,14 +521,10 @@ export class FeishuProjectClient {
     workItemId: string,
     closeTransitionId?: string,
   ): Promise<void> {
-    if (!closeTransitionId) {
-      throw new FeishuProjectError(
-        '未配置关闭流转 ID，无法将缺陷回写为已关闭',
-        422,
-        'FEISHU_CLOSE_TRANSITION_MISSING',
-      )
-    }
-    const transitionId = Number(closeTransitionId)
+    const resolvedTransitionId = closeTransitionId?.trim()
+      ? closeTransitionId.trim()
+      : await this.resolveCloseTransitionId(projectKey, typeKey, workItemId)
+    const transitionId = Number(resolvedTransitionId)
     if (!Number.isFinite(transitionId)) {
       throw new FeishuProjectError('关闭流转 ID 必须是数字', 422, 'FEISHU_CLOSE_TRANSITION_INVALID')
     }
@@ -523,5 +535,40 @@ export class FeishuProjectClient {
         body: JSON.stringify({ transition_id: transitionId }),
       },
     )
+  }
+
+  private async resolveCloseTransitionId(
+    projectKey: string,
+    typeKey: string,
+    workItemId: string,
+  ): Promise<string> {
+    const payload = await this.authorizedRequest(
+      `/open_api/${encodeURIComponent(projectKey)}/work_item/${encodeURIComponent(typeKey)}/${encodeURIComponent(workItemId)}/workflow/query`,
+      { method: 'POST', body: JSON.stringify({}) },
+    )
+    const connections = collectNamedArrays(payload, 'connections')
+    const resolved = connections
+      .filter(isRecord)
+      .map((connection) => {
+        const transitionId = scalarText(connection.transition_id ?? connection.id)
+        const stateName = scalarText(
+          connection.state_name ?? connection.to_state_name ?? connection.name,
+        )
+        const stateKey = scalarText(connection.state_key ?? connection.to_state_key)
+        return { transitionId, stateName, stateKey }
+      })
+      .find(
+        (connection) =>
+          connection.transitionId !== '' &&
+          /已解决|解决|resolved|closed/i.test(`${connection.stateName} ${connection.stateKey}`),
+      )
+    if (!resolved) {
+      throw new FeishuProjectError(
+        '未配置关闭流转 ID，且未能从飞书工作流中识别“已解决”状态',
+        422,
+        'FEISHU_CLOSE_TRANSITION_MISSING',
+      )
+    }
+    return resolved.transitionId
   }
 }

@@ -1,9 +1,10 @@
 import type { AppDatabase } from '../db/database.js'
+import { defaultOwnerUserId } from '../db/ownership.js'
 import { nextSequence } from '../db/sequences.js'
-import { conflict, unprocessable } from '../domain/errors.js'
+import { conflict, notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
 import type { Account, AccountStatus, PlatformKey } from '../domain/types.js'
-import { oneOf, optionalText, requiredText } from '../domain/validation.js'
+import { httpUrl, oneOf, optionalText, requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
 
 const platforms = ['git', 'feishu', 'build', 'device'] as const
@@ -13,9 +14,16 @@ interface AccountRow {
   platform: PlatformKey
   username: string
   label: string
+  service_url: string
   secret_hint: string
   status: AccountStatus
   created_at: string
+}
+
+interface AccountStorageRow extends AccountRow {
+  secret_ciphertext: string
+  secret_iv: string
+  secret_tag: string
 }
 
 export interface AccountInput {
@@ -23,6 +31,15 @@ export interface AccountInput {
   username: unknown
   password: unknown
   label?: unknown
+  serviceUrl?: unknown
+}
+
+export interface AccountUpdateInput {
+  platform?: unknown
+  username?: unknown
+  password?: unknown
+  label?: unknown
+  serviceUrl?: unknown
 }
 
 function rowToAccount(row: AccountRow): Account {
@@ -31,20 +48,26 @@ function rowToAccount(row: AccountRow): Account {
     platform: row.platform,
     username: row.username,
     label: row.label,
+    serviceUrl: row.service_url,
     secretHint: row.secret_hint,
     status: row.status,
     createdAt: row.created_at.slice(0, 10),
   }
 }
 
-export function listAccounts(db: AppDatabase): Account[] {
-  const rows = db
-    .prepare(
-      `SELECT id, platform, username, label, secret_hint, status, created_at
-       FROM accounts ORDER BY created_at DESC, id DESC`,
-    )
-    .all() as AccountRow[]
+export function listAccounts(db: AppDatabase, ownerUserId?: string): Account[] {
+  const select = `SELECT id, platform, username, label, service_url, secret_hint, status, created_at
+                  FROM accounts`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(`${select} ORDER BY created_at DESC, id DESC`).all()
+    : db
+        .prepare(`${select} WHERE owner_user_id = ? ORDER BY created_at DESC, id DESC`)
+        .all(ownerUserId)) as AccountRow[]
   return rows.map(rowToAccount)
+}
+
+export function getAccount(db: AppDatabase, id: string, ownerUserId?: string): Account {
+  return rowToAccount(getAccountRow(db, id, ownerUserId))
 }
 
 function normalizedInput(input: AccountInput) {
@@ -52,33 +75,66 @@ function normalizedInput(input: AccountInput) {
   const username = requiredText(input.username, '账号', { max: 200 })
   const password = requiredText(input.password, '密码', { max: 2_000 })
   const label = optionalText(input.label, '账号标签', 100) ?? '平台账号'
-  return { platform, username, password, label }
+  const serviceUrl = normalizedServiceUrl(input.serviceUrl, '')
+  return { platform, username, password, label, serviceUrl }
+}
+
+function normalizedServiceUrl(value: unknown, fallback: string): string {
+  if (value === undefined) return fallback
+  if (value === null) return ''
+  if (typeof value !== 'string') throw unprocessable('服务地址必须是文本')
+  const text = value.trim()
+  return text ? httpUrl(text, '服务地址') : ''
+}
+
+function getAccountRow(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): AccountStorageRow {
+  const select = `SELECT id, platform, username, label, service_url, secret_hint, status, created_at,
+                         secret_ciphertext, secret_iv, secret_tag
+                  FROM accounts WHERE id = ?`
+  const row = (ownerUserId === undefined
+    ? db.prepare(select).get(id)
+    : db.prepare(`${select} AND owner_user_id = ?`).get(id, ownerUserId)) as
+    | AccountStorageRow
+    | undefined
+  if (!row) throw notFound('账号')
+  return row
 }
 
 export function createAccount(
   db: AppDatabase,
   vault: CredentialVault,
   input: AccountInput,
+  ownerUserId = '',
 ): Account {
   const normalized = normalizedInput(input)
+  const owner = defaultOwnerUserId(db, ownerUserId)
   const encrypted = vault.encrypt(normalized.password)
   const now = nowIso()
   const id = `acc-${nextSequence(db, 'account', 1)}`
 
   const duplicate = db
-    .prepare('SELECT id FROM accounts WHERE platform = ? AND username = ?')
-    .get(normalized.platform, normalized.username) as { id: string } | undefined
+    .prepare(
+      'SELECT id FROM accounts WHERE owner_user_id = ? AND platform = ? AND username = ?',
+    )
+    .get(owner, normalized.platform, normalized.username) as { id: string } | undefined
   if (duplicate) throw conflict('该平台账号已绑定，请勿重复添加')
 
   db.prepare(
     `INSERT INTO accounts
-      (id, platform, username, label, secret_ciphertext, secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      (id, owner_user_id, platform, username, label, service_url, secret_ciphertext,
+       secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
   ).run(
     id,
+    owner,
     normalized.platform,
     normalized.username,
     normalized.label,
+    normalized.serviceUrl,
     encrypted.ciphertext,
     encrypted.iv,
     encrypted.tag,
@@ -92,6 +148,7 @@ export function createAccount(
     platform: normalized.platform,
     username: normalized.username,
     label: normalized.label,
+    serviceUrl: normalized.serviceUrl,
     secretHint: vault.hint(normalized.password),
     status: 'active',
     createdAt: now.slice(0, 10),
@@ -102,6 +159,7 @@ export function importAccounts(
   db: AppDatabase,
   vault: CredentialVault,
   inputs: unknown,
+  ownerUserId = '',
 ): { accounts: Account[]; skipped: number } {
   if (!Array.isArray(inputs) || inputs.length === 0) {
     throw unprocessable('批量导入账号不能为空')
@@ -109,14 +167,17 @@ export function importAccounts(
   if (inputs.length > 500) throw unprocessable('单次最多导入 500 个账号')
 
   const rows = inputs.map((input) => normalizedInput(input as AccountInput))
+  const owner = defaultOwnerUserId(db, ownerUserId)
   const created: Account[] = []
   let skipped = 0
 
   db.transaction(() => {
     for (const row of rows) {
       const duplicate = db
-        .prepare('SELECT id FROM accounts WHERE platform = ? AND username = ?')
-        .get(row.platform, row.username) as { id: string } | undefined
+        .prepare(
+          'SELECT id FROM accounts WHERE owner_user_id = ? AND platform = ? AND username = ?',
+        )
+        .get(owner, row.platform, row.username) as { id: string } | undefined
       if (duplicate) {
         skipped += 1
         continue
@@ -127,13 +188,16 @@ export function importAccounts(
       const id = `acc-${nextSequence(db, 'account', 1)}`
       db.prepare(
         `INSERT INTO accounts
-          (id, platform, username, label, secret_ciphertext, secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          (id, owner_user_id, platform, username, label, service_url, secret_ciphertext,
+           secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
       ).run(
         id,
+        owner,
         row.platform,
         row.username,
         row.label,
+        row.serviceUrl,
         encrypted.ciphertext,
         encrypted.iv,
         encrypted.tag,
@@ -146,6 +210,7 @@ export function importAccounts(
         platform: row.platform,
         username: row.username,
         label: row.label,
+        serviceUrl: row.serviceUrl,
         secretHint: vault.hint(row.password),
         status: 'active',
         createdAt: now.slice(0, 10),
@@ -154,6 +219,113 @@ export function importAccounts(
   })()
 
   return { accounts: created, skipped }
+}
+
+export function updateAccount(
+  db: AppDatabase,
+  vault: CredentialVault,
+  id: string,
+  input: AccountUpdateInput,
+  ownerUserId?: string,
+): Account {
+  const current = getAccountRow(db, id, ownerUserId)
+  const platform = input.platform === undefined
+    ? current.platform
+    : oneOf(input.platform, '平台', platforms)
+  const username = input.username === undefined
+    ? current.username
+    : requiredText(input.username, '账号', { max: 200 })
+  const label = input.label === undefined
+    ? current.label
+    : optionalText(input.label, '账号标签', 100) ?? '平台账号'
+  const serviceUrl = normalizedServiceUrl(input.serviceUrl, current.service_url)
+  const password =
+    input.password === undefined ||
+    input.password === null ||
+    (typeof input.password === 'string' && !input.password.trim())
+      ? undefined
+      : requiredText(input.password, '密码', { max: 2_000 })
+
+  const duplicate = db
+    .prepare(
+      ownerUserId === undefined
+        ? 'SELECT id FROM accounts WHERE platform = ? AND username = ? AND id <> ?'
+        : 'SELECT id FROM accounts WHERE owner_user_id = ? AND platform = ? AND username = ? AND id <> ?',
+    )
+    .get(
+      ...(ownerUserId === undefined
+        ? [platform, username, id]
+        : [ownerUserId, platform, username, id]),
+    ) as { id: string } | undefined
+  if (duplicate) throw conflict('该平台账号已绑定，请勿重复添加')
+  if (platform !== 'build') {
+    const buildRepository = db
+      .prepare('SELECT name FROM repositories WHERE build_account_id = ? LIMIT 1')
+      .get(id) as { name: string } | undefined
+    if (buildRepository) {
+      throw conflict(
+        `账号正在作为仓库「${buildRepository.name}」的编译系统，不能改为其他平台`,
+      )
+    }
+  }
+
+  const encrypted = password
+    ? vault.encrypt(password)
+    : {
+        ciphertext: current.secret_ciphertext,
+        iv: current.secret_iv,
+        tag: current.secret_tag,
+      }
+  const secretHint = password ? vault.hint(password) : current.secret_hint
+  const now = nowIso()
+
+  db.prepare(
+    `UPDATE accounts
+     SET platform = ?, username = ?, label = ?, service_url = ?,
+         secret_ciphertext = ?, secret_iv = ?, secret_tag = ?, secret_hint = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    platform,
+    username,
+    label,
+    serviceUrl,
+    encrypted.ciphertext,
+    encrypted.iv,
+    encrypted.tag,
+    secretHint,
+    now,
+    id,
+  )
+
+  return {
+    id,
+    platform,
+    username,
+    label,
+    serviceUrl,
+    secretHint,
+    status: current.status,
+    createdAt: current.created_at.slice(0, 10),
+  }
+}
+
+export function deleteAccount(db: AppDatabase, id: string, ownerUserId?: string): void {
+  getAccountRow(db, id, ownerUserId)
+  const repository = db
+    .prepare('SELECT id, name FROM repositories WHERE account_id = ? LIMIT 1')
+    .get(id) as { id: string; name: string } | undefined
+  if (repository) {
+    throw conflict(`账号正在为仓库「${repository.name}」提供凭据，请先调整仓库账号后再删除`)
+  }
+  const buildRepository = db
+    .prepare('SELECT id, name FROM repositories WHERE build_account_id = ? LIMIT 1')
+    .get(id) as { id: string; name: string } | undefined
+  if (buildRepository) {
+    throw conflict(
+      `账号正在作为仓库「${buildRepository.name}」的编译系统，请先调整仓库编译配置后再删除`,
+    )
+  }
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id)
 }
 
 export function getAccountSecret(

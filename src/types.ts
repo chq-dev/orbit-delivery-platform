@@ -20,6 +20,8 @@ export interface Repository {
   url: string
   branch: string
   localPath: string
+  buildEnabled: boolean
+  buildAccountId: string
   language: string
   accountId: string
   lastSync: string
@@ -32,9 +34,36 @@ export interface Account {
   platform: PlatformKey
   username: string
   label: string
+  serviceUrl: string
   secretHint: string
   status: 'active' | 'expiring'
   createdAt: string
+}
+
+export interface BuildJobParameter {
+  name: string
+  type: string
+  description?: string
+  choices?: string[]
+  defaultValue: string
+}
+
+export interface BuildJobInfo {
+  accountId: string
+  name: string
+  jobUrl: string
+  buildable: boolean
+  parameters: BuildJobParameter[]
+}
+
+export interface BuildTriggerResult {
+  ok: true
+  accountId: string
+  jobName: string
+  jobUrl: string
+  queueUrl?: string
+  triggeredAt: string
+  parameters: string[]
 }
 
 export type WorkItemType = 'requirement' | 'defect'
@@ -112,6 +141,7 @@ export interface PipelineRun {
   stages: PipelineStage[]
   designReport?: PipelineReport
   integrationReport?: PipelineReport
+  artifacts?: PipelineReport[]
   createdAt: string
   triggeredBy: string
   autoCommit: boolean
@@ -218,6 +248,7 @@ export interface FeishuClientAgentHealth {
   ok: true
   version: number
   config: FeishuClientAgentConfigStatus
+  deliveryTimeoutMs?: number
   meegle: {
     available: boolean
     authenticated: boolean
@@ -293,6 +324,16 @@ export interface LocalDeliveryJob {
   branch?: string
   steps?: LocalDeliveryStep[]
   startedAt: string
+  lastActivityAt?: string
+  processId?: number
+  processAlive?: boolean
+  workspaceChangedAt?: string
+  changedFileCount?: number
+  diffAddedLines?: number
+  diffRemovedLines?: number
+  recentChangedFiles?: string[]
+  artifactChangedAt?: string
+  artifactChangedFile?: string
   finishedAt?: string
   result?: LocalDeliveryResult
   error?: string

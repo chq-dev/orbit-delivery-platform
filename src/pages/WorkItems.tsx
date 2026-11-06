@@ -24,12 +24,12 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DeliveryDialog } from '../components/DeliveryDialog'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
 import { codingSkills, smeDeliveryStageChain } from '../codingSkills'
+import { useDeliveryUi } from '../deliveryUi'
 import { buildFeishuSyncInstruction } from '../feishuSyncInstruction'
 import {
   DEFAULT_PAGE_SIZE,
@@ -76,6 +76,7 @@ export function WorkItems({
     getWorkItemDetail,
     refreshWorkItems,
   } = useData()
+  const { openDeliveryDialog } = useDeliveryUi()
   const [tab, setTab] = useState<TabKey>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [feishuStatusFilter, setFeishuStatusFilter] = useState('')
@@ -84,8 +85,6 @@ export function WorkItems({
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [createType, setCreateType] = useState<WorkItemType>('requirement')
-  const [deliveryItemId, setDeliveryItemId] = useState<string>()
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [detailItem, setDetailItem] = useState<WorkItem | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [importMode, setImportMode] = useState<WorkItemType>('requirement')
@@ -193,8 +192,7 @@ export function WorkItems({
   }
 
   const openDelivery = (id: string) => {
-    setDeliveryItemId(id)
-    setDeliveryOpen(true)
+    openDeliveryDialog(id)
   }
 
   const directFeishuSync =
@@ -655,12 +653,6 @@ export function WorkItems({
         onClose={() => setCreateOpen(false)}
         initialType={createType}
       />
-      <DeliveryDialog
-        open={deliveryOpen}
-        onClose={() => setDeliveryOpen(false)}
-        initialWorkItemId={deliveryItemId}
-        onStarted={(run) => onNavigate('pipelines', run.id)}
-      />
       <FeishuImportDialog
         open={importOpen}
         mode={importMode}
@@ -908,7 +900,7 @@ npm run sync:feishu:snapshot:watch`}
             <Field label="交付自动化说明">
               <div className="detail-automation-note">
                 <ArrowRight size={14} />
-                需求解析 → 开发设计报告 → 自动需求编码 → 集成验证报告 → 提交代码 → 编译 → 设备升级 → 自动化测试 → 归档报告
+                连通性校验 → 需求分析 → 业务 LDD → 业务编码 → 检查证据 → 提交推送 → 回写并关闭缺陷
                 {detailItem.type === 'defect' && ' → 关闭缺陷'}
               </div>
             </Field>

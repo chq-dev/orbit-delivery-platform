@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
 import { config } from '../config.js'
+import { defaultOwnerUserId } from '../db/ownership.js'
 import { AppError, errorMessage, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
 import type { WorkItemType } from '../domain/types.js'
@@ -13,16 +14,17 @@ import {
   upsertFeishuWorkItems,
 } from './workItemService.js'
 
-const INTEGRATION_ID = 'feishu-main'
+const DEFAULT_INTEGRATION_ID = 'feishu-main'
 const EVENT_PATH = '/api/integrations/feishu/events'
 const EVENT_TOLERANCE_MS = 5 * 60 * 1000
 const MAX_OUTBOX_ATTEMPTS = 5
 
-let syncInFlight: Promise<FeishuSyncResult> | null = null
+const syncInFlight = new Map<string, Promise<FeishuSyncResult>>()
 let outboxInFlight = false
 
 interface IntegrationRow {
   id: string
+  owner_user_id: string
   project_key: string
   plugin_id: string
   plugin_secret_ciphertext: string
@@ -110,7 +112,7 @@ interface OutboxRow {
 }
 
 function integrationSelect(): string {
-  return `SELECT id, project_key, plugin_id, plugin_secret_ciphertext, plugin_secret_iv,
+  return `SELECT id, owner_user_id, project_key, plugin_id, plugin_secret_ciphertext, plugin_secret_iv,
                  plugin_secret_tag, plugin_secret_hint, user_key, default_repo_id,
                  requirement_type_key, defect_type_key, default_owner, close_transition_id,
                  webhook_secret_ciphertext, webhook_secret_iv, webhook_secret_tag,
@@ -119,27 +121,47 @@ function integrationSelect(): string {
           FROM feishu_integrations`
 }
 
-function getIntegrationRow(db: AppDatabase): IntegrationRow | undefined {
-  return db.prepare(`${integrationSelect()} WHERE id = ?`).get(INTEGRATION_ID) as
-    | IntegrationRow
-    | undefined
+function getIntegrationRow(
+  db: AppDatabase,
+  ownerUserId?: string,
+): IntegrationRow | undefined {
+  if (ownerUserId === undefined) {
+    return db
+      .prepare(`${integrationSelect()} ORDER BY created_at ASC, id ASC LIMIT 1`)
+      .get() as IntegrationRow | undefined
+  }
+  return db
+    .prepare(
+      `${integrationSelect()} WHERE owner_user_id = ? ORDER BY created_at ASC, id ASC LIMIT 1`,
+    )
+    .get(ownerUserId) as IntegrationRow | undefined
 }
 
-function requireIntegration(db: AppDatabase): IntegrationRow {
-  const row = getIntegrationRow(db)
+function requireIntegration(db: AppDatabase, ownerUserId?: string): IntegrationRow {
+  const row = getIntegrationRow(db, ownerUserId)
   if (!row) {
     throw new AppError(409, 'FEISHU_NOT_CONNECTED', '请先绑定飞书项目')
   }
   return row
 }
 
-function getAccessTokenRow(db: AppDatabase): AccessTokenRow | undefined {
+function getAccessTokenRow(db: AppDatabase, integrationId: string): AccessTokenRow | undefined {
   return db
     .prepare(
       `SELECT token_ciphertext, token_iv, token_tag, token_hint
        FROM feishu_access_tokens WHERE integration_id = ?`,
     )
-    .get(INTEGRATION_ID) as AccessTokenRow | undefined
+    .get(integrationId) as AccessTokenRow | undefined
+}
+
+function integrationIdForOwner(ownerUserId: string): string {
+  return ownerUserId ? `${DEFAULT_INTEGRATION_ID}:${ownerUserId}` : DEFAULT_INTEGRATION_ID
+}
+
+function eventPathForIntegration(integrationId: string): string {
+  return integrationId === DEFAULT_INTEGRATION_ID
+    ? EVENT_PATH
+    : `${EVENT_PATH}?integration=${encodeURIComponent(integrationId)}`
 }
 
 function toAppError(error: unknown): AppError {
@@ -155,7 +177,7 @@ function buildClient(
   row: IntegrationRow,
   vault: CredentialVault,
 ): FeishuProjectClient {
-  const tokenRow = getAccessTokenRow(db)
+  const tokenRow = getAccessTokenRow(db, row.id)
   const accessToken = tokenRow
     ? vault.decrypt({
         ciphertext: tokenRow.token_ciphertext,
@@ -221,18 +243,21 @@ function normalizedInput(input: FeishuConnectInput) {
   }
 }
 
-export function getFeishuStatus(db: AppDatabase): FeishuIntegrationStatus {
-  const row = getIntegrationRow(db)
+export function getFeishuStatus(
+  db: AppDatabase,
+  ownerUserId?: string,
+): FeishuIntegrationStatus {
+  const row = getIntegrationRow(db, ownerUserId)
   if (!row) {
     return (
-      getExternalFeishuStatus(db) ?? {
+      getExternalFeishuStatus(db, ownerUserId) ?? {
         connected: false,
         webhookConfigured: false,
         eventPath: EVENT_PATH,
       }
     )
   }
-  const tokenRow = getAccessTokenRow(db)
+  const tokenRow = getAccessTokenRow(db, row.id)
   return {
     connected: true,
     status: row.status,
@@ -252,7 +277,7 @@ export function getFeishuStatus(db: AppDatabase): FeishuIntegrationStatus {
     lastSyncAt: row.last_sync_at ? formatDisplayTime(row.last_sync_at) : undefined,
     lastSyncStatus: row.last_sync_status ?? undefined,
     lastSyncMessage: row.last_sync_message ?? undefined,
-    eventPath: EVENT_PATH,
+    eventPath: eventPathForIntegration(row.id),
   }
 }
 
@@ -260,13 +285,22 @@ export async function connectFeishu(
   db: AppDatabase,
   vault: CredentialVault,
   rawInput: FeishuConnectInput,
+  ownerUserId?: string,
 ): Promise<FeishuIntegrationStatus> {
   const input = normalizedInput(rawInput)
-  const existing = getIntegrationRow(db)
-  const repository = db
-    .prepare('SELECT id FROM repositories WHERE id = ?')
-    .get(input.defaultRepoId) as { id: string } | undefined
+  const repository = (ownerUserId === undefined
+    ? db
+        .prepare('SELECT id, owner_user_id FROM repositories WHERE id = ?')
+        .get(input.defaultRepoId)
+    : db
+        .prepare('SELECT id, owner_user_id FROM repositories WHERE id = ? AND owner_user_id = ?')
+        .get(input.defaultRepoId, ownerUserId)) as
+    | { id: string; owner_user_id: string }
+    | undefined
   if (!repository) throw new AppError(422, 'FEISHU_REPO_NOT_FOUND', '默认仓库不存在')
+  const owner = defaultOwnerUserId(db, ownerUserId ?? repository.owner_user_id)
+  const existing = getIntegrationRow(db, owner)
+  const integrationId = existing?.id ?? integrationIdForOwner(owner)
 
   const client = new FeishuProjectClient({
     baseUrl: config.feishuBaseUrl,
@@ -307,13 +341,14 @@ export async function connectFeishu(
   const persistConnection = db.transaction(() => {
     db.prepare(
       `INSERT INTO feishu_integrations
-      (id, project_key, plugin_id, plugin_secret_ciphertext, plugin_secret_iv,
+      (id, owner_user_id, project_key, plugin_id, plugin_secret_ciphertext, plugin_secret_iv,
        plugin_secret_tag, plugin_secret_hint, user_key, default_repo_id,
        requirement_type_key, defect_type_key, default_owner, close_transition_id,
        webhook_secret_ciphertext, webhook_secret_iv, webhook_secret_tag,
        webhook_secret_hint, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       owner_user_id = excluded.owner_user_id,
        project_key = excluded.project_key,
        plugin_id = excluded.plugin_id,
        plugin_secret_ciphertext = excluded.plugin_secret_ciphertext,
@@ -336,7 +371,8 @@ export async function connectFeishu(
        last_sync_message = NULL,
        updated_at = excluded.updated_at`,
     ).run(
-      INTEGRATION_ID,
+      integrationId,
+      owner,
       input.projectKey,
       input.pluginId,
       encryptedPluginSecret.ciphertext,
@@ -369,7 +405,7 @@ export async function connectFeishu(
          token_hint = excluded.token_hint,
          updated_at = excluded.updated_at`,
       ).run(
-        INTEGRATION_ID,
+        integrationId,
         encryptedAccessToken.ciphertext,
         encryptedAccessToken.iv,
         encryptedAccessToken.tag,
@@ -378,19 +414,20 @@ export async function connectFeishu(
         now,
       )
     } else {
-      db.prepare('DELETE FROM feishu_access_tokens WHERE integration_id = ?').run(INTEGRATION_ID)
+      db.prepare('DELETE FROM feishu_access_tokens WHERE integration_id = ?').run(integrationId)
     }
   })
   persistConnection()
 
-  return getFeishuStatus(db)
+  return getFeishuStatus(db, ownerUserId === undefined ? undefined : owner)
 }
 
 export async function testFeishuConnection(
   db: AppDatabase,
   vault: CredentialVault,
+  ownerUserId?: string,
 ): Promise<{ ok: true; projectName?: string }> {
-  const row = requireIntegration(db)
+  const row = requireIntegration(db, ownerUserId)
   try {
     const result = await buildClient(db, row, vault).testConnection(
       row.requirement_type_key,
@@ -398,18 +435,19 @@ export async function testFeishuConnection(
     )
     db.prepare(
       "UPDATE feishu_integrations SET status = 'active', updated_at = ? WHERE id = ?",
-    ).run(nowIso(), INTEGRATION_ID)
+    ).run(nowIso(), row.id)
     return { ok: true, projectName: result.projectName }
   } catch (error) {
     db.prepare(
       "UPDATE feishu_integrations SET status = 'error', updated_at = ? WHERE id = ?",
-    ).run(nowIso(), INTEGRATION_ID)
+    ).run(nowIso(), row.id)
     throw toAppError(error)
   }
 }
 
 function writeSyncLog(
   db: AppDatabase,
+  integrationId: string,
   status: 'success' | 'failed',
   trigger: 'manual' | 'event' | 'schedule',
   fetched: number,
@@ -422,15 +460,16 @@ function writeSyncLog(
     `INSERT INTO feishu_sync_logs
       (id, integration_id, trigger_type, status, fetched, upserted, skipped, message, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(randomUUID(), INTEGRATION_ID, trigger, status, fetched, upserted, skipped, message, now)
+  ).run(randomUUID(), integrationId, trigger, status, fetched, upserted, skipped, message, now)
 }
 
 async function performSync(
   db: AppDatabase,
   vault: CredentialVault,
   trigger: 'manual' | 'event' | 'schedule' = 'manual',
+  ownerUserId?: string,
 ): Promise<FeishuSyncResult> {
-  const row = requireIntegration(db)
+  const row = requireIntegration(db, ownerUserId)
   try {
     const result = await buildClient(db, row, vault).fetchInboxItems(
       row.requirement_type_key,
@@ -438,15 +477,22 @@ async function performSync(
       row.default_owner,
     )
     const now = nowIso()
+    const repository = db
+      .prepare('SELECT owner_user_id FROM repositories WHERE id = ?')
+      .get(row.default_repo_id) as { owner_user_id: string } | undefined
+    const dataOwnerUserId = defaultOwnerUserId(
+      db,
+      row.owner_user_id || repository?.owner_user_id,
+    )
     let message = ''
     let archived = 0
 
     db.transaction(() => {
       const upsert = db.prepare(
         `INSERT INTO feishu_inbox
-          (external_id, type, title, description, priority, repo_id, owner, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(external_id) DO UPDATE SET
+          (external_id, owner_user_id, type, title, description, priority, repo_id, owner, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_user_id, external_id) DO UPDATE SET
            type = excluded.type,
            title = excluded.title,
            description = excluded.description,
@@ -458,6 +504,7 @@ async function performSync(
       for (const item of result.items) {
         upsert.run(
           item.externalId,
+          dataOwnerUserId,
           item.type,
           item.title,
           item.description,
@@ -474,6 +521,7 @@ async function performSync(
               db,
               result.items.map((item) => item.externalId),
               now,
+              dataOwnerUserId,
             )
           : { archived: 0, inboxRemoved: 0 }
       archived = reconciled.archived
@@ -487,8 +535,18 @@ async function performSync(
          SET status = 'active', last_sync_at = ?, last_sync_status = 'success',
              last_sync_message = ?, updated_at = ?
          WHERE id = ?`,
-      ).run(now, message, now, INTEGRATION_ID)
-      writeSyncLog(db, 'success', trigger, result.fetched, result.items.length, result.skipped, message, now)
+      ).run(now, message, now, row.id)
+      writeSyncLog(
+        db,
+        row.id,
+        'success',
+        trigger,
+        result.fetched,
+        result.items.length,
+        result.skipped,
+        message,
+        now,
+      )
     })()
 
     return {
@@ -508,8 +566,8 @@ async function performSync(
          SET status = 'error', last_sync_at = ?, last_sync_status = 'failed',
              last_sync_message = ?, updated_at = ?
          WHERE id = ?`,
-      ).run(now, message, now, INTEGRATION_ID)
-      writeSyncLog(db, 'failed', trigger, 0, 0, 0, message, now)
+      ).run(now, message, now, row.id)
+      writeSyncLog(db, row.id, 'failed', trigger, 0, 0, 0, message, now)
     })()
     throw toAppError(error)
   }
@@ -519,30 +577,64 @@ export function syncFeishu(
   db: AppDatabase,
   vault: CredentialVault,
   trigger: 'manual' | 'event' | 'schedule' = 'manual',
+  ownerUserId?: string,
 ): Promise<FeishuSyncResult> {
-  if (syncInFlight) return syncInFlight
-  syncInFlight = performSync(db, vault, trigger).finally(() => {
-    syncInFlight = null
+  const integrationId = getIntegrationRow(db, ownerUserId)?.id ?? `missing:${ownerUserId ?? ''}`
+  const inFlight = syncInFlight.get(integrationId)
+  if (inFlight) return inFlight
+  const request = performSync(db, vault, trigger, ownerUserId).finally(() => {
+    syncInFlight.delete(integrationId)
   })
-  return syncInFlight
+  syncInFlight.set(integrationId, request)
+  return request
 }
 
-export function disconnectFeishu(db: AppDatabase): FeishuIntegrationStatus {
-  db.prepare('DELETE FROM feishu_integrations WHERE id = ?').run(INTEGRATION_ID)
-  return getFeishuStatus(db)
+export async function syncAllFeishuIntegrations(
+  db: AppDatabase,
+  vault: CredentialVault,
+  trigger: 'manual' | 'event' | 'schedule' = 'schedule',
+): Promise<void> {
+  const rows = db
+    .prepare('SELECT DISTINCT owner_user_id FROM feishu_integrations')
+    .all() as Array<{ owner_user_id: string }>
+  for (const row of rows) {
+    try {
+      await syncFeishu(db, vault, trigger, row.owner_user_id || undefined)
+    } catch (error) {
+      console.error('飞书定时同步失败', error)
+    }
+  }
+}
+
+export function disconnectFeishu(
+  db: AppDatabase,
+  ownerUserId?: string,
+): FeishuIntegrationStatus {
+  const row = requireIntegration(db, ownerUserId)
+  db.prepare('DELETE FROM feishu_integrations WHERE id = ?').run(row.id)
+  return getFeishuStatus(db, ownerUserId)
 }
 
 export function enqueueFeishuCloseOutbox(db: AppDatabase, workItemId: string): void {
   const item = db
-    .prepare('SELECT type, source, external_id FROM work_items WHERE id = ?')
+    .prepare('SELECT type, source, external_id, owner_user_id FROM work_items WHERE id = ?')
     .get(workItemId) as
-    | { type: WorkItemType; source: 'local' | 'feishu'; external_id: string | null }
+    | {
+        type: WorkItemType
+        source: 'local' | 'feishu'
+        external_id: string | null
+        owner_user_id: string
+      }
     | undefined
   if (!item || item.type !== 'defect' || item.source !== 'feishu' || !item.external_id) return
 
   const integration = db
-    .prepare('SELECT id FROM feishu_integrations WHERE id = ?')
-    .get(INTEGRATION_ID) as { id: string } | undefined
+    .prepare(
+      `SELECT id FROM feishu_integrations
+       WHERE owner_user_id = ?
+       ORDER BY created_at ASC, id ASC LIMIT 1`,
+    )
+    .get(item.owner_user_id) as { id: string } | undefined
   if (!integration) return
 
   const now = nowIso()
@@ -558,7 +650,7 @@ export function enqueueFeishuCloseOutbox(db: AppDatabase, workItemId: string): v
        next_attempt_at = excluded.next_attempt_at,
        last_error = NULL,
        updated_at = excluded.updated_at`,
-  ).run(randomUUID(), INTEGRATION_ID, workItemId, item.external_id, now, now, now)
+  ).run(randomUUID(), integration.id, workItemId, item.external_id, now, now, now)
 }
 
 function splitExternalId(
@@ -742,6 +834,7 @@ export function handleFeishuEvent(
   body: unknown,
   rawBody: Buffer | undefined,
   headers: Record<string, string | string[] | undefined>,
+  integrationId?: string,
 ): { ok: true; success: true; challenge?: string; duplicate?: boolean; queued?: boolean } {
   if (!rawBody) {
     throw new AppError(400, 'FEISHU_WEBHOOK_RAW_BODY_MISSING', '无法读取飞书事件原始请求体')
@@ -750,7 +843,12 @@ export function handleFeishuEvent(
     throw unprocessable('飞书事件请求体格式不正确')
   }
   const record = body as Record<string, unknown>
-  const row = requireIntegration(db)
+  const row = integrationId
+    ? (db.prepare(`${integrationSelect()} WHERE id = ?`).get(integrationId) as
+        | IntegrationRow
+        | undefined)
+    : requireIntegration(db)
+  if (!row) throw new AppError(404, 'FEISHU_INTEGRATION_NOT_FOUND', '飞书集成配置不存在')
   verifyWebhookSignature(row, vault, rawBody, record, headers)
 
   const challenge = record.challenge
@@ -758,14 +856,14 @@ export function handleFeishuEvent(
     return { ok: true, success: true, challenge }
   }
 
-  const eventKey = eventKeyOf(record, rawBody)
+  const eventKey = `${row.id}:${eventKeyOf(record, rawBody)}`
   const dedup = db
     .prepare('INSERT OR IGNORE INTO feishu_event_dedup (event_key, received_at) VALUES (?, ?)')
     .run(eventKey, nowIso())
   if (dedup.changes === 0) return { ok: true, success: true, duplicate: true }
 
   setImmediate(() => {
-    void syncFeishu(db, vault, 'event').catch((error) => {
+    void syncFeishu(db, vault, 'event', row.owner_user_id || undefined).catch((error) => {
       console.error('飞书事件触发同步失败', error)
     })
   })

@@ -13,6 +13,7 @@ export interface Account {
   platform: PlatformKey
   username: string
   label: string
+  serviceUrl: string
   secretHint: string
   status: AccountStatus
   createdAt: string
@@ -24,6 +25,8 @@ export interface Repository {
   url: string
   branch: string
   localPath: string
+  buildEnabled: boolean
+  buildAccountId: string
   language: string
   accountId: string
   lastSync: string
@@ -98,6 +101,7 @@ export interface PipelineRun {
   stages: PipelineStage[]
   designReport?: PipelineReport
   integrationReport?: PipelineReport
+  artifacts?: PipelineReport[]
   createdAt: string
   triggeredBy: string
   autoCommit: boolean

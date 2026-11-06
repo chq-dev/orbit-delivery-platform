@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import {
   createDecipheriv,
   createHash,
@@ -45,25 +45,47 @@ import {
   type MeegleMcpPublicStatus,
 } from '../services/meegleMcpService.js'
 import {
+  readJenkinsJob,
+  triggerJenkinsJob,
+  type JenkinsBuildSpec,
+} from '../services/jenkinsService.js'
+import {
+  buildFailedDeliveryPipelinePayload,
   buildLocalDeliveryCommand,
-  classifyLocalDeliveryFailure,
   createLocalDeliveryAgentSteps,
   fetchJsonWithRetry,
+  deliveryTimeoutFailureMessage,
   LOCAL_DELIVERY_CONTRACT_VERSION,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryTarget,
   resolveLocalDeliveryBranch,
+  resolveLocalDeliveryFailureStep,
   supportsLocalDeliveryContract,
   updateLocalDeliveryAgentStep,
   type LocalDeliveryAgentRequest,
   type LocalDeliveryBootstrap,
   type LocalDeliveryAgentStep,
 } from '../services/localDeliveryAgentService.js'
+import {
+  DELIVERY_CODEX_PHASES,
+  deliveryDesignReportExists,
+  deliveryWorkspaceFiles,
+  inferDeliveryCodexPhase,
+  latestDeliveryArtifactActivity,
+  nextDeliveryCodexPhase,
+  parseGitNumstat,
+  parseGitStatusPaths,
+  readDeliveryCodexPhaseMarker,
+  resetDeliveryCodexPhaseMarker,
+  type DeliveryCodexPhase,
+} from '../services/localDeliveryPhase.js'
 
 interface CommandResult {
   stdout: string
   stderr: string
   exitCode: number
+  timedOut?: boolean
+  aborted?: boolean
 }
 
 interface LoginChallenge {
@@ -117,9 +139,29 @@ interface LocalDeliveryJob {
   branch?: string
   steps: LocalDeliveryAgentStep[]
   startedAt: string
+  lastActivityAt?: string
+  processId?: number
+  processAlive?: boolean
+  workspaceChangedAt?: string
+  changedFileCount?: number
+  diffAddedLines?: number
+  diffRemovedLines?: number
+  recentChangedFiles?: string[]
+  artifactChangedAt?: string
+  artifactChangedFile?: string
   finishedAt?: string
   result?: unknown
   error?: string
+}
+
+function processGroupAlive(pid: number | undefined): boolean | undefined {
+  if (!pid) return undefined
+  try {
+    process.kill(process.platform === 'win32' ? pid : -pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
@@ -134,6 +176,17 @@ function deliveryJobSummary(job: LocalDeliveryJob): LocalDeliveryJob {
     branch: job.branch,
     steps: job.steps,
     startedAt: job.startedAt,
+    lastActivityAt: job.lastActivityAt,
+    processId: job.processId,
+    processAlive:
+      job.status === 'running' ? processGroupAlive(job.processId) : undefined,
+    workspaceChangedAt: job.workspaceChangedAt,
+    changedFileCount: job.changedFileCount,
+    diffAddedLines: job.diffAddedLines,
+    diffRemovedLines: job.diffRemovedLines,
+    recentChangedFiles: job.recentChangedFiles,
+    artifactChangedAt: job.artifactChangedAt,
+    artifactChangedFile: job.artifactChangedFile,
     finishedAt: job.finishedAt,
     result: job.result,
     error: job.error,
@@ -152,7 +205,7 @@ const loginPollIntervalMs = positiveInteger(
 )
 const deliveryTimeoutMs = positiveInteger(
   process.env.FEISHU_AGENT_DELIVERY_TIMEOUT_MS,
-  45 * 60_000,
+  210 * 60_000,
 )
 const meegleCommand = process.env.MEEGLE_BIN?.trim() || 'meegle'
 const meegleHost = process.env.MEEGLE_HOST?.trim() || 'project.feishu.cn'
@@ -200,6 +253,7 @@ let pendingLogin: PendingLogin | null = null
 let running = false
 let lastRun: LastRun | null = null
 let deliveryJob: LocalDeliveryJob | null = null
+let deliveryAbortController: AbortController | null = null
 let heartbeatInFlight = false
 let pairingInFlight = false
 let meegleSetupInFlight = false
@@ -470,35 +524,100 @@ async function pollAgentPairing(): Promise<void> {
   }
 }
 
+interface RunCommandOptions {
+  signal?: AbortSignal
+  onSpawn?: (pid: number | undefined) => void
+}
+
 function runCommand(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   timeout = 60_000,
+  onStdoutLine?: (line: string) => void,
+  options: RunCommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise((resolvePromise) => {
-    const child = execFile(
+    const child = spawn(
       command,
       args,
       {
         cwd: workspaceRoot,
         env,
-        timeout,
-        maxBuffer: 32 * 1024 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
         windowsHide: true,
       },
-      (error, stdout, stderr) => {
-        const code = (error as { code?: unknown } | null)?.code
-        resolvePromise({
-          stdout: String(stdout ?? ''),
-          stderr: String(stderr ?? ''),
-          exitCode: typeof code === 'number' ? code : code ? 1 : 0,
-        })
-      },
     )
+    const maxOutput = 32 * 1024 * 1024
+    const append = (current: string, chunk: unknown): string => {
+      const next = `${current}${String(chunk)}`
+      return next.length > maxOutput ? next.slice(-maxOutput) : next
+    }
+    let stdout = ''
+    let stderr = ''
+    let stdoutLineBuffer = ''
+    let timedOut = false
+    let aborted = false
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const killChild = (): void => {
+      if (process.platform !== 'win32' && child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL')
+          return
+        } catch {
+          // Fall back to killing the direct child when the process group is gone.
+        }
+      }
+      child.kill('SIGKILL')
+    }
+    const onAbort = (): void => {
+      if (settled) return
+      aborted = true
+      killChild()
+      finish(130)
+    }
+    const finish = (exitCode: number): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      options.signal?.removeEventListener('abort', onAbort)
+      resolvePromise({ stdout, stderr, exitCode, timedOut, aborted })
+    }
+    timer = setTimeout(() => {
+      timedOut = true
+      killChild()
+    }, timeout)
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    options.onSpawn?.(child.pid)
+    if (options.signal?.aborted) onAbort()
+    child.stdout?.on('data', (chunk) => {
+      const text = String(chunk)
+      stdout = append(stdout, text)
+      if (!onStdoutLine) return
+      stdoutLineBuffer += text
+      for (let newline = stdoutLineBuffer.indexOf('\n'); newline >= 0; newline = stdoutLineBuffer.indexOf('\n')) {
+        const line = stdoutLineBuffer.slice(0, newline).replace(/\r$/, '')
+        stdoutLineBuffer = stdoutLineBuffer.slice(newline + 1)
+        onStdoutLine(line)
+      }
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr = append(stderr, chunk)
+    })
+    child.on('error', (error) => {
+      stderr = append(stderr, `\n${error.message}`)
+      finish(1)
+    })
+    child.on('close', (code, signal) => {
+      if (onStdoutLine && stdoutLineBuffer) onStdoutLine(stdoutLineBuffer)
+      finish(typeof code === 'number' ? code : signal ? 1 : 0)
+    })
     // Codex reads piped stdin until EOF before starting a non-interactive run.
     // Close it immediately so a long-running agent never waits for input.
     child.stdin?.end()
+    child.stdin?.on('error', () => undefined)
   })
 }
 
@@ -572,6 +691,7 @@ async function currentHealth(): Promise<{
   lastRun: LastRun | null
   pendingLogin: LoginChallenge | null
   delivery: LocalDeliveryJob | null
+  deliveryTimeoutMs: number
   feishuMcp: FeishuMcpPublicStatus
   meegleMcp: MeegleMcpPublicStatus
   codex: {
@@ -600,6 +720,7 @@ async function currentHealth(): Promise<{
     lastRun,
     pendingLogin,
     delivery: deliveryJob ? deliveryJobSummary(deliveryJob) : null,
+    deliveryTimeoutMs,
     feishuMcp,
     meegleMcp: meegleMcp.status,
     codex: {
@@ -695,6 +816,7 @@ function setStep(
   log?: string,
 ): void {
   updateLocalDeliveryAgentStep(job.steps, key, status, log)
+  job.lastActivityAt = new Date().toISOString()
   if (status === 'running') {
     job.stage = job.steps.find((step) => step.key === key)?.name ?? job.stage
   }
@@ -712,7 +834,7 @@ async function fetchPlatformHealth(
     onRetry: ({ attempt, attempts, error, delayMs }) => {
       setStep(
         job,
-        'platform',
+        'connectivity',
         'running',
         `第 ${attempt}/${attempts} 次连接平台失败：${error}；${delayMs}ms 后重试`,
       )
@@ -736,7 +858,7 @@ async function fetchDeliveryBootstrap(
       onRetry: ({ attempt, attempts, error }) => {
         setStep(
           job,
-          'platform',
+          'connectivity',
           'running',
           `第 ${attempt}/${attempts} 次读取平台配置失败：${error}；准备重试`,
         )
@@ -772,7 +894,7 @@ async function validateClientCheckout(
   localPath: string,
   configuredBranch?: string,
 ): Promise<{ checkout: string; branch: string }> {
-  setStep(job, 'checkout', 'running', '正在校验绝对路径、Git 根目录与目标分支')
+  setStep(job, 'connectivity', 'running', '正在校验绝对路径、Git 根目录与目标分支')
   if (!isAbsolute(localPath)) throw new Error(`客户端代码路径必须是绝对路径：${localPath}`)
   if (!existsSync(localPath) || !statSync(localPath).isDirectory()) {
     throw new Error(
@@ -806,7 +928,7 @@ async function validateClientCheckout(
   const resolved = resolveLocalDeliveryBranch(actualBranch, configuredBranch)
   setStep(
     job,
-    'checkout',
+    'connectivity',
     'success',
     resolved.adapted
       ? `${checkout} · ${resolved.branch}（平台配置 ${resolved.configuredBranch}，已按本机实际分支执行）`
@@ -883,8 +1005,16 @@ async function findExistingRepositoryCheckout(repository: {
   return undefined
 }
 
-function localDeliveryEnvironment(syncToken: string): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, PLATFORM_SYNC_TOKEN: syncToken }
+function localDeliveryEnvironment(
+  config: FeishuAgentStoredConfig,
+  deliveryJobId?: string,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    PLATFORM_SYNC_TOKEN: config.syncToken,
+    ORBIT_AGENT_CLIENT_ID: config.clientId,
+    ...(deliveryJobId ? { ORBIT_DELIVERY_JOB_ID: deliveryJobId } : {}),
+  }
   for (const key of [
     'FEISHU_INGEST_TOKEN',
     'FEISHU_ACCESS_TOKEN',
@@ -897,17 +1027,36 @@ function localDeliveryEnvironment(syncToken: string): NodeJS.ProcessEnv {
 }
 
 function commandFailureMessage(result: CommandResult): string {
+  if (result.aborted) {
+    return '本机交付已由用户终止；Codex 及其子进程已停止，未提交的代码变更保留在工作区'
+  }
+  if (result.timedOut) {
+    return deliveryTimeoutFailureMessage(result.stdout, deliveryTimeoutMs)
+  }
   const lines = `${result.stderr}\n${result.stdout}`
     .split(/\r?\n/)
     .map((line) => line.trim())
   const errorIndex = lines.findIndex((line) => line.startsWith('LOCAL_DELIVERY_ERROR:'))
+  const recordErrorIndex = lines.findIndex((line) =>
+    line.startsWith('LOCAL_DELIVERY_RECORD_ERROR:'),
+  )
   if (errorIndex >= 0) {
-    return lines
+    const message = lines
       .slice(errorIndex)
       .join('\n')
       .slice('LOCAL_DELIVERY_ERROR:'.length)
       .trim()
-      .slice(0, 4_000)
+    const recordError = recordErrorIndex >= 0
+      ? lines[recordErrorIndex]
+          .slice('LOCAL_DELIVERY_RECORD_ERROR:'.length)
+          .trim()
+      : ''
+    if (!recordError) return message.slice(0, 4_000)
+    const suffix = `\n失败记录回写平台失败：${recordError}`
+    return `${message.slice(0, Math.max(0, 4_000 - suffix.length))}${suffix}`
+  }
+  if (/"workItem"\s*:/.test(result.stdout)) {
+    return `本机交付执行中断（退出码 ${result.exitCode}），未收到阶段错误；请检查客户端代理与 delivery-artifacts 下的 codex.log / codex-commit.log`
   }
   const raw = result.stderr.trim() || result.stdout.trim()
   const message = raw
@@ -919,22 +1068,64 @@ function commandFailureMessage(result: CommandResult): string {
   return (message || `本地交付命令退出码 ${result.exitCode}`).slice(-4_000)
 }
 
+function recordedFailurePipelineId(result: CommandResult): string | undefined {
+  const output = `${result.stderr}\n${result.stdout}`
+  return output.match(/平台已记录失败流水线\s+(RUN-\d+)/)?.[1]
+}
+
+async function recordFailedDeliveryFallback(
+  job: LocalDeliveryJob,
+  config: FeishuAgentStoredConfig,
+  request: LocalDeliveryAgentRequest,
+  message: string,
+): Promise<string> {
+  const runningKey = job.steps.find((step) => step.status === 'running')?.key
+  const failedStepKey = resolveLocalDeliveryFailureStep(message, runningKey)
+  const body = buildFailedDeliveryPipelinePayload({
+    workItemId: request.workItemId,
+    repoId: request.repoId,
+    deliveryJobId: job.commandId ?? job.id,
+    branch: job.branch,
+    localPath: job.localPath,
+    error: message,
+    failedStepKey,
+    autoCommit: request.autoCommit,
+    steps: job.steps,
+  })
+  const response = await fetch(`${config.platformBaseUrl}/api/pipelines/local`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      authorization: `Bearer ${config.syncToken}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  })
+  if (!response.ok) {
+    const payload = await response.text().catch(() => '')
+    throw new Error(`HTTP ${response.status}${payload ? `：${payload.slice(0, 500)}` : ''}`)
+  }
+  const payload = (await response.json().catch(() => null)) as { id?: unknown } | null
+  if (!payload || typeof payload.id !== 'string' || !payload.id) {
+    throw new Error('平台未返回失败流水线记录')
+  }
+  return payload.id
+}
+
 const DELIVERY_STEP_ORDER = [
-  'platform',
-  'contract',
-  'checkout',
-  'codex',
+  'connectivity',
+  'analysis',
+  'ldd',
+  'coding',
   'evidence',
   'commit',
   'writeback',
 ]
 
 function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
-  let failedKey = classifyLocalDeliveryFailure(message)
   const runningKey = job.steps.find((step) => step.status === 'running')?.key
-  if (failedKey === 'codex' && runningKey && runningKey !== 'codex') {
-    failedKey = runningKey
-  }
+  const failedKey = resolveLocalDeliveryFailureStep(message, runningKey)
   const failedIndex = DELIVERY_STEP_ORDER.indexOf(failedKey)
   job.steps.forEach((step) => {
     const index = DELIVERY_STEP_ORDER.indexOf(step.key)
@@ -962,24 +1153,194 @@ function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
   job.stage = `本机交付失败：${failedStep?.name ?? '未知步骤'}`
 }
 
+const DELIVERY_CODEX_PHASE_LOGS: Record<DeliveryCodexPhase, { running: string; success: string }> = {
+  analysis: {
+    running: 'Codex 正在分析需求、验收条件与影响模块',
+    success: '需求分析与影响范围已确认',
+  },
+  ldd: {
+    running: 'Codex 正在生成本次业务涉及的 LDD',
+    success: '业务 LDD 已生成',
+  },
+  coding: {
+    running: 'Codex 正在按 LDD 实现业务代码与单元测试',
+    success: '业务编码与单元测试已完成',
+  },
+}
+
+function currentDeliveryCodexPhase(job: LocalDeliveryJob): DeliveryCodexPhase | undefined {
+  return [...DELIVERY_CODEX_PHASES]
+    .reverse()
+    .find((phase) => ['running', 'success'].includes(
+      job.steps.find((step) => step.key === phase)?.status ?? '',
+    ))
+}
+
+function advanceDeliveryCodexPhase(job: LocalDeliveryJob, phase: DeliveryCodexPhase): void {
+  const detected = nextDeliveryCodexPhase(currentDeliveryCodexPhase(job), phase)
+  if (!detected) return
+  const phaseIndex = DELIVERY_CODEX_PHASES.indexOf(detected)
+  for (let index = 0; index < phaseIndex; index += 1) {
+    const key = DELIVERY_CODEX_PHASES[index]
+    if (job.steps.find((step) => step.key === key)?.status !== 'success') {
+      setStep(job, key, 'success', DELIVERY_CODEX_PHASE_LOGS[key].success)
+    }
+  }
+  if (job.steps.find((step) => step.key === detected)?.status !== 'success') {
+    setStep(job, detected, 'running', DELIVERY_CODEX_PHASE_LOGS[detected].running)
+  }
+}
+
+type LocalDeliveryExecutionStage =
+  | 'connectivity'
+  | 'codex'
+  | 'evidence'
+  | 'commit'
+  | 'push'
+  | 'writeback'
+
+function finishDeliveryStep(job: LocalDeliveryJob, key: string, log: string): void {
+  const step = job.steps.find((entry) => entry.key === key)
+  if (!step || step.status === 'success' || step.status === 'failed') return
+  setStep(job, key, 'success', log)
+}
+
+function advanceDeliveryExecutionStage(
+  job: LocalDeliveryJob,
+  stage: LocalDeliveryExecutionStage,
+): void {
+  if (stage === 'connectivity') {
+    if (job.steps.find((step) => step.key === 'connectivity')?.status === 'pending') {
+      setStep(job, 'connectivity', 'running', '正在读取平台并校验本机仓库与分支')
+    }
+    return
+  }
+  if (stage === 'codex') {
+    finishDeliveryStep(job, 'connectivity', '平台与本机仓库校验通过')
+    if (job.steps.find((step) => step.key === 'analysis')?.status === 'pending') {
+      setStep(job, 'analysis', 'running', DELIVERY_CODEX_PHASE_LOGS.analysis.running)
+    }
+    return
+  }
+  if (stage === 'evidence') {
+    finishDeliveryStep(job, 'analysis', DELIVERY_CODEX_PHASE_LOGS.analysis.success)
+    finishDeliveryStep(job, 'ldd', DELIVERY_CODEX_PHASE_LOGS.ldd.success)
+    finishDeliveryStep(job, 'coding', 'Codex 编码与验证已结束')
+    if (job.steps.find((step) => step.key === 'evidence')?.status === 'pending') {
+      setStep(job, 'evidence', 'running', '正在确认代码变更与交付报告')
+    }
+    return
+  }
+  if (stage === 'commit') {
+    finishDeliveryStep(job, 'evidence', '代码变更、设计报告与集成报告已确认')
+    if (job.steps.find((step) => step.key === 'commit')?.status === 'pending') {
+      setStep(job, 'commit', 'running', '正在执行 AICR 审查并创建本地提交')
+    }
+    return
+  }
+  if (stage === 'push') {
+    setStep(job, 'commit', 'running', '本地提交已创建，正在推送到远端')
+    return
+  }
+  if (stage === 'writeback') {
+    finishDeliveryStep(job, 'commit', '本地提交与推送已完成')
+    if (job.steps.find((step) => step.key === 'writeback')?.status === 'pending') {
+      setStep(job, 'writeback', 'running', '正在回写平台流水线与交付结果')
+    }
+  }
+}
+
+function startDeliveryCodexPhaseTracker(
+  job: LocalDeliveryJob,
+  checkout: string,
+  workItemId: string,
+  env: NodeJS.ProcessEnv,
+): () => void {
+  let stopped = false
+  let inFlight = false
+  let workspaceSignature = ''
+  let artifactSignature = ''
+  const tick = async (): Promise<void> => {
+    if (stopped || inFlight) return
+    inFlight = true
+    try {
+      job.lastActivityAt = new Date().toISOString()
+      scheduleDeliveryProgress(job)
+      const marker = readDeliveryCodexPhaseMarker(checkout, workItemId)
+      if (marker) advanceDeliveryCodexPhase(job, marker)
+      const status = await runCommand(
+        'git',
+        ['-C', checkout, 'status', '--porcelain=v1', '-uall', '-z'],
+        env,
+        10_000,
+      )
+      if (stopped || status.exitCode !== 0) return
+      const changedPaths = parseGitStatusPaths(status.stdout)
+      const files = deliveryWorkspaceFiles(changedPaths)
+      const artifact = latestDeliveryArtifactActivity(checkout, changedPaths)
+      if (artifact && artifact.modifiedAt !== artifactSignature) {
+        artifactSignature = artifact.modifiedAt
+        job.artifactChangedAt = artifact.modifiedAt
+        job.artifactChangedFile = artifact.path
+        scheduleDeliveryProgress(job)
+      }
+      const diff = await runCommand(
+        'git',
+        ['-C', checkout, 'diff', 'HEAD', '--numstat'],
+        env,
+        10_000,
+      )
+      if (stopped) return
+      const stats = diff.exitCode === 0 ? parseGitNumstat(diff.stdout) : { added: 0, removed: 0 }
+      const signature = `${files.slice().sort().join('\0')}\0${stats.added}\0${stats.removed}`
+      if (signature !== workspaceSignature) {
+        workspaceSignature = signature
+        if (files.length > 0) job.workspaceChangedAt = new Date().toISOString()
+        job.changedFileCount = files.length
+        job.diffAddedLines = stats.added
+        job.diffRemovedLines = stats.removed
+        job.recentChangedFiles = files.slice(0, 8)
+        scheduleDeliveryProgress(job)
+      }
+      const detected = inferDeliveryCodexPhase(files, {
+        designReport: deliveryDesignReportExists(checkout, workItemId),
+      })
+      if (detected) advanceDeliveryCodexPhase(job, detected)
+    } finally {
+      inFlight = false
+    }
+  }
+  void tick().catch(() => undefined)
+  const timer = setInterval(() => void tick().catch(() => undefined), 5_000)
+  return () => {
+    stopped = true
+    clearInterval(timer)
+  }
+}
+
 async function executeLocalDelivery(
   job: LocalDeliveryJob,
   config: FeishuAgentStoredConfig,
   request: LocalDeliveryAgentRequest,
+  signal: AbortSignal,
 ): Promise<void> {
   let temporaryCheckoutRoot = ''
   try {
     job.steps = createLocalDeliveryAgentSteps()
-    setStep(job, 'platform', 'running', '正在连接平台健康检查接口')
+    setStep(job, 'connectivity', 'running', '正在连接平台健康检查接口')
     const health = await fetchPlatformHealth(job, config)
-    setStep(job, 'platform', 'running', '平台连接成功，正在校验真实交付契约')
-    setStep(job, 'contract', 'running', '检查 deliveryContractVersion')
+    setStep(job, 'connectivity', 'running', '平台连接成功，正在校验真实交付契约')
     if (!supportsLocalDeliveryContract(health)) {
       throw new Error(
         '平台服务端尚未部署真实交付契约，无法保证代码变更、提交和阶段证据；请先升级服务器后重试',
       )
     }
-    setStep(job, 'contract', 'success', `交付契约版本 ${LOCAL_DELIVERY_CONTRACT_VERSION}`)
+    setStep(
+      job,
+      'connectivity',
+      'running',
+      `交付契约版本 ${LOCAL_DELIVERY_CONTRACT_VERSION}，正在读取工作项与仓库配置`,
+    )
 
     job.stage = '读取平台工作项与仓库配置'
     const bootstrap = await fetchDeliveryBootstrap(job, config)
@@ -1037,8 +1398,10 @@ async function executeLocalDelivery(
     const checkout = await validateClientCheckout(job, targetPath, target.branch)
     job.localPath = checkout.checkout
     job.branch = checkout.branch
-    setStep(job, 'codex', 'running', 'Codex 正在分析需求、生成设计与代码')
-    job.stage = 'Codex 正在执行需求解析、编码与验证'
+    setStep(job, 'analysis', 'running', DELIVERY_CODEX_PHASE_LOGS.analysis.running)
+    job.stage = 'Codex 正在执行需求分析、业务 LDD 与编码'
+    resetDeliveryCodexPhaseMarker(checkout.checkout, request.workItemId)
+    let stopPhaseTracker: (() => void) | undefined
 
     const args = buildLocalDeliveryCommand({
       platformBaseUrl: config.platformBaseUrl,
@@ -1046,7 +1409,9 @@ async function executeLocalDelivery(
       localPath: checkout.checkout,
       branch: checkout.branch,
     })
-    const result = await runCommand(
+    let result: CommandResult
+    try {
+      result = await runCommand(
       standaloneDeliveryCliPath ? process.execPath : npmCommand,
       standaloneDeliveryCliPath
         ? [
@@ -1054,10 +1419,57 @@ async function executeLocalDelivery(
             ...(args.indexOf('--') >= 0 ? args.slice(args.indexOf('--') + 1) : args),
           ]
         : args,
-      localDeliveryEnvironment(config.syncToken),
+      localDeliveryEnvironment(config, job.commandId ?? job.id),
       deliveryTimeoutMs,
-    )
-    if (result.exitCode !== 0) throw new Error(commandFailureMessage(result))
+        (line) => {
+          const executorStage = line.match(
+            /LOCAL_DELIVERY_STAGE:(connectivity|codex|evidence|commit|push|writeback)/,
+          )?.[1] as LocalDeliveryExecutionStage | undefined
+          if (executorStage) {
+            advanceDeliveryExecutionStage(job, executorStage)
+          }
+          if (executorStage === 'codex' && !stopPhaseTracker) {
+            stopPhaseTracker = startDeliveryCodexPhaseTracker(
+              job,
+              checkout.checkout,
+              request.workItemId,
+              localDeliveryEnvironment(config, job.commandId ?? job.id),
+            )
+          }
+          if (executorStage && executorStage !== 'connectivity' && executorStage !== 'codex') {
+            stopPhaseTracker?.()
+            stopPhaseTracker = undefined
+          }
+          const phase = line.match(/LOCAL_DELIVERY_PHASE:(analysis|ldd|coding)/)?.[1] as
+            | DeliveryCodexPhase
+            | undefined
+          if (phase) advanceDeliveryCodexPhase(job, phase)
+        },
+        {
+          signal,
+          onSpawn: (pid) => {
+            if (pid) job.processId = pid
+            job.lastActivityAt = new Date().toISOString()
+            scheduleDeliveryProgress(job)
+          },
+        },
+      )
+    } finally {
+      stopPhaseTracker?.()
+    }
+    if (signal.aborted) throw new Error('本机交付已由用户终止')
+    if (result.exitCode !== 0) {
+      let message = commandFailureMessage(result)
+      if (!recordedFailurePipelineId(result)) {
+        try {
+          const fallbackId = await recordFailedDeliveryFallback(job, config, request, message)
+          message = `${message}（本机代理已补录失败流水线 ${fallbackId}）`
+        } catch (fallbackError) {
+          message = `${message}\n本机代理补录失败流水线失败：${errorMessage(fallbackError)}`
+        }
+      }
+      throw new Error(message)
+    }
 
     const payload = parseJson(result.stdout)
     job.result = isRecord(payload) ? payload : { status: 'success' }
@@ -1068,13 +1480,15 @@ async function executeLocalDelivery(
     const commit = isRecord(payload) && typeof payload.commit === 'string' ? payload.commit : ''
     const platformPipeline =
       isRecord(payload) && isRecord(payload.platformPipeline) ? payload.platformPipeline : undefined
+    setStep(job, 'analysis', 'success', DELIVERY_CODEX_PHASE_LOGS.analysis.success)
+    setStep(job, 'ldd', 'success', DELIVERY_CODEX_PHASE_LOGS.ldd.success)
     setStep(
       job,
-      'codex',
+      'coding',
       'success',
       changedFiles.length > 0
-        ? `Codex 完成，修改 ${changedFiles.length} 个代码文件`
-        : 'Codex 已完成执行',
+        ? `业务编码完成，修改 ${changedFiles.length} 个代码文件`
+        : '业务编码已完成',
     )
     const reportCount = ['designReport', 'integrationReport', 'testReport', 'buildReport', 'upgradeReport']
       .filter((key) => evidence[key] === true).length
@@ -1085,18 +1499,31 @@ async function executeLocalDelivery(
       'success',
       commit ? `本地提交 ${commit.slice(0, 12)}` : '本地提交已记录',
     )
+    if (
+      !isRecord(platformPipeline) ||
+      typeof platformPipeline.id !== 'string' ||
+      !platformPipeline.id
+    ) {
+      throw new Error('本机执行已结束，但平台未返回流水线记录；本次交付不能标记为完成')
+    }
+    if (platformPipeline.status !== 'success') {
+      throw new Error(
+        `平台已记录流水线 ${platformPipeline.id}，但状态为 ${String(platformPipeline.status ?? 'unknown')}；本次交付不能标记为完成`,
+      )
+    }
+    const closeQueued = request.autoClose && platformPipeline.autoClose === true
     setStep(
       job,
       'writeback',
       'success',
-      platformPipeline && typeof platformPipeline.id === 'string'
-        ? `平台流水线 ${platformPipeline.id}`
-        : '平台已确认真实执行记录',
+      `平台流水线 ${platformPipeline.id}${closeQueued ? '；飞书缺陷已进入关闭队列' : ''}`,
     )
     job.status = 'succeeded'
     job.stage = '本机交付完成'
   } catch (error) {
-    let message = errorMessage(error)
+    let message = signal.aborted
+      ? '本机交付已由用户终止；Codex 及其子进程已停止，未提交的代码变更保留在工作区'
+      : errorMessage(error)
     if (temporaryCheckoutRoot) {
       message = message.split(temporaryCheckoutRoot).join('[Mac 临时工作区]')
     }
@@ -1133,6 +1560,7 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     throw new Error('本机已有交付正在执行，请等待完成后再启动')
   }
   const raw = isRecord(input) ? input : {}
+  const controller = new AbortController()
   const job: LocalDeliveryJob = {
     id: `delivery-${randomUUID()}`,
     commandId,
@@ -1142,8 +1570,10 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     repoId: text(raw.repoId),
     steps: createLocalDeliveryAgentSteps(),
     startedAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
   }
   deliveryJob = job
+  deliveryAbortController = controller
   try {
     const config = readConfig()
     if (!config) throw new Error('本机代理尚未绑定平台同步密钥')
@@ -1151,8 +1581,11 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     const request = parseLocalDeliveryAgentRequest(input)
     job.workItemId = request.workItemId
     job.repoId = request.repoId
-    void executeLocalDelivery(job, config, request)
+    void executeLocalDelivery(job, config, request, controller.signal).finally(() => {
+      if (deliveryAbortController === controller) deliveryAbortController = null
+    })
   } catch (error) {
+    if (deliveryAbortController === controller) deliveryAbortController = null
     const message = errorMessage(error)
     markDeliveryFailure(job, message)
     job.status = 'failed'
@@ -1160,6 +1593,28 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
     job.finishedAt = new Date().toISOString()
   }
   return job
+}
+
+function cancelLocalDelivery(input?: unknown): LocalDeliveryJob {
+  if (!deliveryJob || deliveryJob.status !== 'running') {
+    throw new Error('当前没有运行中的本机交付')
+  }
+  const requestedJobId = isRecord(input) ? text(input.jobId) : ''
+  if (
+    requestedJobId &&
+    requestedJobId !== deliveryJob.id &&
+    requestedJobId !== deliveryJob.commandId
+  ) {
+    throw new Error('指定任务不是当前运行中的本机交付')
+  }
+  if (!deliveryAbortController) {
+    throw new Error('当前本机交付没有可终止的进程句柄，请重启本机代理后检查残留进程')
+  }
+  deliveryJob.stage = '正在终止本机 Codex 进程'
+  deliveryJob.lastActivityAt = new Date().toISOString()
+  scheduleDeliveryProgress(deliveryJob)
+  deliveryAbortController.abort()
+  return deliveryJobSummary(deliveryJob)
 }
 
 async function postAgentJson(
@@ -1250,7 +1705,14 @@ function configureRepoPaths(input: unknown): FeishuAgentPublicConfig {
 
 async function executeCommand(command: {
   id: string
-  type: 'login_start' | 'sync' | 'rotate_token' | 'configure_repo_paths' | 'delivery_start'
+  type:
+    | 'login_start'
+    | 'sync'
+    | 'rotate_token'
+    | 'delivery_start'
+    | 'configure_repo_paths'
+    | 'build_job_read'
+    | 'build_trigger'
   payload?: unknown
 }): Promise<void> {
   try {
@@ -1263,6 +1725,16 @@ async function executeCommand(command: {
       result = { job: deliveryJobSummary(startLocalDelivery(command.payload, command.id)) }
     } else if (command.type === 'configure_repo_paths') {
       result = { config: configureRepoPaths(command.payload) }
+    } else if (command.type === 'build_job_read') {
+      result = { job: await readJenkinsJob(buildSpecFromCommandPayload(command.payload)) }
+    } else if (command.type === 'build_trigger') {
+      const payload = isRecord(command.payload) ? command.payload : {}
+      result = {
+        build: await triggerJenkinsJob(
+          buildSpecFromCommandPayload(command.payload),
+          payload.parameters,
+        ),
+      }
     } else {
       result = await rotateToken()
     }
@@ -1278,6 +1750,21 @@ async function executeCommand(command: {
   } finally {
     activeCommandIds.delete(command.id)
   }
+}
+
+function buildSpecFromCommandPayload(value: unknown): JenkinsBuildSpec {
+  if (!isRecord(value) || !isRecord(value.spec)) {
+    throw new Error('编译命令缺少 Jenkins 执行凭据')
+  }
+  const spec = value.spec
+  const accountId = text(spec.accountId)
+  const jobUrl = text(spec.jobUrl)
+  const username = text(spec.username)
+  const secret = text(spec.secret)
+  if (!accountId || !jobUrl || !username || !secret) {
+    throw new Error('编译命令缺少完整的 Jenkins 执行凭据')
+  }
+  return { accountId, jobUrl, username, secret }
 }
 
 function runningCommandIds(): string[] {
@@ -1326,7 +1813,9 @@ async function sendHeartbeat(): Promise<void> {
           type !== 'sync' &&
           type !== 'rotate_token' &&
           type !== 'configure_repo_paths' &&
-          type !== 'delivery_start')
+          type !== 'delivery_start' &&
+          type !== 'build_job_read' &&
+          type !== 'build_trigger')
       ) {
         continue
       }
@@ -1635,6 +2124,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === 'POST' && path === '/delivery/start') {
     sendJson(response, 202, { ok: true, job: startLocalDelivery(await readBody(request)) })
+    return
+  }
+  if (request.method === 'POST' && path === '/delivery/cancel') {
+    sendJson(response, 200, { ok: true, job: cancelLocalDelivery(await readBody(request)) })
     return
   }
   const deliveryStatusMatch = path.match(/^\/delivery\/status\/([^/]+)$/)

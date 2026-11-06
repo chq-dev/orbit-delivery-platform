@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AuthProvider, useAuth } from './auth'
 import { Layout } from './components/Layout'
 import { ToastStack } from './components/ui'
+import { DeliveryUiProvider } from './deliveryUi'
 import { Accounts } from './pages/Accounts'
 import { Dashboard } from './pages/Dashboard'
 import { Pipelines } from './pages/Pipelines'
@@ -47,15 +48,17 @@ function AppContent() {
   }
 
   return (
-    <Layout page={page} onNavigate={(target) => navigate(target)}>
-      {page === 'dashboard' && <Dashboard onNavigate={navigate} />}
-      {page === 'repositories' && <Repositories onNavigate={navigate} />}
-      {page === 'accounts' && <Accounts />}
-      {page === 'work-items' && <WorkItems onNavigate={navigate} />}
-      {page === 'pipelines' && <Pipelines selectedRunId={selectedId} onNavigate={navigate} />}
-      {page === 'reports' && <Reports selectedReportId={selectedId} onNavigate={navigate} />}
-      <ToastStack />
-    </Layout>
+    <DeliveryUiProvider onStarted={(run) => navigate('pipelines', run.id)}>
+      <Layout page={page} onNavigate={(target) => navigate(target)}>
+        {page === 'dashboard' && <Dashboard onNavigate={navigate} />}
+        {page === 'repositories' && <Repositories onNavigate={navigate} />}
+        {page === 'accounts' && <Accounts />}
+        {page === 'work-items' && <WorkItems onNavigate={navigate} />}
+        {page === 'pipelines' && <Pipelines selectedRunId={selectedId} onNavigate={navigate} />}
+        {page === 'reports' && <Reports selectedReportId={selectedId} onNavigate={navigate} />}
+        <ToastStack />
+      </Layout>
+    </DeliveryUiProvider>
   )
 }
 

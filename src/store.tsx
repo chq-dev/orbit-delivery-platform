@@ -11,6 +11,7 @@ import {
 import {
   api,
   type AccountInput,
+  type AccountUpdateInput,
   type BootstrapData,
   type FeishuConnectInput,
   type RepositoryInput,
@@ -27,6 +28,7 @@ import {
   writeCachedFeishuSnapshot,
   type FeishuSnapshot,
 } from './feishuSnapshot'
+import { useAuth } from './auth'
 import {
   enqueueFeishuAgentCommand,
   fetchFeishuAgentStatus,
@@ -124,6 +126,8 @@ interface DataContextValue {
     input: RepositorySettingsInput,
   ) => Promise<Repository>
   addAccount: (input: AccountInput) => Promise<Account>
+  updateAccount: (id: string, input: AccountUpdateInput) => Promise<Account>
+  deleteAccount: (id: string) => Promise<void>
   importAccounts: (inputs: AccountInput[]) => Promise<number>
   addWorkItem: (input: WorkItemInput) => Promise<WorkItem>
   getWorkItemDetail: (id: string) => Promise<WorkItem>
@@ -150,13 +154,15 @@ interface DataContextValue {
 const DataContext = createContext<DataContextValue | null>(null)
 
 export function DataProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
+  const userId = user?.id
   const [repositories, setRepositories] = useState<Repository[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [serverWorkItems, setServerWorkItems] = useState<WorkItem[]>([])
   const [workItemsLoading, setWorkItemsLoading] = useState(true)
   const [workItemsError, setWorkItemsError] = useState<string>()
   const [snapshot, setSnapshot] = useState<FeishuSnapshot | null>(() =>
-    readCachedFeishuSnapshot(),
+    readCachedFeishuSnapshot(userId),
   )
   const [pipelines, setPipelines] = useState<PipelineRun[]>([])
   const [reports, setReports] = useState<TestReport[]>([])
@@ -362,7 +368,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const result = await fetchFeishuSnapshot(snapshotConfig.url)
         if (result.snapshot.items.length === 0 && !result.snapshot.syncedAt) {
           setSnapshot(null)
-          clearCachedFeishuSnapshot()
+          clearCachedFeishuSnapshot(userId)
           setFeishuSnapshot((current) => ({
             ...current,
             loading: false,
@@ -372,7 +378,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           throw new Error('飞书快照尚未生成，请先运行 npm run sync:feishu')
         }
         setSnapshot(result.snapshot)
-        writeCachedFeishuSnapshot(result.snapshot)
+        writeCachedFeishuSnapshot(result.snapshot, userId)
         setFeishuSnapshot({
           configured: true,
           url: snapshotConfig.url,
@@ -394,7 +400,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         throw error
       }
     },
-    [notify, snapshotConfig.url],
+    [notify, snapshotConfig.url, userId],
   )
 
   const applyFeishuAgentStatus = useCallback((status: FeishuAgentBridgeStatus) => {
@@ -907,6 +913,37 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [notify, reportApiError],
   )
 
+  const updateAccount = useCallback(
+    async (id: string, input: AccountUpdateInput) => {
+      try {
+        const account = await api.updateAccount(id, input)
+        setAccounts((current) =>
+          current.map((item) => (item.id === account.id ? account : item)),
+        )
+        notify('账号已更新', `${account.username} 的账号配置已保存`)
+        return account
+      } catch (error) {
+        reportApiError('账号更新失败', error)
+        throw error
+      }
+    },
+    [notify, reportApiError],
+  )
+
+  const deleteAccount = useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteAccount(id)
+        setAccounts((current) => current.filter((account) => account.id !== id))
+        notify('账号已删除', '该账号已从凭据保险箱移除', 'info')
+      } catch (error) {
+        reportApiError('账号删除失败', error)
+        throw error
+      }
+    },
+    [notify, reportApiError],
+  )
+
   const importAccounts = useCallback(
     async (inputs: AccountInput[]) => {
       try {
@@ -1086,6 +1123,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       addRepository,
       updateRepositorySettings,
       addAccount,
+      updateAccount,
+      deleteAccount,
       importAccounts,
       addWorkItem,
       getWorkItemDetail,
@@ -1116,6 +1155,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       beginFeishuAgentLogin,
       connectFeishu,
       disconnectFeishu,
+      deleteAccount,
       dismissToast,
       feishuAgent,
       feishuAgentClients,
@@ -1147,6 +1187,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       selectedFeishuAgentClientId,
       syncFeishuAgent,
       updateRepositorySettings,
+      updateAccount,
       syncFeishu,
       testFeishu,
       toasts,

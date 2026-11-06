@@ -8,6 +8,7 @@ import {
   CirclePlay,
   Clock3,
   Code2,
+  Download,
   FileBarChart2,
   FileText,
   FolderGit2,
@@ -29,25 +30,57 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { DeliveryDialog } from '../components/DeliveryDialog'
 import { PipelineSteps } from '../components/PipelineSteps'
 import { Modal, StatusBadge } from '../components/ui'
+import { displayDeliveryStages } from '../deliveryStages'
 import { averageDuration } from '../duration'
+import { useDeliveryUi } from '../deliveryUi'
 import { useData } from '../store'
 import type { PageKey, PipelineReport, PipelineRun, PipelineStage } from '../types'
 
 type RunFilter = 'all' | 'running' | 'success' | 'failed'
 
 const stageIcons: Record<string, ReactNode> = {
+  connectivity: <Workflow size={16} />,
   analysis: <Sparkles size={16} />,
-  design: <FileText size={16} />,
+  ldd: <FileText size={16} />,
   coding: <Code2 size={16} />,
-  integration: <GitMerge size={16} />,
+  evidence: <GitMerge size={16} />,
   commit: <GitCommit size={16} />,
   build: <Box size={16} />,
   upgrade: <Smartphone size={16} />,
   test: <TestTube2 size={16} />,
-  report: <FileBarChart2 size={16} />,
+  writeback: <FileBarChart2 size={16} />,
+}
+
+function reportMarkdown(report: PipelineReport): string {
+  return [
+    `# ${report.title}`,
+    '',
+    `- 报告 ID：${report.id}`,
+    `- 生成时间：${report.createdAt}`,
+    '',
+    report.summary,
+    '',
+    ...report.sections.flatMap((section) => [
+      `## ${section.title}`,
+      '',
+      section.content,
+      '',
+    ]),
+  ].join('\n')
+}
+
+function downloadReport(report: PipelineReport): void {
+  const blob = new Blob([reportMarkdown(report)], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${report.id}-${report.title.replace(/[\\/:*?"<>|]+/g, '-')}.md`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
 }
 
 function stageIcon(stage: PipelineStage) {
@@ -107,10 +140,10 @@ export function Pipelines({
   onNavigate: (page: PageKey, id?: string) => void
 }) {
   const { pipelines, reports } = useData()
+  const { openDeliveryDialog } = useDeliveryUi()
   const [filter, setFilter] = useState<RunFilter>('all')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState(selectedRunId ?? pipelines[0]?.id ?? '')
-  const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [artifactReport, setArtifactReport] = useState<PipelineReport | null>(null)
 
   useEffect(() => {
@@ -139,11 +172,31 @@ export function Pipelines({
 
   const run = pipelines.find((entry) => entry.id === selectedId) ?? pipelines[0]
   const report = reports.find((entry) => entry.pipelineId === run?.id)
-  const stageByKey = new Map((run?.stages ?? []).map((stage) => [stage.key, stage]))
+  const deliveryArtifacts = run?.artifacts?.length
+    ? run.artifacts
+    : [run?.designReport, run?.integrationReport].filter(
+        (entry): entry is PipelineReport => Boolean(entry),
+      )
+  const displayStages = useMemo(
+    () => displayDeliveryStages(run?.stages ?? []),
+    [run?.stages],
+  )
+  const stageByKey = new Map(displayStages.map((stage) => [stage.key, stage]))
   const commitStage = stageByKey.get('commit')
   const upgradeStage = stageByKey.get('upgrade')
-  const testStage = stageByKey.get('test')
-  const progressStyle = { '--progress': `${run?.progress ?? 0}%` } as CSSProperties
+  const testStage = new Map((run?.stages ?? []).map((stage) => [stage.key, stage])).get('test')
+  const displayProgress = run
+    ? run.status === 'success'
+      ? 100
+      : displayStages.length > 0
+        ? Math.round(
+            (displayStages.filter((stage) => stage.status === 'success').length /
+              displayStages.length) *
+              100,
+          )
+        : run.progress
+    : 0
+  const progressStyle = { '--progress': `${displayProgress}%` } as CSSProperties
   const runningCount = pipelines.filter((entry) => entry.status === 'running').length
   const successCount = pipelines.filter((entry) => entry.status === 'success').length
   const failedCount = pipelines.filter((entry) => entry.status === 'failed').length
@@ -163,7 +216,7 @@ export function Pipelines({
           <button className="btn btn-secondary" onClick={() => setFilter('running')}>
             <CirclePlay size={16} /> 运行中 {runningCount}
           </button>
-          <button className="btn btn-primary" onClick={() => setDeliveryOpen(true)}>
+          <button className="btn btn-primary" onClick={() => openDeliveryDialog()}>
             <Rocket size={16} /> 启动交付
           </button>
         </div>
@@ -273,7 +326,7 @@ export function Pipelines({
                     </button>
                   )}
                   {run.status === 'failed' && (
-                    <button className="btn btn-primary btn-sm" onClick={() => setDeliveryOpen(true)}>
+                    <button className="btn btn-primary btn-sm" onClick={() => openDeliveryDialog()}>
                       <RefreshCw size={15} /> 重新执行
                     </button>
                   )}
@@ -284,18 +337,18 @@ export function Pipelines({
                 <div className="pipeline-progress-label">
                   <span>
                     {run.status === 'running'
-                      ? `正在执行 · ${run.stages.find((stage) => stage.status === 'running')?.name ?? '即将完成'}`
+                      ? `正在执行 · ${displayStages.find((stage) => stage.status === 'running')?.name ?? '即将完成'}`
                       : run.status === 'success'
                         ? !run.clientExecuted
                           ? '旧版服务端记录，无客户端代码执行证据'
-                          : run.stages.some((stage) => stage.status === 'pending')
+                          : displayStages.some((stage) => stage.status === 'pending')
                             ? '代码交付已完成，未取得证据的阶段未执行'
                             : '所有阶段已完成'
                         : run.status === 'failed'
                           ? '流水线执行中断'
                           : '等待执行'}
                   </span>
-                  <strong>{run.progress}%</strong>
+                  <strong>{displayProgress}%</strong>
                 </div>
                 <div className={`pipeline-progress-track pipeline-progress-${run.status}`}>
                   <span style={progressStyle} />
@@ -303,7 +356,7 @@ export function Pipelines({
               </div>
 
               <div className="pipeline-steps-detail">
-                <PipelineSteps stages={run.stages} />
+                <PipelineSteps stages={displayStages} />
               </div>
             </article>
 
@@ -319,7 +372,7 @@ export function Pipelines({
                   </span>
                 </div>
                 <div className="stage-timeline">
-                  {run.stages.map((stage, index) => (
+                  {displayStages.map((stage, index) => (
                     <div className={`stage-timeline-item stage-${stage.status}`} key={stage.key}>
                       <div className="stage-timeline-main">
                         <span className="stage-icon-circle">{stageIcon(stage)}</span>
@@ -343,7 +396,7 @@ export function Pipelines({
                               {stage.duration ?? '执行中…'}
                             </small>
                           )}
-                          {stage.key === 'design' && run.designReport && (
+                          {stage.key === 'ldd' && run.designReport && (
                             <button
                               className="stage-artifact-link"
                               onClick={() => setArtifactReport(run.designReport ?? null)}
@@ -351,7 +404,7 @@ export function Pipelines({
                               <FileText size={11} /> 查看开发设计报告
                             </button>
                           )}
-                          {stage.key === 'integration' && run.integrationReport && (
+                          {stage.key === 'evidence' && run.integrationReport && (
                             <button
                               className="stage-artifact-link"
                               onClick={() => setArtifactReport(run.integrationReport ?? null)}
@@ -361,7 +414,7 @@ export function Pipelines({
                           )}
                         </div>
                       </div>
-                      {index < run.stages.length - 1 && <span className="stage-timeline-line" />}
+                      {index < displayStages.length - 1 && <span className="stage-timeline-line" />}
                     </div>
                   ))}
                 </div>
@@ -402,20 +455,61 @@ export function Pipelines({
                       {commitStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
                       {commitStage?.status === 'success' ? '本地提交已创建' : '提交阶段未完成'}
                     </span>
-                    <span>
-                      {upgradeStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
-                      {upgradeStage?.status === 'success' ? '设备升级有证据' : '设备升级未执行'}
-                    </span>
-                    <span>
-                      {testStage?.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
-                      {testStage?.status === 'success'
-                        ? run.autoClose
-                          ? '测试有证据，缺陷自动关闭'
-                          : '测试有证据，缺陷人工关闭'
-                        : '测试未执行'}
-                    </span>
+                    {upgradeStage && (
+                      <span>
+                        {upgradeStage.status === 'success' ? <CheckCircle2 size={13} /> : <Clock3 size={13} />}
+                        {upgradeStage.status === 'success' ? '设备升级有证据' : '设备升级未完成'}
+                      </span>
+                    )}
+                    {testStage?.status === 'success' && (
+                      <span>
+                        <CheckCircle2 size={13} />
+                        {run.autoClose ? '测试有证据，缺陷自动关闭' : '测试有证据，缺陷人工关闭'}
+                      </span>
+                    )}
                   </div>
                 </article>
+
+                {deliveryArtifacts.length > 0 && (
+                  <article className="card delivery-artifacts-card">
+                    <div className="card-section-head">
+                      <div>
+                        <h2>交付产物</h2>
+                        <p>需求分析、LDD、编码与提交阶段生成的内容</p>
+                      </div>
+                      <span className="soft-tag">{deliveryArtifacts.length} 项</span>
+                    </div>
+                    <div className="delivery-artifact-list">
+                      {deliveryArtifacts.map((artifact) => (
+                        <div className="delivery-artifact-item" key={artifact.id}>
+                          <span className="delivery-artifact-icon"><FileText size={14} /></span>
+                          <div className="delivery-artifact-copy">
+                            <strong>{artifact.title}</strong>
+                            <small>{artifact.summary}</small>
+                          </div>
+                          <div className="delivery-artifact-actions">
+                            <button
+                              type="button"
+                              className="stage-artifact-link"
+                              onClick={() => setArtifactReport(artifact)}
+                            >
+                              查看
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="下载 Markdown"
+                              aria-label={`下载 ${artifact.title}`}
+                              onClick={() => downloadReport(artifact)}
+                            >
+                              <Download size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                )}
 
                 {report ? (
                   <article className="card report-mini-card">
@@ -485,7 +579,7 @@ export function Pipelines({
               <div className="empty-state">
                 <h3>暂无交付流水线</h3>
                 <p>请先创建账号、接入仓库并录入工作项，然后启动交付。</p>
-                <button className="btn btn-primary" onClick={() => setDeliveryOpen(true)}>
+                <button className="btn btn-primary" onClick={() => openDeliveryDialog()}>
                   <Rocket size={15} /> 启动交付
                 </button>
               </div>
@@ -493,12 +587,6 @@ export function Pipelines({
           </section>
         )}
       </div>
-
-      <DeliveryDialog
-        open={deliveryOpen}
-        onClose={() => setDeliveryOpen(false)}
-        onStarted={(started) => setSelectedId(started.id)}
-      />
 
       <Modal
         open={Boolean(artifactReport)}
@@ -516,6 +604,11 @@ export function Pipelines({
               <FileBarChart2 size={15} /> 报告随流水线本地归档，可追溯至对应工作项
             </span>
             <div className="modal-footer-actions">
+              {artifactReport && (
+                <button className="btn btn-secondary" onClick={() => downloadReport(artifactReport)}>
+                  <Download size={15} /> 下载 Markdown
+                </button>
+              )}
               <button className="btn btn-primary" onClick={() => setArtifactReport(null)}>
                 关闭
               </button>

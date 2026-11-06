@@ -102,23 +102,47 @@ export function createTestReport(db: AppDatabase, source: TestReportSource): Tes
   return getTestReport(db, id)
 }
 
-export function listTestReports(db: AppDatabase): TestReport[] {
-  const rows = db
-    .prepare(
-      `SELECT id, pipeline_id, project, version, status, total, passed, failed, skipped, duration, created_at
-       FROM test_reports ORDER BY created_at DESC, id DESC`,
-    )
-    .all() as TestReportRow[]
+export function listTestReports(db: AppDatabase, ownerUserId?: string): TestReport[] {
+  const query =
+    ownerUserId === undefined
+      ? `SELECT test_reports.id, test_reports.pipeline_id, test_reports.project,
+                test_reports.version, test_reports.status, test_reports.total,
+                test_reports.passed, test_reports.failed, test_reports.skipped,
+                test_reports.duration, test_reports.created_at
+         FROM test_reports ORDER BY test_reports.created_at DESC, test_reports.id DESC`
+      : `SELECT test_reports.id, test_reports.pipeline_id, test_reports.project,
+                test_reports.version, test_reports.status, test_reports.total,
+                test_reports.passed, test_reports.failed, test_reports.skipped,
+                test_reports.duration, test_reports.created_at
+         FROM test_reports
+         JOIN pipelines ON pipelines.id = test_reports.pipeline_id
+         WHERE pipelines.owner_user_id = ?
+         ORDER BY test_reports.created_at DESC, test_reports.id DESC`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(query).all()
+    : db.prepare(query).all(ownerUserId)) as TestReportRow[]
   return rows.map((row) => hydrateReport(db, row))
 }
 
-export function getTestReport(db: AppDatabase, id: string): TestReport {
-  const row = db
-    .prepare(
-      `SELECT id, pipeline_id, project, version, status, total, passed, failed, skipped, duration, created_at
-       FROM test_reports WHERE id = ?`,
-    )
-    .get(id) as TestReportRow | undefined
+export function getTestReport(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): TestReport {
+  const query =
+    ownerUserId === undefined
+      ? `SELECT id, pipeline_id, project, version, status, total, passed, failed, skipped, duration, created_at
+         FROM test_reports WHERE id = ?`
+      : `SELECT test_reports.id, test_reports.pipeline_id, test_reports.project,
+                test_reports.version, test_reports.status, test_reports.total,
+                test_reports.passed, test_reports.failed, test_reports.skipped,
+                test_reports.duration, test_reports.created_at
+         FROM test_reports
+         JOIN pipelines ON pipelines.id = test_reports.pipeline_id
+         WHERE test_reports.id = ? AND pipelines.owner_user_id = ?`
+  const row = (ownerUserId === undefined
+    ? db.prepare(query).get(id)
+    : db.prepare(query).get(id, ownerUserId)) as TestReportRow | undefined
   if (!row) throw notFound('测试报告')
   return hydrateReport(db, row)
 }

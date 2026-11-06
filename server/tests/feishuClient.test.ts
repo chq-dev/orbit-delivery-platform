@@ -101,6 +101,18 @@ test('飞书项目客户端完成鉴权、同步、字段映射和关闭流转',
       json(response, { data: {} })
       return
     }
+    if (request.url === '/open_api/rjcloud/work_item/issue/201/workflow/query') {
+      assert.deepEqual(body, {})
+      json(response, {
+        data: {
+          connections: [
+            { transition_id: 111, state_key: 'IN PROGRESS', state_name: '接受处理' },
+            { transition_id: 123456, state_key: 'RESOLVED', state_name: '已解决' },
+          ],
+        },
+      })
+      return
+    }
 
     response.writeHead(404, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ err_msg: `unexpected path ${request.url}` }))
@@ -148,6 +160,15 @@ test('飞书项目客户端完成鉴权、同步、字段映射和关闭流转',
     assert.equal(inbox.items[1].description, '来自飞书的缺陷描述')
 
     await client.closeWorkItem('rjcloud', 'issue', '201', '123456')
+    await client.closeWorkItem('rjcloud', 'issue', '201')
+    assert.equal(
+      calls.filter((call) => call.path.endsWith('/workflow/query')).length,
+      1,
+    )
+    assert.equal(
+      calls.filter((call) => call.path.endsWith('/node/state_change')).length,
+      2,
+    )
 
     const authorizedCalls = calls.filter((call) => !call.path.endsWith('/plugin_token'))
     assert.ok(authorizedCalls.length > 0)

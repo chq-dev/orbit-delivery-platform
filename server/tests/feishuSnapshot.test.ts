@@ -20,6 +20,8 @@ const repository: Repository = {
   url: 'http://cloudgit.rj.link/sme/sme-main.git',
   branch: 'dev-harvey',
   localPath: '/Users/chenhuaqu/sme/sme-main',
+  buildEnabled: true,
+  buildAccountId: '',
   language: 'Vue 3 + Lua',
   accountId: 'acc-1',
   lastSync: '刚刚',

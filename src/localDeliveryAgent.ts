@@ -10,13 +10,17 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
 const LOCAL_DELIVERY_STEP_DEFINITIONS = [
-  { key: 'platform', name: '读取平台', description: '加载工作项、仓库路径与目标分支' },
-  { key: 'contract', name: '校验契约', description: '确认服务端支持真实阶段证据' },
-  { key: 'checkout', name: '校验仓库', description: '校验客户端路径、Git 根目录与分支' },
-  { key: 'codex', name: 'Codex 执行', description: '分析、设计、编码并生成执行证据' },
-  { key: 'evidence', name: '检查证据', description: '确认代码变更、报告与提交' },
-  { key: 'commit', name: '提交推送', description: '记录本地提交并按授权推送' },
-  { key: 'writeback', name: '回写平台', description: '写入真实 commit 与阶段结果' },
+  { key: 'connectivity', name: '连通性校验', description: '读取平台、校验契约并确认客户端仓库与分支' },
+  { key: 'analysis', name: '需求分析', description: '识别需求意图、验收条件与影响模块' },
+  { key: 'ldd', name: '业务 LDD', description: '生成或更新本次业务涉及的 LDD 设计' },
+  { key: 'coding', name: '业务编码', description: '按 LDD 与设计实现代码变更和单元测试' },
+  { key: 'evidence', name: '检查证据', description: '确认代码变更、设计报告与集成报告' },
+  { key: 'commit', name: '提交推送', description: 'AICR 审查、本地提交并按授权推送' },
+  {
+    key: 'writeback',
+    name: '回写并关闭缺陷',
+    description: '写入真实 commit 与阶段结果，并按授权提交飞书缺陷关闭',
+  },
 ] as const
 
 export interface LocalDeliveryStartInput {
@@ -24,6 +28,7 @@ export interface LocalDeliveryStartInput {
   repoId: string
   autoCommit: boolean
   pushAfterAcceptance: boolean
+  runBuild: boolean
   autoClose: boolean
   temporaryCheckout: boolean
 }
@@ -117,14 +122,14 @@ function queuedSteps(command: FeishuAgentCommand): LocalDeliveryStep[] {
   const startedAt = command.createdAt
   return LOCAL_DELIVERY_STEP_DEFINITIONS.map((step) => ({
     ...step,
-    status: step.key === 'platform' ? 'running' : 'pending',
+    status: step.key === 'connectivity' ? 'running' : 'pending',
     log:
-      step.key === 'platform'
+      step.key === 'connectivity'
         ? command.status === 'pending'
           ? '任务已下发，等待本机代理领取'
           : '本机代理已领取任务，等待执行状态回传'
         : undefined,
-    startedAt: step.key === 'platform' ? startedAt : undefined,
+    startedAt: step.key === 'connectivity' ? startedAt : undefined,
   }))
 }
 
@@ -159,12 +164,12 @@ export function createPendingLocalDeliveryJob(
     startedAt,
     steps: LOCAL_DELIVERY_STEP_DEFINITIONS.map((step) => ({
       ...step,
-      status: step.key === 'platform' ? 'running' : 'pending',
+      status: step.key === 'connectivity' ? 'running' : 'pending',
       log:
-        step.key === 'platform'
+        step.key === 'connectivity'
           ? '正在通过平台命令队列下发给本机代理'
           : undefined,
-      startedAt: step.key === 'platform' ? startedAt : undefined,
+      startedAt: step.key === 'connectivity' ? startedAt : undefined,
     })),
   }
 }
@@ -266,7 +271,7 @@ export async function probeLocalDeliveryAgent(
       request<{ deliveryContractVersion?: number }>('/health'),
     ])
     const health: FeishuClientAgentHealth | undefined = status.health
-    const platformReady = Number(platform.deliveryContractVersion) >= 3
+    const platformReady = Number(platform.deliveryContractVersion) >= 4
     return {
       online: status.online,
       platformReady,
@@ -298,7 +303,7 @@ export async function waitForLocalDelivery(
   commandId: string,
   clientId: string,
   onUpdate: (job: LocalDeliveryJob) => void,
-  timeoutMs = 45 * 60_000,
+  timeoutMs = 210 * 60_000,
   signal?: AbortSignal,
 ): Promise<LocalDeliveryJob> {
   const deadline = Date.now() + timeoutMs

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
+import { defaultOwnerUserId } from '../db/ownership.js'
 import { nextSequence } from '../db/sequences.js'
 import { conflict, notFound, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
@@ -120,16 +121,18 @@ function selectSql(): string {
           FROM work_items`
 }
 
-export function listWorkItems(db: AppDatabase): WorkItem[] {
-  const rows = db
-    .prepare(`${selectSql()} WHERE archived_at IS NULL ORDER BY created_at DESC, id DESC`)
-    .all() as WorkItemRow[]
+export function listWorkItems(db: AppDatabase, ownerUserId?: string): WorkItem[] {
+  const query = `${selectSql()} WHERE archived_at IS NULL${
+    ownerUserId === undefined ? '' : ' AND owner_user_id = ?'
+  } ORDER BY created_at DESC, id DESC`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(query).all()
+    : db.prepare(query).all(ownerUserId)) as WorkItemRow[]
   return rows.map(rowToWorkItem)
 }
 
-export function listWorkItemSummaries(db: AppDatabase): WorkItem[] {
-  const rows = db
-    .prepare(
+export function listWorkItemSummaries(db: AppDatabase, ownerUserId?: string): WorkItem[] {
+  const query =
       `SELECT id, type, title, '' AS description, priority, status, repo_id, branch, owner,
               source, external_id, feishu_status, project_line, design_reference,
               '' AS requirement_breakdown,
@@ -138,17 +141,21 @@ export function listWorkItemSummaries(db: AppDatabase): WorkItem[] {
                 AS requirement_screenshot_count,
               created_at, updated_at
        FROM work_items
-       WHERE archived_at IS NULL
-       ORDER BY created_at DESC, id DESC`,
-    )
-    .all() as WorkItemRow[]
+       WHERE archived_at IS NULL${ownerUserId === undefined ? '' : ' AND owner_user_id = ?'}
+       ORDER BY created_at DESC, id DESC`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(query).all()
+    : db.prepare(query).all(ownerUserId)) as WorkItemRow[]
   return rows.map(rowToWorkItem)
 }
 
-export function getWorkItem(db: AppDatabase, id: string): WorkItem {
-  const row = db
-    .prepare(`${selectSql()} WHERE id = ? AND archived_at IS NULL`)
-    .get(id) as WorkItemRow | undefined
+export function getWorkItem(db: AppDatabase, id: string, ownerUserId?: string): WorkItem {
+  const query = `${selectSql()} WHERE id = ? AND archived_at IS NULL${
+    ownerUserId === undefined ? '' : ' AND owner_user_id = ?'
+  }`
+  const row = (ownerUserId === undefined
+    ? db.prepare(query).get(id)
+    : db.prepare(query).get(id, ownerUserId)) as WorkItemRow | undefined
   if (!row) throw notFound('工作项')
   return rowToWorkItem(row)
 }
@@ -266,8 +273,9 @@ function deliveryScreenshots(db: AppDatabase, workItemId: string): WorkItemScree
 export function getWorkItemDeliveryContext(
   db: AppDatabase,
   id: string,
+  ownerUserId?: string,
 ): WorkItemDeliveryContext {
-  const workItem = getWorkItem(db, id)
+  const workItem = getWorkItem(db, id, ownerUserId)
   return {
     workItem,
     requirementBreakdown: workItem.requirementBreakdown,
@@ -280,9 +288,10 @@ export function saveWorkItemDeliveryContext(
   db: AppDatabase,
   id: string,
   rawInput: WorkItemDeliveryContextInput,
+  ownerUserId?: string,
 ): WorkItemDeliveryContext {
-  const workItem = getWorkItem(db, id)
-  const current = getWorkItemDeliveryContext(db, id)
+  const workItem = getWorkItem(db, id, ownerUserId)
+  const current = getWorkItemDeliveryContext(db, id, ownerUserId)
   const requirementBreakdown =
     rawInput.requirementBreakdown === undefined
       ? current.requirementBreakdown
@@ -332,11 +341,15 @@ export function saveWorkItemDeliveryContext(
     }
   })()
 
-  return getWorkItemDeliveryContext(db, id)
+  return getWorkItemDeliveryContext(db, id, ownerUserId)
 }
 
-export function assertRequirementDeliveryContextReady(db: AppDatabase, id: string): void {
-  const workItem = getWorkItem(db, id)
+export function assertRequirementDeliveryContextReady(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): void {
+  const workItem = getWorkItem(db, id, ownerUserId)
   if (workItem.type !== 'requirement') return
   const issue = requirementDeliveryContextIssue({
     requirementBreakdown: workItem.requirementBreakdown,
@@ -380,11 +393,19 @@ function createInTransaction(
   db: AppDatabase,
   input: NormalizedWorkItem,
   now: string,
+  ownerUserId?: string,
 ): WorkItem {
   const repo = db
-    .prepare('SELECT branch FROM repositories WHERE id = ?')
-    .get(input.repoId) as { branch: string } | undefined
+    .prepare(
+      ownerUserId === undefined
+        ? 'SELECT branch, owner_user_id FROM repositories WHERE id = ?'
+        : 'SELECT branch, owner_user_id FROM repositories WHERE id = ? AND owner_user_id = ?',
+    )
+    .get(...(ownerUserId === undefined ? [input.repoId] : [input.repoId, ownerUserId])) as
+    | { branch: string; owner_user_id: string }
+    | undefined
   if (!repo) throw notFound('关联仓库')
+  const workItemOwner = defaultOwnerUserId(db, repo.owner_user_id || ownerUserId)
 
   const prefix = input.type === 'requirement' ? 'REQ' : 'BUG'
   const sequenceName = input.type === 'requirement' ? 'work_item_requirement' : 'work_item_defect'
@@ -392,11 +413,12 @@ function createInTransaction(
   const id = `${prefix}-${nextSequence(db, sequenceName, initial)}`
   db.prepare(
     `INSERT INTO work_items
-      (id, type, title, description, priority, status, repo_id, branch, owner, source,
+      (id, owner_user_id, type, title, description, priority, status, repo_id, branch, owner, source,
        external_id, design_reference, requirement_breakdown, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, '待处理', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, '待处理', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
+    workItemOwner,
     input.type,
     input.title,
     input.description,
@@ -414,21 +436,34 @@ function createInTransaction(
   return getWorkItem(db, id)
 }
 
-export function createWorkItem(db: AppDatabase, rawInput: WorkItemInput): WorkItem {
+export function createWorkItem(
+  db: AppDatabase,
+  rawInput: WorkItemInput,
+  ownerUserId?: string,
+): WorkItem {
   const input = normalizeWorkItemInput(rawInput)
   if (input.externalId) {
     const duplicate = db
-      .prepare('SELECT id FROM work_items WHERE source = ? AND external_id = ?')
-      .get(input.source, input.externalId) as { id: string } | undefined
+      .prepare(
+        ownerUserId === undefined
+          ? 'SELECT id FROM work_items WHERE source = ? AND external_id = ?'
+          : 'SELECT id FROM work_items WHERE owner_user_id = ? AND source = ? AND external_id = ?',
+      )
+      .get(
+        ...(ownerUserId === undefined
+          ? [input.source, input.externalId]
+          : [ownerUserId, input.source, input.externalId]),
+      ) as { id: string } | undefined
     if (duplicate) throw conflict(`外部工作项 ${input.externalId} 已导入`)
   }
 
-  return db.transaction(() => createInTransaction(db, input, nowIso()))()
+  return db.transaction(() => createInTransaction(db, input, nowIso(), ownerUserId))()
 }
 
 export function importWorkItems(
   db: AppDatabase,
   rawInputs: unknown,
+  ownerUserId?: string,
 ): { items: WorkItem[]; skipped: number } {
   if (!Array.isArray(rawInputs) || rawInputs.length === 0) {
     throw unprocessable('导入工作项不能为空')
@@ -443,14 +478,22 @@ export function importWorkItems(
     for (const input of inputs) {
       if (input.externalId) {
         const duplicate = db
-          .prepare('SELECT id FROM work_items WHERE source = ? AND external_id = ?')
-          .get('feishu', input.externalId) as { id: string } | undefined
+          .prepare(
+            ownerUserId === undefined
+              ? 'SELECT id FROM work_items WHERE source = ? AND external_id = ?'
+              : 'SELECT id FROM work_items WHERE owner_user_id = ? AND source = ? AND external_id = ?',
+          )
+          .get(
+            ...(ownerUserId === undefined
+              ? ['feishu', input.externalId]
+              : [ownerUserId, 'feishu', input.externalId]),
+          ) as { id: string } | undefined
         if (duplicate) {
           skipped += 1
           continue
         }
       }
-      created.push(createInTransaction(db, input, nowIso()))
+      created.push(createInTransaction(db, input, nowIso(), ownerUserId))
     }
   })()
 
@@ -463,13 +506,17 @@ export function upsertFeishuWorkItems(
   items: SyncedFeishuWorkItem[],
 ): WorkItemUpsertResult {
   const repository = db
-    .prepare('SELECT branch FROM repositories WHERE id = ?')
-    .get(repoId) as { branch: string } | undefined
+    .prepare('SELECT branch, owner_user_id FROM repositories WHERE id = ?')
+    .get(repoId) as { branch: string; owner_user_id: string } | undefined
   if (!repository) throw notFound('关联仓库')
+  const ownerUserId = defaultOwnerUserId(db, repository.owner_user_id)
 
   const existingRows = db
-    .prepare("SELECT id, external_id FROM work_items WHERE source = 'feishu' AND external_id IS NOT NULL")
-    .all() as Array<{ id: string; external_id: string }>
+    .prepare(
+      `SELECT id, external_id FROM work_items
+       WHERE owner_user_id = ? AND source = 'feishu' AND external_id IS NOT NULL`,
+    )
+    .all(ownerUserId) as Array<{ id: string; external_id: string }>
   const existingByIdentity = new Map(
     existingRows.map((row) => [externalIdentity(row.external_id), row.id]),
   )
@@ -486,9 +533,9 @@ export function upsertFeishuWorkItems(
   )
   const insertWorkItem = db.prepare(
     `INSERT INTO work_items
-      (id, type, title, description, priority, status, repo_id, branch, owner, source, external_id,
+      (id, owner_user_id, type, title, description, priority, status, repo_id, branch, owner, source, external_id,
        feishu_status, project_line, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'feishu', ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'feishu', ?, ?, ?, ?, ?)`,
   )
 
   let created = 0
@@ -525,6 +572,7 @@ export function upsertFeishuWorkItems(
     const id = `${prefix}-${nextSequence(db, sequenceName, initial)}`
     insertWorkItem.run(
       id,
+      ownerUserId,
       item.type,
       item.title,
       item.description,
@@ -550,6 +598,7 @@ export function reconcileFeishuWorkItems(
   db: AppDatabase,
   activeExternalIds: string[],
   now = nowIso(),
+  ownerUserId?: string,
 ): FeishuReconcileResult {
   if (activeExternalIds.length === 0) {
     throw unprocessable('完整同步未返回活动工作项，已跳过删除对账')
@@ -560,16 +609,25 @@ export function reconcileFeishuWorkItems(
     .prepare(
       `SELECT id, external_id FROM work_items
        WHERE source = 'feishu' AND external_id IS NOT NULL AND external_id <> ''
-         AND archived_at IS NULL`,
+         AND archived_at IS NULL${ownerUserId === undefined ? '' : ' AND owner_user_id = ?'}`,
     )
-    .all() as Array<{ id: string; external_id: string }>
+    .all(...(ownerUserId === undefined ? [] : [ownerUserId])) as Array<{
+    id: string
+    external_id: string
+  }>
   const inboxRows = db
-    .prepare('SELECT external_id FROM feishu_inbox')
-    .all() as Array<{ external_id: string }>
+    .prepare(
+      `SELECT external_id FROM feishu_inbox${
+        ownerUserId === undefined ? '' : ' WHERE owner_user_id = ?'
+      }`,
+    )
+    .all(...(ownerUserId === undefined ? [] : [ownerUserId])) as Array<{ external_id: string }>
   const archiveWorkItem = db.prepare(
     'UPDATE work_items SET archived_at = ? WHERE id = ? AND archived_at IS NULL',
   )
-  const deleteInboxItem = db.prepare('DELETE FROM feishu_inbox WHERE external_id = ?')
+  const deleteInboxItem = db.prepare(
+    'DELETE FROM feishu_inbox WHERE external_id = ? AND owner_user_id = ?',
+  )
 
   let archived = 0
   let inboxRemoved = 0
@@ -580,7 +638,7 @@ export function reconcileFeishuWorkItems(
     }
     for (const row of inboxRows) {
       if (activeIdentities.has(externalIdentity(row.external_id))) continue
-      inboxRemoved += deleteInboxItem.run(row.external_id).changes
+      inboxRemoved += deleteInboxItem.run(row.external_id, ownerUserId ?? '').changes
     }
   })()
 
