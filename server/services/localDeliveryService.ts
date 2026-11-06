@@ -300,14 +300,16 @@ function runningLocalPipelineForWorkItem(
   db: AppDatabase,
   workItemId: string,
   repoId: string,
+  ownerUserId: string,
 ): { id: string; status: 'queued' | 'running' | 'success' | 'failed' } | undefined {
   const rows = db
     .prepare(
       `SELECT id, status FROM pipelines
-       WHERE work_item_id = ? AND repo_id = ? AND status = 'running' AND triggered_by = ?
+       WHERE work_item_id = ? AND repo_id = ? AND owner_user_id = ?
+         AND status = 'running' AND triggered_by = ?
        ORDER BY created_at DESC LIMIT 2`,
     )
-    .all(workItemId, repoId, CLIENT_DELIVERY_TRIGGER) as Array<{
+    .all(workItemId, repoId, ownerUserId, CLIENT_DELIVERY_TRIGGER) as Array<{
     id: string
     status: 'queued' | 'running' | 'success' | 'failed'
   }>
@@ -321,13 +323,16 @@ export function syncLocalDeliveryPipelineFromAgentJob(
   const job = progressJob(rawJob)
   if (!job) return undefined
   const workItem = db
-    .prepare('SELECT id, type, title FROM work_items WHERE id = ?')
+    .prepare('SELECT id, owner_user_id, type, title FROM work_items WHERE id = ?')
     .get(job.workItemId) as
-    | { id: string; type: WorkItemType; title: string }
+    | { id: string; owner_user_id: string; type: WorkItemType; title: string }
     | undefined
   const repository = db
-    .prepare('SELECT id, name, branch, local_path, latest_version FROM repositories WHERE id = ?')
-    .get(job.repoId) as
+    .prepare(
+      `SELECT id, name, branch, local_path, latest_version
+       FROM repositories WHERE id = ? AND owner_user_id = ?`,
+    )
+    .get(job.repoId, workItem?.owner_user_id ?? '') as
     | {
         id: string
         name: string
@@ -351,12 +356,13 @@ export function syncLocalDeliveryPipelineFromAgentJob(
     db.transaction(() => {
       db.prepare(
         `INSERT INTO pipelines
-          (id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
+          (id, owner_user_id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
            delivery_job_id, commit_hash, version, status, progress, current_stage, triggered_by,
            auto_commit, auto_close, simulation, created_at, updated_at, started_at, finished_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '-', ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '-', ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?)`,
       ).run(
         pipelineId,
+        workItem.owner_user_id,
         workItem.id,
         workItem.title,
         workItem.type,
@@ -519,14 +525,17 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
   const reports = reportsFrom(rawInput.reports)
 
   const workItem = db
-    .prepare('SELECT id, type, title, branch FROM work_items WHERE id = ?')
+    .prepare('SELECT id, owner_user_id, type, title, branch FROM work_items WHERE id = ?')
     .get(workItemId) as
-    | { id: string; type: WorkItemType; title: string; branch: string }
+    | { id: string; owner_user_id: string; type: WorkItemType; title: string; branch: string }
     | undefined
   if (!workItem) throw notFound('工作项')
   const repository = db
-    .prepare('SELECT id, name, branch, local_path, latest_version FROM repositories WHERE id = ?')
-    .get(repoId) as
+    .prepare(
+      `SELECT id, name, branch, local_path, latest_version
+       FROM repositories WHERE id = ? AND owner_user_id = ?`,
+    )
+    .get(repoId, workItem.owner_user_id) as
     | {
         id: string
         name: string
@@ -549,11 +558,13 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
 
   const existingPipeline = deliveryJobId
     ? (db
-        .prepare('SELECT id, status FROM pipelines WHERE delivery_job_id = ?')
-        .get(deliveryJobId) as
+        .prepare(
+          'SELECT id, status FROM pipelines WHERE delivery_job_id = ? AND owner_user_id = ?',
+        )
+        .get(deliveryJobId, workItem.owner_user_id) as
         | { id: string; status: 'queued' | 'running' | 'success' | 'failed' }
         | undefined)
-    : runningLocalPipelineForWorkItem(db, workItemId, repoId)
+    : runningLocalPipelineForWorkItem(db, workItemId, repoId, workItem.owner_user_id)
   if (existingPipeline && existingPipeline.status !== 'running') {
     return getPipeline(db, existingPipeline.id)
   }
@@ -602,12 +613,13 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
     } else {
       db.prepare(
         `INSERT INTO pipelines
-          (id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
+          (id, owner_user_id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
            delivery_job_id, commit_hash, version, status, progress, current_stage, triggered_by,
            auto_commit, auto_close, simulation, created_at, updated_at, started_at, finished_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       ).run(
         pipelineId,
+        workItem.owner_user_id,
         workItem.id,
         workItem.title,
         workItem.type,

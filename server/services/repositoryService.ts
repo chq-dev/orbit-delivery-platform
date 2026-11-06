@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path'
 import type { AppDatabase } from '../db/database.js'
+import { defaultOwnerUserId } from '../db/ownership.js'
 import { nextSequence } from '../db/sequences.js'
 import { conflict, notFound, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
@@ -56,59 +57,82 @@ function rowToRepository(row: RepositoryRow): Repository {
   }
 }
 
-export function listRepositories(db: AppDatabase): Repository[] {
-  const rows = db
-    .prepare(
-      `SELECT id, name, url, branch, local_path, build_enabled, build_account_id,
-              language, account_id, last_sync, status, latest_version
-       FROM repositories ORDER BY created_at ASC, id ASC`,
-    )
-    .all() as RepositoryRow[]
+export function listRepositories(db: AppDatabase, ownerUserId?: string): Repository[] {
+  const select = `SELECT id, name, url, branch, local_path, build_enabled, build_account_id,
+                         language, account_id, last_sync, status, latest_version
+                  FROM repositories`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(`${select} ORDER BY created_at ASC, id ASC`).all()
+    : db
+        .prepare(`${select} WHERE owner_user_id = ? ORDER BY created_at ASC, id ASC`)
+        .all(ownerUserId)) as RepositoryRow[]
   return rows.map(rowToRepository)
 }
 
-export function getRepository(db: AppDatabase, id: string): Repository {
-  const row = db
-    .prepare(
-      `SELECT id, name, url, branch, local_path, build_enabled, build_account_id,
-              language, account_id, last_sync, status, latest_version
-       FROM repositories WHERE id = ?`,
-    )
-    .get(id) as RepositoryRow | undefined
+export function getRepository(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): Repository {
+  const select = `SELECT id, name, url, branch, local_path, build_enabled, build_account_id,
+                         language, account_id, last_sync, status, latest_version
+                  FROM repositories WHERE id = ?`
+  const row = (ownerUserId === undefined
+    ? db.prepare(select).get(id)
+    : db.prepare(`${select} AND owner_user_id = ?`).get(id, ownerUserId)) as
+    | RepositoryRow
+    | undefined
   if (!row) throw notFound('代码仓库')
   return rowToRepository(row)
 }
 
-export function createRepository(db: AppDatabase, input: RepositoryInput): Repository {
+export function createRepository(
+  db: AppDatabase,
+  input: RepositoryInput,
+  ownerUserId?: string,
+): Repository {
   const name = requiredText(input.name, '仓库名称', { max: 200 })
   const url = httpUrl(input.url, '仓库地址')
   const branch = requiredText(input.branch, '默认分支', { max: 200 })
   const localPath = normalizeClientPath(input.localPath)
   const buildEnabled = booleanValue(input.buildEnabled, '系统编译开关', true)
-  const buildAccountId = normalizeBuildAccountId(db, input.buildAccountId, '')
+  const buildAccountId = normalizeBuildAccountId(
+    db,
+    input.buildAccountId,
+    '',
+    ownerUserId,
+  )
   const language = optionalText(input.language, '开发语言', 100) ?? 'Vue 3 + Lua'
   const accountId = requiredText(input.accountId, 'Git 账号', { max: 200 })
 
   const account = db
-    .prepare('SELECT platform FROM accounts WHERE id = ?')
-    .get(accountId) as { platform: string } | undefined
+    .prepare(
+      ownerUserId === undefined
+        ? 'SELECT platform, owner_user_id FROM accounts WHERE id = ?'
+        : 'SELECT platform, owner_user_id FROM accounts WHERE id = ? AND owner_user_id = ?',
+    )
+    .get(...(ownerUserId === undefined ? [accountId] : [accountId, ownerUserId])) as
+    | { platform: string; owner_user_id: string }
+    | undefined
   if (!account) throw notFound('Git 账号')
   if (account.platform !== 'git') throw conflict('仓库只能关联 Git 平台账号')
+  const repositoryOwner = defaultOwnerUserId(db, account.owner_user_id || ownerUserId)
 
-  const duplicate = db.prepare('SELECT id FROM repositories WHERE url = ?').get(url) as
-    | { id: string }
-    | undefined
+  const duplicate = db
+    .prepare('SELECT id FROM repositories WHERE owner_user_id = ? AND url = ?')
+    .get(repositoryOwner, url) as { id: string } | undefined
   if (duplicate) throw conflict('该仓库地址已接入')
 
   const now = nowIso()
   const id = `repo-${nextSequence(db, 'repository', 1)}`
   db.prepare(
     `INSERT INTO repositories
-      (id, name, url, branch, local_path, build_enabled, build_account_id,
+      (id, owner_user_id, name, url, branch, local_path, build_enabled, build_account_id,
        language, account_id, last_sync, status, latest_version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', '待构建', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', '待构建', ?, ?)`,
   ).run(
     id,
+    repositoryOwner,
     name,
     url,
     branch,
@@ -129,12 +153,20 @@ export function updateRepositorySettings(
   db: AppDatabase,
   id: string,
   input: RepositoryUpdateInput,
+  ownerUserId?: string,
 ): Repository {
-  const repository = db
-    .prepare(
-      'SELECT id, branch, local_path, build_enabled, build_account_id FROM repositories WHERE id = ?',
-    )
-    .get(id) as
+  const repository = (ownerUserId === undefined
+    ? db
+        .prepare(
+          'SELECT id, branch, local_path, build_enabled, build_account_id FROM repositories WHERE id = ?',
+        )
+        .get(id)
+    : db
+        .prepare(
+          `SELECT id, branch, local_path, build_enabled, build_account_id
+           FROM repositories WHERE id = ? AND owner_user_id = ?`,
+        )
+        .get(id, ownerUserId)) as
     | {
         id: string
         branch: string
@@ -158,6 +190,7 @@ export function updateRepositorySettings(
     db,
     input.buildAccountId,
     repository.build_account_id,
+    ownerUserId,
   )
 
   db.transaction(() => {
@@ -176,7 +209,7 @@ export function updateRepositorySettings(
     db.prepare('UPDATE work_items SET branch = ? WHERE repo_id = ?').run(branch, id)
   })()
 
-  return getRepository(db, id)
+  return getRepository(db, id, ownerUserId)
 }
 
 function normalizeClientPath(value: unknown): string {
@@ -190,13 +223,20 @@ function normalizeBuildAccountId(
   db: AppDatabase,
   value: unknown,
   fallback: string,
+  ownerUserId?: string,
 ): string {
   if (value === undefined) return fallback
   if (value === null || value === '') return ''
   const id = requiredText(value, '编译系统账号', { max: 200 })
   const account = db
-    .prepare('SELECT platform FROM accounts WHERE id = ?')
-    .get(id) as { platform: string } | undefined
+    .prepare(
+      ownerUserId === undefined
+        ? 'SELECT platform FROM accounts WHERE id = ?'
+        : 'SELECT platform FROM accounts WHERE id = ? AND owner_user_id = ?',
+    )
+    .get(...(ownerUserId === undefined ? [id] : [id, ownerUserId])) as
+    | { platform: string }
+    | undefined
   if (!account) throw notFound('编译系统账号')
   if (account.platform !== 'build') throw conflict('仓库只能关联编译平台账号')
   return id

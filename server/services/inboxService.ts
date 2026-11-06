@@ -13,13 +13,14 @@ interface InboxRow {
   updated_at: string
 }
 
-export function listFeishuInbox(db: AppDatabase): FeishuInboxItem[] {
-  const rows = db
-    .prepare(
-      `SELECT external_id, type, title, description, priority, repo_id, owner, updated_at
-       FROM feishu_inbox ORDER BY updated_at DESC`,
-    )
-    .all() as InboxRow[]
+export function listFeishuInbox(db: AppDatabase, ownerUserId?: string): FeishuInboxItem[] {
+  const query = `SELECT external_id, type, title, description, priority, repo_id, owner, updated_at
+                 FROM feishu_inbox${
+                   ownerUserId === undefined ? '' : ' WHERE owner_user_id = ?'
+                 } ORDER BY updated_at DESC`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(query).all()
+    : db.prepare(query).all(ownerUserId)) as InboxRow[]
   return rows.map((row) => ({
     externalId: row.external_id,
     type: row.type,

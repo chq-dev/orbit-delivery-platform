@@ -1,4 +1,5 @@
 import type { AppDatabase } from '../db/database.js'
+import { defaultOwnerUserId } from '../db/ownership.js'
 import { nextSequence } from '../db/sequences.js'
 import { conflict, notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
@@ -54,14 +55,19 @@ function rowToAccount(row: AccountRow): Account {
   }
 }
 
-export function listAccounts(db: AppDatabase): Account[] {
-  const rows = db
-    .prepare(
-      `SELECT id, platform, username, label, service_url, secret_hint, status, created_at
-       FROM accounts ORDER BY created_at DESC, id DESC`,
-    )
-    .all() as AccountRow[]
+export function listAccounts(db: AppDatabase, ownerUserId?: string): Account[] {
+  const select = `SELECT id, platform, username, label, service_url, secret_hint, status, created_at
+                  FROM accounts`
+  const rows = (ownerUserId === undefined
+    ? db.prepare(`${select} ORDER BY created_at DESC, id DESC`).all()
+    : db
+        .prepare(`${select} WHERE owner_user_id = ? ORDER BY created_at DESC, id DESC`)
+        .all(ownerUserId)) as AccountRow[]
   return rows.map(rowToAccount)
+}
+
+export function getAccount(db: AppDatabase, id: string, ownerUserId?: string): Account {
+  return rowToAccount(getAccountRow(db, id, ownerUserId))
 }
 
 function normalizedInput(input: AccountInput) {
@@ -81,14 +87,19 @@ function normalizedServiceUrl(value: unknown, fallback: string): string {
   return text ? httpUrl(text, '服务地址') : ''
 }
 
-function getAccountRow(db: AppDatabase, id: string): AccountStorageRow {
-  const row = db
-    .prepare(
-      `SELECT id, platform, username, label, service_url, secret_hint, status, created_at,
-              secret_ciphertext, secret_iv, secret_tag
-       FROM accounts WHERE id = ?`,
-    )
-    .get(id) as AccountStorageRow | undefined
+function getAccountRow(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): AccountStorageRow {
+  const select = `SELECT id, platform, username, label, service_url, secret_hint, status, created_at,
+                         secret_ciphertext, secret_iv, secret_tag
+                  FROM accounts WHERE id = ?`
+  const row = (ownerUserId === undefined
+    ? db.prepare(select).get(id)
+    : db.prepare(`${select} AND owner_user_id = ?`).get(id, ownerUserId)) as
+    | AccountStorageRow
+    | undefined
   if (!row) throw notFound('账号')
   return row
 }
@@ -97,23 +108,29 @@ export function createAccount(
   db: AppDatabase,
   vault: CredentialVault,
   input: AccountInput,
+  ownerUserId = '',
 ): Account {
   const normalized = normalizedInput(input)
+  const owner = defaultOwnerUserId(db, ownerUserId)
   const encrypted = vault.encrypt(normalized.password)
   const now = nowIso()
   const id = `acc-${nextSequence(db, 'account', 1)}`
 
   const duplicate = db
-    .prepare('SELECT id FROM accounts WHERE platform = ? AND username = ?')
-    .get(normalized.platform, normalized.username) as { id: string } | undefined
+    .prepare(
+      'SELECT id FROM accounts WHERE owner_user_id = ? AND platform = ? AND username = ?',
+    )
+    .get(owner, normalized.platform, normalized.username) as { id: string } | undefined
   if (duplicate) throw conflict('该平台账号已绑定，请勿重复添加')
 
   db.prepare(
     `INSERT INTO accounts
-      (id, platform, username, label, service_url, secret_ciphertext, secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      (id, owner_user_id, platform, username, label, service_url, secret_ciphertext,
+       secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
   ).run(
     id,
+    owner,
     normalized.platform,
     normalized.username,
     normalized.label,
@@ -142,6 +159,7 @@ export function importAccounts(
   db: AppDatabase,
   vault: CredentialVault,
   inputs: unknown,
+  ownerUserId = '',
 ): { accounts: Account[]; skipped: number } {
   if (!Array.isArray(inputs) || inputs.length === 0) {
     throw unprocessable('批量导入账号不能为空')
@@ -149,14 +167,17 @@ export function importAccounts(
   if (inputs.length > 500) throw unprocessable('单次最多导入 500 个账号')
 
   const rows = inputs.map((input) => normalizedInput(input as AccountInput))
+  const owner = defaultOwnerUserId(db, ownerUserId)
   const created: Account[] = []
   let skipped = 0
 
   db.transaction(() => {
     for (const row of rows) {
       const duplicate = db
-        .prepare('SELECT id FROM accounts WHERE platform = ? AND username = ?')
-        .get(row.platform, row.username) as { id: string } | undefined
+        .prepare(
+          'SELECT id FROM accounts WHERE owner_user_id = ? AND platform = ? AND username = ?',
+        )
+        .get(owner, row.platform, row.username) as { id: string } | undefined
       if (duplicate) {
         skipped += 1
         continue
@@ -167,10 +188,12 @@ export function importAccounts(
       const id = `acc-${nextSequence(db, 'account', 1)}`
       db.prepare(
         `INSERT INTO accounts
-          (id, platform, username, label, service_url, secret_ciphertext, secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          (id, owner_user_id, platform, username, label, service_url, secret_ciphertext,
+           secret_iv, secret_tag, secret_hint, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
       ).run(
         id,
+        owner,
         row.platform,
         row.username,
         row.label,
@@ -203,8 +226,9 @@ export function updateAccount(
   vault: CredentialVault,
   id: string,
   input: AccountUpdateInput,
+  ownerUserId?: string,
 ): Account {
-  const current = getAccountRow(db, id)
+  const current = getAccountRow(db, id, ownerUserId)
   const platform = input.platform === undefined
     ? current.platform
     : oneOf(input.platform, '平台', platforms)
@@ -223,8 +247,16 @@ export function updateAccount(
       : requiredText(input.password, '密码', { max: 2_000 })
 
   const duplicate = db
-    .prepare('SELECT id FROM accounts WHERE platform = ? AND username = ? AND id <> ?')
-    .get(platform, username, id) as { id: string } | undefined
+    .prepare(
+      ownerUserId === undefined
+        ? 'SELECT id FROM accounts WHERE platform = ? AND username = ? AND id <> ?'
+        : 'SELECT id FROM accounts WHERE owner_user_id = ? AND platform = ? AND username = ? AND id <> ?',
+    )
+    .get(
+      ...(ownerUserId === undefined
+        ? [platform, username, id]
+        : [ownerUserId, platform, username, id]),
+    ) as { id: string } | undefined
   if (duplicate) throw conflict('该平台账号已绑定，请勿重复添加')
   if (platform !== 'build') {
     const buildRepository = db
@@ -277,8 +309,8 @@ export function updateAccount(
   }
 }
 
-export function deleteAccount(db: AppDatabase, id: string): void {
-  getAccountRow(db, id)
+export function deleteAccount(db: AppDatabase, id: string, ownerUserId?: string): void {
+  getAccountRow(db, id, ownerUserId)
   const repository = db
     .prepare('SELECT id, name FROM repositories WHERE account_id = ? LIMIT 1')
     .get(id) as { id: string; name: string } | undefined

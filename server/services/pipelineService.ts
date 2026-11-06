@@ -38,6 +38,7 @@ export const CLIENT_DELIVERY_TRIGGER = '客户端本地交付'
 
 interface PipelineRow {
   id: string
+  owner_user_id: string
   work_item_id: string
   title: string
   item_type: WorkItemType
@@ -92,20 +93,34 @@ export interface StartPipelineInput {
 
 function pipelineSelect(): string {
   return `SELECT id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
-                 commit_hash, version, status, progress, current_stage, triggered_by,
+                 owner_user_id, commit_hash, version, status, progress, current_stage, triggered_by,
                  auto_commit, auto_close, simulation, created_at
           FROM pipelines`
 }
 
-export function listPipelines(db: AppDatabase): PipelineRun[] {
-  const rows = db
-    .prepare(`${pipelineSelect()} ORDER BY created_at DESC, id DESC`)
-    .all() as PipelineRow[]
+export function listPipelines(db: AppDatabase, ownerUserId?: string): PipelineRun[] {
+  const ownerClause = ownerUserId === undefined ? '' : ' WHERE owner_user_id = ?'
+  const rows = (ownerUserId === undefined
+    ? db
+        .prepare(`${pipelineSelect()}${ownerClause} ORDER BY created_at DESC, id DESC`)
+        .all()
+    : db
+        .prepare(`${pipelineSelect()}${ownerClause} ORDER BY created_at DESC, id DESC`)
+        .all(ownerUserId)) as PipelineRow[]
   return rows.map((row) => hydratePipeline(db, row))
 }
 
-export function getPipeline(db: AppDatabase, id: string): PipelineRun {
-  const row = db.prepare(`${pipelineSelect()} WHERE id = ?`).get(id) as PipelineRow | undefined
+export function getPipeline(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): PipelineRun {
+  const query = `${pipelineSelect()} WHERE id = ?${
+    ownerUserId === undefined ? '' : ' AND owner_user_id = ?'
+  }`
+  const row = (ownerUserId === undefined
+    ? db.prepare(query).get(id)
+    : db.prepare(query).get(id, ownerUserId)) as PipelineRow | undefined
   if (!row) throw notFound('交付流水线')
   return hydratePipeline(db, row)
 }
@@ -178,6 +193,7 @@ function hydratePipeline(db: AppDatabase, row: PipelineRow): PipelineRun {
 
 interface WorkItemRow {
   id: string
+  owner_user_id: string
   type: WorkItemType
   title: string
   status: string
@@ -197,7 +213,9 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
 
   const pipelineId = db.transaction(() => {
     const workItem = db
-      .prepare('SELECT id, type, title, status, repo_id FROM work_items WHERE id = ?')
+      .prepare(
+        'SELECT id, owner_user_id, type, title, status, repo_id FROM work_items WHERE id = ?',
+      )
       .get(workItemId) as WorkItemRow | undefined
     if (!workItem) throw notFound('工作项')
     if (workItem.status === '已关闭') throw conflict('已关闭的工作项不能发起交付')
@@ -208,12 +226,16 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
     if (active) throw conflict('该工作项已有执行中的交付流水线', { pipelineId: active.id })
 
     const repoId = optionalText(rawInput.repoId, '代码仓库', 200) ?? workItem.repo_id
-    const repoQuery = `SELECT id, name, branch, local_path, latest_version
+    const repoQuery = `SELECT id, name, branch, local_path, latest_version, owner_user_id
                        FROM repositories`
     const repo = (
       repoId
-        ? db.prepare(`${repoQuery} WHERE id = ?`).get(repoId)
-        : db.prepare(`${repoQuery} LIMIT 1`).get()
+        ? db
+            .prepare(`${repoQuery} WHERE id = ? AND owner_user_id = ?`)
+            .get(repoId, workItem.owner_user_id)
+        : db
+            .prepare(`${repoQuery} WHERE owner_user_id = ? LIMIT 1`)
+            .get(workItem.owner_user_id)
     ) as
       | {
           id: string
@@ -221,6 +243,7 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
           branch: string
           local_path: string
           latest_version: string
+          owner_user_id: string
         }
       | undefined
     if (!repo) throw notFound('代码仓库')
@@ -238,12 +261,13 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
 
     db.prepare(
       `INSERT INTO pipelines
-        (id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
+        (id, owner_user_id, work_item_id, title, item_type, repo_id, repo_name, branch, local_path,
          commit_hash, version, status, progress, current_stage, triggered_by, auto_commit,
          auto_close, simulation, created_at, updated_at, started_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 8, 0, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 8, 0, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
+      workItem.owner_user_id,
       workItem.id,
       workItem.title,
       workItem.type,
@@ -551,11 +575,19 @@ export function advanceRunningPipelines(db: AppDatabase): number {
   return rows.length
 }
 
-export function cancelPipeline(db: AppDatabase, id: string): PipelineRun {
+export function cancelPipeline(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): PipelineRun {
   db.transaction(() => {
     const row = db
-      .prepare(`${pipelineSelect()} WHERE id = ?`)
-      .get(id) as PipelineRow | undefined
+      .prepare(
+        ownerUserId === undefined
+          ? `${pipelineSelect()} WHERE id = ?`
+          : `${pipelineSelect()} WHERE id = ? AND owner_user_id = ?`,
+      )
+      .get(...(ownerUserId === undefined ? [id] : [id, ownerUserId])) as PipelineRow | undefined
     if (!row) throw notFound('交付流水线')
     if (row.status !== 'running' && row.status !== 'queued') {
       throw conflict('只有执行中的流水线可以取消')
@@ -580,5 +612,5 @@ export function cancelPipeline(db: AppDatabase, id: string): PipelineRun {
       "UPDATE work_items SET status = '待处理', updated_at = ? WHERE id = ? AND status = '进行中'",
     ).run(now, row.work_item_id)
   })()
-  return getPipeline(db, id)
+  return getPipeline(db, id, ownerUserId)
 }

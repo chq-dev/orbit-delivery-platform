@@ -38,19 +38,33 @@ export async function triggerDeliveryBuild(
   db: AppDatabase,
   vault: CredentialVault,
   input: DeliveryBuildInput,
+  ownerUserId?: string,
 ): Promise<DeliveryBuildOutcome> {
   const workItemId = requiredText(input.workItemId, '工作项', { max: 200 })
   const repoId = requiredText(input.repoId, '代码仓库', { max: 200 })
 
-  const workItem = db.prepare('SELECT id FROM work_items WHERE id = ?').get(workItemId)
+  const workItem = (ownerUserId === undefined
+    ? db.prepare('SELECT id, owner_user_id FROM work_items WHERE id = ?').get(workItemId)
+    : db
+        .prepare('SELECT id, owner_user_id FROM work_items WHERE id = ? AND owner_user_id = ?')
+        .get(workItemId, ownerUserId)) as { id: string; owner_user_id: string } | undefined
   if (!workItem) throw notFound('工作项')
-  const repository = db
-    .prepare('SELECT id, build_account_id FROM repositories WHERE id = ?')
-    .get(repoId) as { id: string; build_account_id: string } | undefined
+  const repository = (ownerUserId === undefined
+    ? db
+        .prepare('SELECT id, owner_user_id, build_account_id FROM repositories WHERE id = ?')
+        .get(repoId)
+    : db
+        .prepare(
+          'SELECT id, owner_user_id, build_account_id FROM repositories WHERE id = ? AND owner_user_id = ?',
+        )
+        .get(repoId, ownerUserId)) as
+    | { id: string; owner_user_id: string; build_account_id: string }
+    | undefined
   if (!repository) throw notFound('代码仓库')
+  const accountOwnerId = repository.owner_user_id || workItem.owner_user_id || ownerUserId
 
   const configuredAccount = repository.build_account_id
-    ? listAccounts(db).find((item) => item.id === repository.build_account_id)
+    ? listAccounts(db, accountOwnerId).find((item) => item.id === repository.build_account_id)
     : undefined
   if (repository.build_account_id && !configuredAccount) {
     throw unprocessable('项目绑定的编译系统账号不存在，请重新配置代码仓库的编译系统')
@@ -59,7 +73,9 @@ export async function triggerDeliveryBuild(
     throw unprocessable('项目绑定的账号不是编译系统账号，请重新配置代码仓库的编译系统')
   }
   const account = configuredAccount ??
-    listAccounts(db).find((item) => item.platform === 'build' && Boolean(item.serviceUrl))
+    listAccounts(db, accountOwnerId).find(
+      (item) => item.platform === 'build' && Boolean(item.serviceUrl),
+    )
   if (!account) {
     return {
       configured: false,

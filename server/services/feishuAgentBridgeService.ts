@@ -168,6 +168,7 @@ interface AgentStateRow {
 
 interface CommandRow {
   id: string
+  owner_user_id: string
   client_id: string
   command_type: FeishuAgentCommandType
   status: FeishuAgentCommandStatus
@@ -428,7 +429,7 @@ function claimPendingCommands(
 
     const rows = db
       .prepare(
-        `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+        `SELECT id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
          FROM feishu_agent_commands
          WHERE client_id = ? AND status = 'pending'
          ORDER BY created_at ASC, rowid ASC
@@ -552,11 +553,44 @@ export function resolveCommandClientId(db: AppDatabase, requestedClientId: unkno
   return requested
 }
 
+function commandOwnerUserId(
+  db: AppDatabase,
+  type: FeishuAgentCommandType,
+  workItemId: string | undefined,
+  accountId: string | undefined,
+  fallback: string,
+): string {
+  if (type === 'delivery_start' && workItemId) {
+    const row = (fallback
+      ? db
+          .prepare('SELECT owner_user_id FROM work_items WHERE id = ? AND owner_user_id = ?')
+          .get(workItemId, fallback)
+      : db.prepare('SELECT owner_user_id FROM work_items WHERE id = ?').get(workItemId)) as
+      | { owner_user_id: string }
+      | undefined
+    if (!row && fallback) throw notFound('工作项')
+    if (row?.owner_user_id) return row.owner_user_id
+  }
+  if ((type === 'build_job_read' || type === 'build_trigger') && accountId) {
+    const row = (fallback
+      ? db
+          .prepare('SELECT owner_user_id FROM accounts WHERE id = ? AND owner_user_id = ?')
+          .get(accountId, fallback)
+      : db.prepare('SELECT owner_user_id FROM accounts WHERE id = ?').get(accountId)) as
+      | { owner_user_id: string }
+      | undefined
+    if (!row && fallback) throw notFound('编译账号')
+    if (row?.owner_user_id) return row.owner_user_id
+  }
+  return fallback
+}
+
 export function enqueueFeishuAgentCommand(
   db: AppDatabase,
   type: unknown,
   payload?: unknown,
   requestedClientId?: unknown,
+  requestedOwnerUserId = '',
 ): FeishuAgentCommand {
   const supportedTypes: FeishuAgentCommandType[] = [
     'login_start',
@@ -577,16 +611,24 @@ export function enqueueFeishuAgentCommand(
   const buildRequest = isBuildCommand ? parseBuildAgentCommandRequest(payload) : undefined
   const commandPayload = deliveryRequest ?? buildRequest
   const payloadJson = commandPayload ? JSON.stringify(commandPayload) : null
+  const ownerUserId = commandOwnerUserId(
+    db,
+    commandType,
+    deliveryRequest?.workItemId,
+    buildRequest?.accountId,
+    requestedOwnerUserId,
+  )
   if (!isBuildCommand) {
     const existing = db
       .prepare(
-        `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+        `SELECT id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
          FROM feishu_agent_commands
-         WHERE client_id = ? AND command_type = ? AND status IN ('pending', 'running')
+         WHERE owner_user_id = ? AND client_id = ? AND command_type = ?
+           AND status IN ('pending', 'running')
          ORDER BY created_at DESC, rowid DESC
          LIMIT 1`,
       )
-      .get(clientId, commandType) as CommandRow | undefined
+      .get(ownerUserId, clientId, commandType) as CommandRow | undefined
     if (existing) {
       if (commandType === 'delivery_start' && existing.payload_json !== payloadJson) {
         throw unprocessable('该执行客户端已有其他交付正在执行，请等待完成后再启动')
@@ -599,9 +641,9 @@ export function enqueueFeishuAgentCommand(
   const id = `agent-command-${randomUUID()}`
   db.prepare(
     `INSERT INTO feishu_agent_commands
-      (id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at)
-     VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
-  ).run(id, clientId, commandType, payloadJson, now, now)
+      (id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`,
+  ).run(id, ownerUserId, clientId, commandType, payloadJson, now, now)
   if (commandType === 'delivery_start' && deliveryRequest) {
     syncDeliveryPipelineSafely(db, {
       id,
@@ -634,7 +676,7 @@ export function enqueueFeishuAgentCommand(
 export function getFeishuAgentCommand(db: AppDatabase, id: string): FeishuAgentCommand {
   const row = db
     .prepare(
-      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands WHERE id = ?`,
     )
     .get(id) as CommandRow | undefined
@@ -650,7 +692,7 @@ export function completeFeishuAgentCommand(
 ): FeishuAgentCommand {
   const existing = db
     .prepare(
-      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands WHERE id = ?`,
     )
     .get(id) as CommandRow | undefined
@@ -735,7 +777,7 @@ export function updateFeishuAgentCommandProgress(
 ): FeishuAgentCommand {
   const existing = db
     .prepare(
-      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands WHERE id = ?`,
     )
     .get(id) as CommandRow | undefined
@@ -782,20 +824,46 @@ function assertCommandClient(existing: CommandRow, requestedClientId: unknown): 
   }
 }
 
+function healthForOwner(
+  db: AppDatabase,
+  health: FeishuAgentHealth | undefined,
+  ownerUserId?: string,
+): FeishuAgentHealth | undefined {
+  if (!health || ownerUserId === undefined) return health
+  const workItemId = health.delivery?.workItemId
+  const row = workItemId
+    ? (db.prepare('SELECT owner_user_id FROM work_items WHERE id = ?').get(workItemId) as
+        | { owner_user_id: string }
+        | undefined)
+    : undefined
+  if (row?.owner_user_id === ownerUserId) return health
+  return {
+    ...health,
+    running: false,
+    lastRun: null,
+    delivery: null,
+  }
+}
+
 function clientStatus(
   db: AppDatabase,
   state: AgentStateRow,
   now: number,
+  ownerUserId?: string,
 ): FeishuAgentClientStatus {
   const rows = db
     .prepare(
-      `SELECT id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
+      `SELECT id, owner_user_id, client_id, command_type, status, payload_json, result_json, error, created_at, updated_at
        FROM feishu_agent_commands
-       WHERE client_id = ?
+       WHERE client_id = ?${ownerUserId === undefined ? '' : ' AND owner_user_id = ?'}
        ORDER BY created_at DESC, rowid DESC
        LIMIT ?`,
     )
-    .all(state.id, RECENT_COMMAND_LIMIT) as CommandRow[]
+    .all(
+      ...(ownerUserId === undefined
+        ? [state.id, RECENT_COMMAND_LIMIT]
+        : [state.id, ownerUserId, RECENT_COMMAND_LIMIT]),
+    ) as CommandRow[]
   const commands = rows.map(publicCommand)
   return {
     clientId: state.id,
@@ -803,7 +871,11 @@ function clientStatus(
     machineName: state.machine_name || undefined,
     online: onlineAt(state.last_seen_at, now),
     lastSeenAt: state.last_seen_at,
-    health: parseJson(state.health_json) as FeishuAgentHealth | undefined,
+    health: healthForOwner(
+      db,
+      parseJson(state.health_json) as FeishuAgentHealth | undefined,
+      ownerUserId,
+    ),
     activeCommand:
       commands.find(
         (command) => command.status === 'pending' || command.status === 'running',
@@ -816,6 +888,7 @@ function clientStatus(
 export function getFeishuAgentBridgeStatus(
   db: AppDatabase,
   requestedClientId?: unknown,
+  ownerUserId?: string,
 ): FeishuAgentBridgeStatus {
   const states = db
     .prepare(
@@ -826,7 +899,7 @@ export function getFeishuAgentBridgeStatus(
     .all() as AgentStateRow[]
   const now = Date.now()
   const clients = states
-    .map((state) => clientStatus(db, state, now))
+    .map((state) => clientStatus(db, state, now, ownerUserId))
     .sort((left, right) => {
       if (left.online !== right.online) return left.online ? -1 : 1
       return Date.parse(right.lastSeenAt ?? '') - Date.parse(left.lastSeenAt ?? '')

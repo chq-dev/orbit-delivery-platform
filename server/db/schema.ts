@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 21
+export const SCHEMA_VERSION = 23
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -28,6 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at)
 
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   platform TEXT NOT NULL CHECK (platform IN ('git', 'feishu', 'build', 'device')),
   username TEXT NOT NULL,
   label TEXT NOT NULL,
@@ -39,13 +40,14 @@ CREATE TABLE IF NOT EXISTS accounts (
   status TEXT NOT NULL CHECK (status IN ('active', 'expiring')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE (platform, username)
+  UNIQUE (owner_user_id, platform, username)
 );
 
 CREATE TABLE IF NOT EXISTS repositories (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
-  url TEXT NOT NULL UNIQUE,
+  url TEXT NOT NULL,
   branch TEXT NOT NULL,
   local_path TEXT NOT NULL DEFAULT '',
   build_enabled INTEGER NOT NULL DEFAULT 1 CHECK (build_enabled IN (0, 1)),
@@ -56,11 +58,13 @@ CREATE TABLE IF NOT EXISTS repositories (
   status TEXT NOT NULL CHECK (status IN ('healthy', 'warning')),
   latest_version TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE (owner_user_id, url)
 );
 
 CREATE TABLE IF NOT EXISTS work_items (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL CHECK (type IN ('requirement', 'defect')),
   title TEXT NOT NULL,
   description TEXT NOT NULL,
@@ -78,7 +82,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE (source, external_id)
+  UNIQUE (owner_user_id, source, external_id)
 );
 
 CREATE TABLE IF NOT EXISTS work_item_attachments (
@@ -96,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_work_item_attachments_item
 
 CREATE TABLE IF NOT EXISTS pipelines (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE RESTRICT,
   title TEXT NOT NULL,
   item_type TEXT NOT NULL CHECK (item_type IN ('requirement', 'defect')),
@@ -189,18 +194,21 @@ CREATE TABLE IF NOT EXISTS failed_cases (
 );
 
 CREATE TABLE IF NOT EXISTS feishu_inbox (
-  external_id TEXT PRIMARY KEY,
+  external_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL CHECK (type IN ('requirement', 'defect')),
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   priority TEXT NOT NULL CHECK (priority IN ('紧急', '高', '中', '低')),
   repo_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE RESTRICT,
   owner TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE (owner_user_id, external_id)
 );
 
 CREATE TABLE IF NOT EXISTS feishu_integrations (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   project_key TEXT NOT NULL,
   plugin_id TEXT NOT NULL,
   plugin_secret_ciphertext TEXT NOT NULL,
@@ -272,6 +280,7 @@ CREATE TABLE IF NOT EXISTS feishu_agent_state (
 
 CREATE TABLE IF NOT EXISTS feishu_agent_commands (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   client_id TEXT NOT NULL DEFAULT 'primary',
   command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'delivery_start', 'build_job_read', 'build_trigger')),
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),

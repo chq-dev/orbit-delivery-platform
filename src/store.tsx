@@ -28,6 +28,7 @@ import {
   writeCachedFeishuSnapshot,
   type FeishuSnapshot,
 } from './feishuSnapshot'
+import { useAuth } from './auth'
 import {
   configureLocalFeishuAgent,
   configureLocalFeishuAgentRepoPaths,
@@ -167,13 +168,15 @@ interface DataContextValue {
 const DataContext = createContext<DataContextValue | null>(null)
 
 export function DataProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
+  const userId = user?.id
   const [repositories, setRepositories] = useState<Repository[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [serverWorkItems, setServerWorkItems] = useState<WorkItem[]>([])
   const [workItemsLoading, setWorkItemsLoading] = useState(true)
   const [workItemsError, setWorkItemsError] = useState<string>()
   const [snapshot, setSnapshot] = useState<FeishuSnapshot | null>(() =>
-    readCachedFeishuSnapshot(),
+    readCachedFeishuSnapshot(userId),
   )
   const [pipelines, setPipelines] = useState<PipelineRun[]>([])
   const [reports, setReports] = useState<TestReport[]>([])
@@ -379,7 +382,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const result = await fetchFeishuSnapshot(snapshotConfig.url)
         if (result.snapshot.items.length === 0 && !result.snapshot.syncedAt) {
           setSnapshot(null)
-          clearCachedFeishuSnapshot()
+          clearCachedFeishuSnapshot(userId)
           setFeishuSnapshot((current) => ({
             ...current,
             loading: false,
@@ -389,7 +392,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           throw new Error('飞书快照尚未生成，请先运行 npm run sync:feishu')
         }
         setSnapshot(result.snapshot)
-        writeCachedFeishuSnapshot(result.snapshot)
+        writeCachedFeishuSnapshot(result.snapshot, userId)
         setFeishuSnapshot({
           configured: true,
           url: snapshotConfig.url,
@@ -411,7 +414,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         throw error
       }
     },
-    [notify, snapshotConfig.url],
+    [notify, snapshotConfig.url, userId],
   )
 
   const applyFeishuAgentStatus = useCallback((status: FeishuAgentBridgeStatus) => {

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { config } from './config.js'
+import { claimUnownedDataForUser } from './db/ownership.js'
 import type { AppDatabase } from './db/database.js'
 import { AppError } from './domain/errors.js'
 import type { CredentialVault } from './security/vault.js'
@@ -23,6 +24,7 @@ import {
 import {
   createAccount,
   deleteAccount,
+  getAccount,
   importAccounts,
   listAccounts,
   updateAccount,
@@ -66,6 +68,7 @@ import {
 import { getTestReport, listTestReports, reportAsMarkdown } from './services/reportService.js'
 import {
   createRepository,
+  getRepository,
   listRepositories,
   updateRepositorySettings,
 } from './services/repositoryService.js'
@@ -88,6 +91,21 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
 
   const sessionUser = (request: Request): AuthUser | undefined =>
     userForSessionToken(db, sessionToken(request))
+
+  const currentUser = (request: Request): AuthUser => {
+    const user = sessionUser(request)
+    if (!user) throw new AppError(401, 'AUTH_REQUIRED', '请先登录后再访问平台')
+    return user
+  }
+
+  const scopedOwnerId = (request: Request): string | undefined =>
+    sessionUser(request)?.id
+
+  const assertSessionOwnsWorkItem = (request: Request, workItemId: unknown): void => {
+    const user = sessionUser(request)
+    if (!user || typeof workItemId !== 'string' || !workItemId) return
+    getWorkItem(db, workItemId, user.id)
+  }
 
   const cookieSecure = (request: Request): boolean =>
     request.secure || config.authCookieSecure
@@ -165,11 +183,13 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
       throw new AppError(403, 'REGISTRATION_DISABLED', '当前部署已关闭用户注册')
     }
     const user = await registerUser(db, request.body ?? {})
+    claimUnownedDataForUser(db, user.id)
     sendSession(request, response, user)
   })
 
   router.post('/auth/login', async (request, response) => {
     const user = await authenticateUser(db, request.body ?? {})
+    claimUnownedDataForUser(db, user.id)
     sendSession(request, response, user)
   })
 
@@ -211,41 +231,47 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   router.get('/bootstrap', (request, response) => {
     const includeWorkItems = request.query.includeWorkItems !== '0'
     const includeFeishuInbox = request.query.includeFeishuInbox !== '0'
+    const ownerUserId = scopedOwnerId(request)
     response.json({
-      repositories: listRepositories(db),
-      accounts: listAccounts(db),
-      workItems: includeWorkItems ? listWorkItemSummaries(db) : [],
-      pipelines: listPipelines(db),
-      reports: listTestReports(db),
-      feishuInbox: includeFeishuInbox ? listFeishuInbox(db) : [],
-      feishuIntegration: getFeishuStatus(db),
+      repositories: listRepositories(db, ownerUserId),
+      accounts: listAccounts(db, ownerUserId),
+      workItems: includeWorkItems ? listWorkItemSummaries(db, ownerUserId) : [],
+      pipelines: listPipelines(db, ownerUserId),
+      reports: listTestReports(db, ownerUserId),
+      feishuInbox: includeFeishuInbox ? listFeishuInbox(db, ownerUserId) : [],
+      feishuIntegration: getFeishuStatus(db, ownerUserId),
     })
   })
 
-  router.get('/repositories', (_request, response) => {
-    response.json(listRepositories(db))
+  router.get('/repositories', (request, response) => {
+    response.json(listRepositories(db, scopedOwnerId(request)))
   })
 
   router.post('/repositories', (request, response) => {
-    response.status(201).json(createRepository(db, request.body))
+    response.status(201).json(createRepository(db, request.body, currentUser(request).id))
   })
 
   router.patch('/repositories/:id', (request, response) => {
     response.json(
-      updateRepositorySettings(db, request.params.id, request.body ?? {}),
+      updateRepositorySettings(
+        db,
+        request.params.id,
+        request.body ?? {},
+        currentUser(request).id,
+      ),
     )
   })
 
-  router.get('/accounts', (_request, response) => {
-    response.json(listAccounts(db))
+  router.get('/accounts', (request, response) => {
+    response.json(listAccounts(db, currentUser(request).id))
   })
 
   router.post('/accounts', (request, response) => {
-    response.status(201).json(createAccount(db, vault, request.body))
+    response.status(201).json(createAccount(db, vault, request.body, currentUser(request).id))
   })
 
   router.post('/accounts/import', (request, response) => {
-    const result = importAccounts(db, vault, request.body?.accounts)
+    const result = importAccounts(db, vault, request.body?.accounts, currentUser(request).id)
     response.status(201).json({
       items: result.accounts,
       count: result.accounts.length,
@@ -254,21 +280,25 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.patch('/accounts/:id', (request, response) => {
-    response.json(updateAccount(db, vault, request.params.id, request.body ?? {}))
+    response.json(
+      updateAccount(db, vault, request.params.id, request.body ?? {}, currentUser(request).id),
+    )
   })
 
   router.delete('/accounts/:id', (request, response) => {
-    deleteAccount(db, request.params.id)
+    deleteAccount(db, request.params.id, currentUser(request).id)
     response.json({ ok: true })
   })
 
   router.get('/accounts/:id/build-job', async (request, response) => {
+    getAccount(db, request.params.id, currentUser(request).id)
     response.json(
       await getBuildJobWithFallback(db, vault, request.params.id, request.query.clientId),
     )
   })
 
   router.post('/accounts/:id/build', async (request, response) => {
+    getAccount(db, request.params.id, currentUser(request).id)
     response.status(202).json(
       await triggerBuildWithFallback(
         db,
@@ -280,12 +310,16 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     )
   })
 
-  router.get('/feishu/inbox', (_request, response) => {
-    response.json(listFeishuInbox(db))
+  router.get('/feishu/inbox', (request, response) => {
+    response.json(listFeishuInbox(db, currentUser(request).id))
   })
 
-  router.get('/feishu/snapshot', (_request, response) => {
-    const snapshot = readFeishuSnapshotFromDatabase(db, config.feishuProjectKey)
+  router.get('/feishu/snapshot', (request, response) => {
+    const snapshot = readFeishuSnapshotFromDatabase(
+      db,
+      config.feishuProjectKey,
+      currentUser(request).id,
+    )
     if (!snapshot) {
       response.status(404).json({
         error: { code: 'FEISHU_SNAPSHOT_NOT_FOUND', message: '飞书快照尚未生成' },
@@ -295,20 +329,24 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.json(snapshot)
   })
 
-  router.get('/integrations/feishu/status', (_request, response) => {
-    response.json(getFeishuStatus(db))
+  router.get('/integrations/feishu/status', (request, response) => {
+    response.json(getFeishuStatus(db, currentUser(request).id))
   })
 
   router.post('/integrations/feishu/connect', async (request, response) => {
-    response.status(201).json(await connectFeishu(db, vault, request.body))
+    const user = currentUser(request)
+    if (typeof request.body?.defaultRepoId === 'string' && request.body.defaultRepoId) {
+      getRepository(db, request.body.defaultRepoId, user.id)
+    }
+    response.status(201).json(await connectFeishu(db, vault, request.body, user.id))
   })
 
-  router.post('/integrations/feishu/test', async (_request, response) => {
-    response.json(await testFeishuConnection(db, vault))
+  router.post('/integrations/feishu/test', async (request, response) => {
+    response.json(await testFeishuConnection(db, vault, currentUser(request).id))
   })
 
-  router.post('/integrations/feishu/sync', async (_request, response) => {
-    response.json(await syncFeishu(db, vault, 'manual'))
+  router.post('/integrations/feishu/sync', async (request, response) => {
+    response.json(await syncFeishu(db, vault, 'manual', currentUser(request).id))
   })
 
   router.post('/integrations/feishu/ingest', (request, response) => {
@@ -317,7 +355,9 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.get('/integrations/feishu/agent/status', (request, response) => {
-    response.json(getFeishuAgentBridgeStatus(db, request.query.clientId))
+    response.json(
+      getFeishuAgentBridgeStatus(db, request.query.clientId, currentUser(request).id),
+    )
   })
 
   router.post('/integrations/feishu/agent/heartbeat', (request, response) => {
@@ -329,9 +369,10 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/integrations/feishu/agent/commands', (request, response) => {
+    const user = currentUser(request)
     if (request.body?.type === 'delivery_start') {
       const payload = parseLocalDeliveryAgentRequest(request.body?.payload)
-      assertRequirementDeliveryContextReady(db, payload.workItemId)
+      assertRequirementDeliveryContextReady(db, payload.workItemId, user.id)
     }
     response
       .status(202)
@@ -341,6 +382,7 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
           request.body?.type,
           request.body?.payload,
           request.body?.clientId,
+          user.id,
         ),
       )
   })
@@ -376,25 +418,36 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.json(rotateFeishuSyncToken(db, feishuIngestBearerToken(request.headers)))
   })
 
-  router.post('/integrations/feishu/disconnect', (_request, response) => {
-    response.json(disconnectFeishu(db))
+  router.post('/integrations/feishu/disconnect', (request, response) => {
+    response.json(disconnectFeishu(db, currentUser(request).id))
   })
 
   router.post('/integrations/feishu/events', (request, response) => {
     const rawBody = (request as Request & { rawBody?: Buffer }).rawBody
-    response.json(handleFeishuEvent(db, vault, request.body, rawBody, request.headers))
+    const integrationId =
+      typeof request.query.integration === 'string' ? request.query.integration.trim() : undefined
+    response.json(
+      handleFeishuEvent(
+        db,
+        vault,
+        request.body,
+        rawBody,
+        request.headers,
+        integrationId || undefined,
+      ),
+    )
   })
 
-  router.get('/work-items', (_request, response) => {
-    response.json(listWorkItemSummaries(db))
+  router.get('/work-items', (request, response) => {
+    response.json(listWorkItemSummaries(db, currentUser(request).id))
   })
 
   router.post('/work-items', (request, response) => {
-    response.status(201).json(createWorkItem(db, request.body))
+    response.status(201).json(createWorkItem(db, request.body, currentUser(request).id))
   })
 
   router.post('/work-items/import', (request, response) => {
-    const result = importWorkItems(db, request.body?.items)
+    const result = importWorkItems(db, request.body?.items, currentUser(request).id)
     response.status(201).json({
       items: result.items,
       count: result.items.length,
@@ -403,25 +456,32 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.get('/work-items/:id/delivery-context', (request, response) => {
-    response.json(getWorkItemDeliveryContext(db, request.params.id))
+    response.json(
+      getWorkItemDeliveryContext(db, request.params.id, scopedOwnerId(request)),
+    )
   })
 
   router.put('/work-items/:id/delivery-context', (request, response) => {
     response.json(
-      saveWorkItemDeliveryContext(db, request.params.id, request.body ?? {}),
+      saveWorkItemDeliveryContext(
+        db,
+        request.params.id,
+        request.body ?? {},
+        currentUser(request).id,
+      ),
     )
   })
 
   router.get('/work-items/:id', (request, response) => {
-    response.json(getWorkItem(db, request.params.id))
+    response.json(getWorkItem(db, request.params.id, currentUser(request).id))
   })
 
-  router.get('/pipelines', (_request, response) => {
-    response.json(listPipelines(db))
+  router.get('/pipelines', (request, response) => {
+    response.json(listPipelines(db, currentUser(request).id))
   })
 
   router.get('/pipelines/:id', (request, response) => {
-    response.json(getPipeline(db, request.params.id))
+    response.json(getPipeline(db, request.params.id, currentUser(request).id))
   })
 
   router.post('/pipelines', (_request, _response) => {
@@ -433,11 +493,18 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/pipelines/local', (request, response) => {
+    assertSessionOwnsWorkItem(request, request.body?.workItemId)
     response.status(201).json(recordLocalDelivery(db, request.body ?? {}))
   })
 
   router.post('/pipelines/local/build', async (request, response) => {
-    const result = await triggerDeliveryBuild(db, vault, request.body ?? {})
+    assertSessionOwnsWorkItem(request, request.body?.workItemId)
+    const result = await triggerDeliveryBuild(
+      db,
+      vault,
+      request.body ?? {},
+      scopedOwnerId(request),
+    )
     response.status(result.triggered ? 202 : 200).json(result)
   })
 
@@ -450,19 +517,19 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.post('/pipelines/:id/cancel', (request, response) => {
-    response.json(cancelPipeline(db, request.params.id))
+    response.json(cancelPipeline(db, request.params.id, currentUser(request).id))
   })
 
-  router.get('/reports', (_request, response) => {
-    response.json(listTestReports(db))
+  router.get('/reports', (request, response) => {
+    response.json(listTestReports(db, currentUser(request).id))
   })
 
   router.get('/reports/:id', (request, response) => {
-    response.json(getTestReport(db, request.params.id))
+    response.json(getTestReport(db, request.params.id, currentUser(request).id))
   })
 
   router.get('/reports/:id/markdown', (request, response) => {
-    const report = getTestReport(db, request.params.id)
+    const report = getTestReport(db, request.params.id, currentUser(request).id)
     response.type('text/markdown').send(reportAsMarkdown(report))
   })
 

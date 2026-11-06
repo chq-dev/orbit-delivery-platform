@@ -7,9 +7,8 @@ import { createApp } from './app.js'
 import { config } from './config.js'
 import { createDatabase } from './db/database.js'
 import {
-  getFeishuStatus,
   processFeishuOutbox,
-  syncFeishu,
+  syncAllFeishuIntegrations,
 } from './services/feishuIntegrationService.js'
 import { bootstrapFeishuIntegration } from './services/feishuBootstrapService.js'
 import { CredentialVault } from './security/vault.js'
@@ -85,9 +84,7 @@ const pipelineTimer = setInterval(() => {
 }, config.pipelineStepMs)
 
 const feishuSyncTimer = setInterval(() => {
-  const status = getFeishuStatus(db)
-  if (status.authMode !== 'token' && status.authMode !== 'plugin') return
-  void syncFeishu(db, vault, 'schedule').catch((error) => {
+  void syncAllFeishuIntegrations(db, vault, 'schedule').catch((error) => {
     console.error('飞书定时同步失败', error)
   })
 }, config.feishuSyncIntervalMs)

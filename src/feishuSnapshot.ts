@@ -49,29 +49,33 @@ export async function fetchFeishuSnapshot(url: string): Promise<ParsedFeishuSnap
   return parseFeishuSnapshot(await response.json())
 }
 
-export function readCachedFeishuSnapshot(): FeishuSnapshot | null {
+function cacheKey(userId?: string): string {
+  return `${CACHE_KEY}.${userId ?? 'anonymous'}`
+}
+
+export function readCachedFeishuSnapshot(userId?: string): FeishuSnapshot | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.localStorage.getItem(CACHE_KEY)
+    const raw = window.localStorage.getItem(cacheKey(userId))
     return raw ? parseFeishuSnapshot(JSON.parse(raw)).snapshot : null
   } catch {
     return null
   }
 }
 
-export function writeCachedFeishuSnapshot(snapshot: FeishuSnapshot): void {
+export function writeCachedFeishuSnapshot(snapshot: FeishuSnapshot, userId?: string): void {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(CACHE_KEY, JSON.stringify(snapshot))
+    window.localStorage.setItem(cacheKey(userId), JSON.stringify(snapshot))
   } catch {
     // A full or disabled localStorage must not prevent live data from rendering.
   }
 }
 
-export function clearCachedFeishuSnapshot(): void {
+export function clearCachedFeishuSnapshot(userId?: string): void {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.removeItem(CACHE_KEY)
+    window.localStorage.removeItem(cacheKey(userId))
   } catch {
     // Ignore storage access failures; live API data must still be usable.
   }
