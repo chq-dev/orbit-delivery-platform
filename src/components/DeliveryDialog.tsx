@@ -772,6 +772,7 @@ export function DeliveryDialog({
         pushAfterAcceptance: deliveryInput.pushAfterAcceptance,
         runBuild: deliveryInput.runBuild,
         autoClose: deliveryInput.autoClose,
+        temporaryCheckout: deliveryInput.temporaryCheckout,
       })
       setDeliveryJob(pending)
       let completed: LocalDeliveryJob
