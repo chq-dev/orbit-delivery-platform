@@ -71,6 +71,12 @@ import {
   parseDeliveryScreenshots,
 } from '../services/deliveryContextAssets.js'
 import {
+  DELIVERY_SCREENSHOT_REQUEST_MAX_BYTES,
+  MAX_DELIVERY_SCREENSHOTS,
+  MAX_DELIVERY_SCREENSHOT_BYTES,
+  MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
+} from '../../src/deliveryContext.js'
+import {
   DELIVERY_CODEX_PHASES,
   deliveryDesignReportExists,
   deliveryWorkspaceFiles,
@@ -728,6 +734,13 @@ async function currentHealth(): Promise<{
   pendingLogin: LoginChallenge | null
   delivery: LocalDeliveryJob | null
   deliveryTimeoutMs: number
+  deliveryScreenshots: {
+    supported: true
+    maxCount: number
+    maxScreenshotBytes: number
+    maxTotalBytes: number
+    requestBodyBytes: number
+  }
   feishuMcp: FeishuMcpPublicStatus
   meegleMcp: MeegleMcpPublicStatus
   codex: {
@@ -757,6 +770,13 @@ async function currentHealth(): Promise<{
     pendingLogin,
     delivery: deliveryJob ? deliveryJobSummary(deliveryJob) : null,
     deliveryTimeoutMs,
+    deliveryScreenshots: {
+      supported: true,
+      maxCount: MAX_DELIVERY_SCREENSHOTS,
+      maxScreenshotBytes: MAX_DELIVERY_SCREENSHOT_BYTES,
+      maxTotalBytes: MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
+      requestBodyBytes: DELIVERY_SCREENSHOT_REQUEST_MAX_BYTES,
+    },
     feishuMcp,
     meegleMcp: meegleMcp.status,
     codex: {
@@ -2208,7 +2228,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (request.method === 'POST' && path === '/delivery/start') {
     sendJson(response, 202, {
       ok: true,
-      job: startLocalDelivery(await readBody(request, 8 * 1024 * 1024)),
+      job: startLocalDelivery(await readBody(request, DELIVERY_SCREENSHOT_REQUEST_MAX_BYTES)),
     })
     return
   }

@@ -249,6 +249,13 @@ export interface FeishuClientAgentHealth {
   version: number
   config: FeishuClientAgentConfigStatus
   deliveryTimeoutMs?: number
+  deliveryScreenshots?: {
+    supported: true
+    maxCount: number
+    maxScreenshotBytes: number
+    maxTotalBytes: number
+    requestBodyBytes: number
+  }
   meegle: {
     available: boolean
     authenticated: boolean

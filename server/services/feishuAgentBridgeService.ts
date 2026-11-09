@@ -119,6 +119,13 @@ export interface FeishuAgentHealth {
     available: boolean
     path?: string
   }
+  deliveryScreenshots?: {
+    supported: true
+    maxCount: number
+    maxScreenshotBytes: number
+    maxTotalBytes: number
+    requestBodyBytes: number
+  }
   delivery?: FeishuAgentDeliveryJob | null
 }
 
@@ -347,6 +354,9 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
   const codex = isRecord(value.codex) ? value.codex : {}
   const feishuMcp = isRecord(value.feishuMcp) ? value.feishuMcp : {}
   const meegleMcp = isRecord(value.meegleMcp) ? value.meegleMcp : {}
+  const deliveryScreenshots = isRecord(value.deliveryScreenshots)
+    ? value.deliveryScreenshots
+    : null
 
   return {
     ok: true,
@@ -396,6 +406,17 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
       available: boolean(codex.available),
       path: optionalText(codex.path, 1_000),
     },
+    ...(deliveryScreenshots?.supported === true
+      ? {
+          deliveryScreenshots: {
+            supported: true as const,
+            maxCount: nonNegativeInteger(deliveryScreenshots.maxCount),
+            maxScreenshotBytes: nonNegativeInteger(deliveryScreenshots.maxScreenshotBytes),
+            maxTotalBytes: nonNegativeInteger(deliveryScreenshots.maxTotalBytes),
+            requestBodyBytes: nonNegativeInteger(deliveryScreenshots.requestBodyBytes),
+          },
+        }
+      : {}),
     delivery: value.delivery === null ? null : sanitizeDeliveryJob(value.delivery),
   }
 }

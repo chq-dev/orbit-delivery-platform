@@ -96,11 +96,45 @@ async function requestLocalAgent<T>(
     | (T & { ok?: boolean; error?: string; message?: string })
     | null
   if (!response.ok || payload?.ok === false) {
+    const detail = payload?.message || payload?.error
     throw new Error(
-      payload?.message || payload?.error || `本机代理请求失败（HTTP ${response.status}）`,
+      detail ? `${detail}（HTTP ${response.status}）` : `本机代理请求失败（HTTP ${response.status}）`,
     )
   }
   return payload as T
+}
+
+async function assertLocalAgentScreenshotSupport(
+  screenshots: DeliveryScreenshotUpload[],
+): Promise<void> {
+  let health: FeishuClientAgentHealth
+  try {
+    health = await requestLocalAgent<FeishuClientAgentHealth>('/health', undefined, 5_000)
+  } catch {
+    // 健康检查失败时继续发起交付，让真正的交付请求返回可诊断的错误。
+    return
+  }
+  const capability = health.deliveryScreenshots
+  if (!capability?.supported) {
+    throw new Error('当前本机代理未提供截图接收能力，请更新并重启代理后重试')
+  }
+  if (screenshots.length > capability.maxCount) {
+    throw new Error(`当前本机代理最多接收 ${capability.maxCount} 张截图，请减少后重试`)
+  }
+  const oversized = screenshots.find(
+    (screenshot) => screenshot.sizeBytes > capability.maxScreenshotBytes,
+  )
+  if (oversized) {
+    throw new Error(
+      `截图 ${oversized.name} 超过 ${Math.floor(capability.maxScreenshotBytes / 1024)}KB，请压缩后重试`,
+    )
+  }
+  const totalBytes = screenshots.reduce((total, screenshot) => total + screenshot.sizeBytes, 0)
+  if (totalBytes > capability.maxTotalBytes) {
+    throw new Error(
+      `截图合计不能超过 ${Math.floor(capability.maxTotalBytes / 1024)}KB，请删除部分截图后重试`,
+    )
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -247,6 +281,7 @@ export async function startLocalDeliveryOnAgent(
   input: LocalDeliveryStartInput,
   screenshots: DeliveryScreenshotUpload[],
 ): Promise<LocalDeliveryJob> {
+  if (screenshots.length > 0) await assertLocalAgentScreenshotSupport(screenshots)
   let payload: { ok: true; job: LocalDeliveryJob }
   try {
     payload = await requestLocalAgent<{ ok: true; job: LocalDeliveryJob }>(
@@ -259,8 +294,11 @@ export async function startLocalDeliveryOnAgent(
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (screenshots.length > 0 && /请求体过大|不支持交付参数|not_found|404/.test(message)) {
-      throw new Error('本机代理版本过旧，请更新并重启代理后再发起带截图的交付')
+    if (screenshots.length > 0 && /不支持交付参数|not_found|404/.test(message)) {
+      throw new Error('当前本机代理不支持截图交付，请更新并重启代理后重试')
+    }
+    if (screenshots.length > 0 && /请求体过大/.test(message)) {
+      throw new Error(`本机代理拒绝接收截图：${message}；请减少截图数量或压缩后重试`)
     }
     throw error
   }

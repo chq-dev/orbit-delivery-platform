@@ -64,6 +64,26 @@ const testClient = {
   health,
 }
 
+test('代理心跳保留截图接收能力，供页面提前校验', () => {
+  const sanitized = sanitizeFeishuAgentHealth({
+    ...health,
+    deliveryScreenshots: {
+      supported: true,
+      maxCount: 10,
+      maxScreenshotBytes: 500 * 1024,
+      maxTotalBytes: 5 * 1024 * 1024,
+      requestBodyBytes: 11 * 1024 * 1024,
+    },
+  })
+  assert.deepEqual(sanitized.deliveryScreenshots, {
+    supported: true,
+    maxCount: 10,
+    maxScreenshotBytes: 500 * 1024,
+    maxTotalBytes: 5 * 1024 * 1024,
+    requestBodyBytes: 11 * 1024 * 1024,
+  })
+})
+
 test('代理心跳只保存脱敏状态并据此判断在线', () => {
   const db = createDatabase({ filename: ':memory:' })
   try {

@@ -7,7 +7,11 @@ import {
   materializeDeliveryScreenshots,
   parseDeliveryScreenshots,
 } from '../services/deliveryContextAssets.js'
-import { MAX_DELIVERY_SCREENSHOTS } from '../../src/deliveryContext.js'
+import {
+  DELIVERY_SCREENSHOT_REQUEST_MAX_BYTES,
+  MAX_DELIVERY_SCREENSHOTS,
+  MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
+} from '../../src/deliveryContext.js'
 
 function screenshot(bytes = Buffer.from('design-image')) {
   return {
@@ -60,4 +64,9 @@ test('本机代理拒绝非图片和超限截图', () => {
     () => parseDeliveryScreenshots([screenshot(Buffer.alloc(501 * 1024, 1))]),
     /超过 500KB/,
   )
+})
+
+test('截图请求体上限覆盖 Base64 膨胀后的最大体积', () => {
+  const encodedMaxBytes = Math.ceil((MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES * 4) / 3)
+  assert.ok(DELIVERY_SCREENSHOT_REQUEST_MAX_BYTES > encodedMaxBytes)
 })
