@@ -2,7 +2,7 @@
 set -euo pipefail
 
 LABEL="com.orbit.feishu-agent"
-DEFAULT_PLATFORM_BASE_URL="https://8.145.45.84:8787"
+DEFAULT_PLATFORM_BASE_URL="https://8.145.45.84"
 PLATFORM_BASE_URL="${1:-${ORBIT_PLATFORM_BASE_URL:-$DEFAULT_PLATFORM_BASE_URL}}"
 PLATFORM_BASE_URL="${PLATFORM_BASE_URL%/}"
 DOWNLOAD_BASE_URL="${2:-$PLATFORM_BASE_URL}"
@@ -97,6 +97,7 @@ DELIVERY_CLI_XML="$(xml_escape "$APP_DIR/localDelivery.mjs")"
 HOME_XML="$(xml_escape "$HOME")"
 PATH_XML="$(xml_escape "$PATH_VALUE")"
 PLATFORM_XML="$(xml_escape "$PLATFORM_BASE_URL")"
+ALLOWED_ORIGINS_XML="$(xml_escape "$PLATFORM_BASE_URL")"
 CODEX_BIN="$(command -v codex || true)"
 MEEGLE_BIN="$(command -v meegle || true)"
 CODEX_ENV=""
@@ -125,6 +126,7 @@ cat > "$PLIST" <<EOF
     <key>HOME</key><string>$HOME_XML</string>
     <key>PATH</key><string>$PATH_XML</string>
     <key>FEISHU_AGENT_PLATFORM_URL</key><string>$PLATFORM_XML</string>
+    <key>FEISHU_AGENT_ALLOWED_ORIGINS</key><string>$ALLOWED_ORIGINS_XML</string>
     <key>ORBIT_FEISHU_SYNC_CLI</key><string>$SYNC_CLI_XML</string>
     <key>ORBIT_LOCAL_DELIVERY_CLI</key><string>$DELIVERY_CLI_XML</string>
     $CODEX_ENV

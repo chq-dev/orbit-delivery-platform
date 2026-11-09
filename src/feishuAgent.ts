@@ -59,7 +59,10 @@ async function requestLocalAgent<T>(path: string, init?: RequestInit): Promise<T
       signal: AbortSignal.timeout(10_000),
     })
   } catch {
-    throw new Error('无法连接当前 Mac 的本机代理，请确认 npm run feishu:agent 正在运行')
+    if (!window.isSecureContext) {
+      throw new Error('浏览器未信任当前平台连接，无法访问 Mac 本机代理。请先为平台配置浏览器信任的 HTTPS 证书，再重试绑定。')
+    }
+    throw new Error(`浏览器无法访问 Mac 本机代理。请检查浏览器的本地网络访问权限，并确认代理允许当前页面来源：${window.location.origin}`)
   }
   const payload = (await response.json().catch(() => null)) as
     | { error?: string; message?: string; config?: unknown }

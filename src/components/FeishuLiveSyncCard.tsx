@@ -419,7 +419,7 @@ export function FeishuLiveSyncCard() {
                 ? '已检测到当前 Mac 上的代理。点击“绑定当前 Mac”完成登记。'
                 : feishuAgent.lastSeenAt
                 ? `最近心跳：${formatRunTime(feishuAgent.lastSeenAt)}。请确认 launchd 服务仍在运行，恢复后页面会自动上线。`
-                : '代理能响应时，点击“绑定当前 Mac”即可登记。首次安装才运行安装命令；若 18787 已占用，请先恢复现有代理。'}
+                : '本机代理运行后，点击“绑定当前 Mac”即可在浏览器中登记，无需手动运行 npm 命令。首次使用仍需安装一次 Mac 执行代理；浏览器不能代替 macOS 安装或启动本机程序。'}
             </p>
           </div>
           {!localFeishuAgentClientId && (

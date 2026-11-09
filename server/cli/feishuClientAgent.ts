@@ -222,7 +222,7 @@ const configuredClientName = process.env.FEISHU_AGENT_CLIENT_NAME?.trim()
 const pairingPlatformBaseUrl = (
   process.env.FEISHU_AGENT_PLATFORM_URL?.trim() ||
   process.env.PLATFORM_BASE_URL?.trim() ||
-  'https://8.145.45.84:8787'
+  'https://8.145.45.84'
 ).replace(/\/$/, '')
 const pairingProjectKey = process.env.FEISHU_PROJECT_KEY?.trim() || 'rjcloud'
 const pairingStatePath = `${configPath}.pairing`
@@ -230,6 +230,7 @@ const allowedOrigins = new Set(
   (
     process.env.FEISHU_AGENT_ALLOWED_ORIGINS ||
     [
+      'https://8.145.45.84',
       'http://8.145.45.84:8787',
       'https://8.145.45.84:8787',
       'http://localhost:8787',
