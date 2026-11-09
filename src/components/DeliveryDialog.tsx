@@ -22,7 +22,6 @@ import {
   MAX_DELIVERY_SCREENSHOTS,
   MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
   REQUIREMENT_BREAKDOWN_MIN_LENGTH,
-  isDeliveryScreenshotMimeType,
   requirementDeliveryContextIssue,
   type DeliveryScreenshotUpload,
 } from '../deliveryContext'
@@ -33,13 +32,20 @@ import {
   pipelineFromDeliveryResult,
   probeLocalDeliveryAgent,
   startLocalDelivery,
+  startLocalDeliveryOnAgent,
   startCloudDelivery,
   waitForLocalDelivery,
+  waitForLocalDeliveryOnAgent,
   waitForCloudDelivery,
   type CloudDeliveryReadiness,
   type LocalDeliveryAgentReadiness,
 } from '../localDeliveryAgent'
 import { cancelLocalDeliveryJob, fetchLocalDeliveryJob } from '../feishuAgent'
+import {
+  clearDeliveryScreenshotDrafts,
+  loadDeliveryScreenshotDrafts,
+  saveDeliveryScreenshotDrafts,
+} from '../deliveryScreenshotDrafts'
 import { prepareScreenshot } from '../screenshotCompression'
 import { displayDeliveryStages } from '../deliveryStages'
 import { useData } from '../store'
@@ -324,6 +330,8 @@ export function DeliveryDialog({
   const terminationRequestedRef = useRef(false)
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
+  const screenshotsDirtyRef = useRef(false)
+  const screenshotDraftWorkItemRef = useRef('')
   const canControlLocalAgent = Boolean(
     localFeishuAgentClientId &&
       selectedFeishuAgentClientId === localFeishuAgentClientId,
@@ -417,15 +425,12 @@ export function DeliveryDialog({
     executionMode === 'server' ||
     (executionMode === 'auto' && !canUseMacAutomatically)
   const macExecution = !serverExecution
-  const savedScreenshotCount = selectedItem?.requirementScreenshotCount ?? 0
-  const effectiveScreenshotCount =
-    screenshots.length > 0 ? screenshots.length : savedScreenshotCount
   const requirementContextIssue =
     selectedItem?.type === 'requirement'
       ? requirementDeliveryContextIssue({
           requirementBreakdown,
           designReference,
-          screenshotCount: effectiveScreenshotCount,
+          screenshotCount: screenshots.length,
         })
       : undefined
   const deliveryStages = useMemo(
@@ -485,6 +490,8 @@ export function DeliveryDialog({
     setScreenshotError('')
     setCompressingScreenshots(false)
     requirementContextDirtyRef.current = false
+    screenshotsDirtyRef.current = false
+    screenshotDraftWorkItemRef.current = ''
     setDeliveryJob(null)
     setDeliveryError('')
     // Selection should only reset when the dialog opens.
@@ -500,20 +507,24 @@ export function DeliveryDialog({
         if (cancelled || requirementContextDirtyRef.current) return
         setRequirementBreakdown(context.requirementBreakdown ?? '')
         setDesignReference(context.designReference ?? '')
-        setScreenshots(
-          context.screenshots.flatMap((screenshot) =>
-            isDeliveryScreenshotMimeType(screenshot.mimeType)
-              ? [{ ...screenshot, mimeType: screenshot.mimeType }]
-              : [],
-          ),
-        )
         setScreenshotError('')
       })
       .catch(() => undefined)
+    void loadDeliveryScreenshotDrafts(workItemId).then((drafts) => {
+      if (cancelled) return
+      screenshotDraftWorkItemRef.current = workItemId
+      if (!screenshotsDirtyRef.current) setScreenshots(drafts)
+    })
     return () => {
       cancelled = true
     }
   }, [open, workItemId, selectedItem?.type])
+
+  useEffect(() => {
+    if (!open || !workItemId || selectedItem?.type !== 'requirement') return
+    if (screenshotDraftWorkItemRef.current !== workItemId) return
+    void saveDeliveryScreenshotDrafts(workItemId, screenshots)
+  }, [open, workItemId, screenshots, selectedItem?.type])
 
   useEffect(() => {
     if (!open) return
@@ -620,6 +631,8 @@ export function DeliveryDialog({
     setScreenshots([])
     setScreenshotError('')
     requirementContextDirtyRef.current = false
+    screenshotsDirtyRef.current = false
+    screenshotDraftWorkItemRef.current = ''
     setDeliveryJob(null)
     setDeliveryError('')
     if (item) handleRepoChange(item.repoId)
@@ -658,6 +671,7 @@ export function DeliveryDialog({
     setCompressingScreenshots(true)
     setScreenshotError('')
     requirementContextDirtyRef.current = true
+    screenshotsDirtyRef.current = true
     const accepted: DeliveryScreenshotUpload[] = []
     const errors: string[] = []
     let totalBytes = screenshots.reduce((total, screenshot) => total + screenshot.sizeBytes, 0)
@@ -743,6 +757,15 @@ export function DeliveryDialog({
         (serverExecution || autoCommit),
       temporaryCheckout: serverExecution,
     }
+    const directLocalDelivery = canControlLocalAgent && !serverExecution
+    if (screenshots.length > 0 && !directLocalDelivery) {
+      notify(
+        '设计截图仅支持本机执行',
+        '截图只在当前浏览器暂存，不会上传服务端；请选择当前终端执行或移除截图后重试',
+        'warning',
+      )
+      return
+    }
     if (canControlLocalAgent && localDeliveryJob?.status === 'running') {
       notify(
         '本机已有执行中的任务',
@@ -758,11 +781,13 @@ export function DeliveryDialog({
     setDeliveryError('')
     let usedServerFallback = false
     try {
-      if (selectedItem?.type === 'requirement') {
+      if (
+        selectedItem?.type === 'requirement' &&
+        (requirementBreakdown.trim() || designReference.trim())
+      ) {
         await api.saveWorkItemDeliveryContext(workItemId, {
           requirementBreakdown: requirementBreakdown.trim(),
           designReference: designReference.trim(),
-          ...(screenshots.length > 0 ? { screenshots } : {}),
         })
       }
       const pending = createPendingLocalDeliveryJob({
@@ -787,7 +812,9 @@ export function DeliveryDialog({
           controller.signal,
         )
       } else {
-        const started = await startLocalDelivery(deliveryInput, clientId!)
+        const started = directLocalDelivery
+          ? await startLocalDeliveryOnAgent(deliveryInput, screenshots)
+          : await startLocalDelivery(deliveryInput, clientId!)
         setDeliveryJob(started)
         void reload(true)
         notify(
@@ -796,13 +823,20 @@ export function DeliveryDialog({
           'info',
         )
         try {
-          completed = await waitForLocalDelivery(
-            started.id,
-            clientId!,
-            setDeliveryJob,
-            deliveryWaitTimeoutMs,
-            controller.signal,
-          )
+          completed = directLocalDelivery
+            ? await waitForLocalDeliveryOnAgent(
+                started.id,
+                setDeliveryJob,
+                deliveryWaitTimeoutMs,
+                controller.signal,
+              )
+            : await waitForLocalDelivery(
+                started.id,
+                clientId!,
+                setDeliveryJob,
+                deliveryWaitTimeoutMs,
+                controller.signal,
+              )
         } catch (error) {
           const localJob =
             error instanceof Error
@@ -814,6 +848,9 @@ export function DeliveryDialog({
             localJob?.status === 'failed' &&
             /尚未配置当前客户端的代码路径|不存在代码目录|不是 Git 工作区|读取 Git 工作区失败/.test(checkoutLog)
           if (!repositoryMissing) throw error
+          if (screenshots.length > 0) {
+            throw new Error('Mac 未找到该仓库；截图只在本机暂存，不能随服务器临时执行发送，请先配置本机仓库路径')
+          }
           if (!deliveryInput.autoCommit || !deliveryInput.pushAfterAcceptance) {
             throw new Error('Mac 未找到该仓库；服务器临时检出需要启用自动提交和推送，请确认后重试')
           }
@@ -845,6 +882,7 @@ export function DeliveryDialog({
       setDeliveryJob(completed)
       await reload(true)
       await refreshWorkItems(true).catch(() => undefined)
+      void clearDeliveryScreenshotDrafts(workItemId)
       const run = pipelineFromDeliveryResult(completed.result)
       if (!run) {
         notify(
@@ -1274,7 +1312,7 @@ export function DeliveryDialog({
                 <span className="field-label">
                   设计截图
                   <small>
-                    {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 张 · 单张自动压缩到 500KB 内
+                    {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 张 · 单张自动压缩到 500KB 内 · 仅本机暂存
                   </small>
                 </span>
                 <div
@@ -1317,6 +1355,7 @@ export function DeliveryDialog({
                         aria-label={`删除截图 ${screenshot.name}`}
                         onClick={() => {
                           requirementContextDirtyRef.current = true
+                          screenshotsDirtyRef.current = true
                           setScreenshots((current) => current.filter((_, itemIndex) => itemIndex !== index))
                         }}
                       >
@@ -1338,11 +1377,6 @@ export function DeliveryDialog({
                     </button>
                   )}
                 </div>
-                {savedScreenshotCount > 0 && screenshots.length === 0 && (
-                  <small className="screenshot-saved-note">
-                    已保存 {savedScreenshotCount} 张截图，正在读取预览或将在执行时继续使用
-                  </small>
-                )}
                 {screenshotError && <div className="form-error">{screenshotError}</div>}
               </div>
 

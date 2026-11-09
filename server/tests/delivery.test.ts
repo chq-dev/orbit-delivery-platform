@@ -185,6 +185,48 @@ test('版本 19 数据库升级后会添加仓库系统编译配置列', () => {
   upgraded.close()
 })
 
+test('版本 23 数据库升级后支持 Figma 平台账号', () => {
+  const filename = join(tempDir, 'upgrade-v23-figma-account.db')
+  const oldDb = createDatabase({ filename })
+  oldDb.pragma('foreign_keys = OFF')
+  oldDb.exec(`
+    DROP TABLE accounts;
+    CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL CHECK (platform IN ('git', 'feishu', 'build', 'device')),
+      username TEXT NOT NULL,
+      label TEXT NOT NULL,
+      service_url TEXT NOT NULL DEFAULT '',
+      secret_ciphertext TEXT NOT NULL,
+      secret_iv TEXT NOT NULL,
+      secret_tag TEXT NOT NULL,
+      secret_hint TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active', 'expiring')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (owner_user_id, platform, username)
+    );
+    PRAGMA user_version = 23;
+  `)
+  oldDb.close()
+
+  const upgraded = createDatabase({ filename })
+  const table = upgraded
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'")
+    .get() as { sql: string }
+  assert.match(table.sql, /'figma'/)
+  assert.doesNotThrow(() =>
+    createAccount(upgraded, vault, {
+      platform: 'figma',
+      username: 'figma-migration@example.com',
+      password: 'figd_migration_token',
+      label: '迁移后的 Figma 账号',
+    }),
+  )
+  upgraded.close()
+})
+
 test('版本 20 数据库升级后允许保存设计、集成之外的交付产物', () => {
   const filename = join(tempDir, 'upgrade-v20-pipeline-artifacts.db')
   const oldDb = createDatabase({ filename })

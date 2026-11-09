@@ -67,6 +67,10 @@ import {
   type LocalDeliveryAgentStep,
 } from '../services/localDeliveryAgentService.js'
 import {
+  materializeDeliveryScreenshots,
+  parseDeliveryScreenshots,
+} from '../services/deliveryContextAssets.js'
+import {
   DELIVERY_CODEX_PHASES,
   deliveryDesignReportExists,
   deliveryWorkspaceFiles,
@@ -1040,12 +1044,17 @@ async function findExistingRepositoryCheckout(repository: {
 function localDeliveryEnvironment(
   config: FeishuAgentStoredConfig,
   deliveryJobId?: string,
+  screenshotPaths: string[] = [],
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     PLATFORM_SYNC_TOKEN: config.syncToken,
     ORBIT_AGENT_CLIENT_ID: config.clientId,
     ...(deliveryJobId ? { ORBIT_DELIVERY_JOB_ID: deliveryJobId } : {}),
+  }
+  delete environment.ORBIT_DELIVERY_SCREENSHOTS
+  if (screenshotPaths.length > 0) {
+    environment.ORBIT_DELIVERY_SCREENSHOTS = JSON.stringify(screenshotPaths)
   }
   for (const key of [
     'FEISHU_INGEST_TOKEN',
@@ -1355,6 +1364,7 @@ async function executeLocalDelivery(
   config: FeishuAgentStoredConfig,
   request: LocalDeliveryAgentRequest,
   signal: AbortSignal,
+  screenshotPaths: string[],
 ): Promise<void> {
   let temporaryCheckoutRoot = ''
   try {
@@ -1451,7 +1461,7 @@ async function executeLocalDelivery(
             ...(args.indexOf('--') >= 0 ? args.slice(args.indexOf('--') + 1) : args),
           ]
         : args,
-      localDeliveryEnvironment(config, job.commandId ?? job.id),
+      localDeliveryEnvironment(config, job.commandId ?? job.id, screenshotPaths),
       deliveryTimeoutMs,
         (line) => {
           const executorStage = line.match(
@@ -1465,7 +1475,7 @@ async function executeLocalDelivery(
               job,
               checkout.checkout,
               request.workItemId,
-              localDeliveryEnvironment(config, job.commandId ?? job.id),
+              localDeliveryEnvironment(config, job.commandId ?? job.id, screenshotPaths),
             )
           }
           if (executorStage && executorStage !== 'connectivity' && executorStage !== 'codex') {
@@ -1606,17 +1616,37 @@ function startLocalDelivery(input: unknown, commandId?: string): LocalDeliveryJo
   }
   deliveryJob = job
   deliveryAbortController = controller
+  let screenshotDir = ''
   try {
     const config = readConfig()
     if (!config) throw new Error('本机代理尚未绑定平台同步密钥')
     if (!resolveCodexBinary()) throw new Error(codexBinaryError())
-    const request = parseLocalDeliveryAgentRequest(input)
+    const raw = isRecord(input) ? { ...input } : {}
+    const screenshots = parseDeliveryScreenshots(raw.screenshots)
+    delete raw.screenshots
+    const request = parseLocalDeliveryAgentRequest(raw)
+    const screenshotPaths = screenshots.length > 0
+      ? (() => {
+          screenshotDir = mkdtempSync(join(tmpdir(), 'orbit-delivery-screenshots-'))
+          try {
+            return materializeDeliveryScreenshots(screenshotDir, screenshots)
+          } catch (error) {
+            rmSync(screenshotDir, { recursive: true, force: true })
+            screenshotDir = ''
+            throw error
+          }
+        })()
+      : []
     job.workItemId = request.workItemId
     job.repoId = request.repoId
-    void executeLocalDelivery(job, config, request, controller.signal).finally(() => {
-      if (deliveryAbortController === controller) deliveryAbortController = null
-    })
+    void executeLocalDelivery(job, config, request, controller.signal, screenshotPaths).finally(
+      () => {
+        if (screenshotDir) rmSync(screenshotDir, { recursive: true, force: true })
+        if (deliveryAbortController === controller) deliveryAbortController = null
+      },
+    )
   } catch (error) {
+    if (screenshotDir) rmSync(screenshotDir, { recursive: true, force: true })
     if (deliveryAbortController === controller) deliveryAbortController = null
     const message = errorMessage(error)
     markDeliveryFailure(job, message)
@@ -2093,13 +2123,16 @@ function isLoopbackRequest(request: IncomingMessage): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
 
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(
+  request: IncomingMessage,
+  maxBytes = 64 * 1024,
+): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.length
-    if (size > 64 * 1024) throw new Error('请求体过大')
+    if (size > maxBytes) throw new Error('请求体过大')
     chunks.push(buffer)
   }
   if (chunks.length === 0) return {}
@@ -2173,7 +2206,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return
   }
   if (request.method === 'POST' && path === '/delivery/start') {
-    sendJson(response, 202, { ok: true, job: startLocalDelivery(await readBody(request)) })
+    sendJson(response, 202, {
+      ok: true,
+      job: startLocalDelivery(await readBody(request, 8 * 1024 * 1024)),
+    })
     return
   }
   if (request.method === 'POST' && path === '/delivery/cancel') {

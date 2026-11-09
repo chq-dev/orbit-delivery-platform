@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 23
+export const SCHEMA_VERSION = 24
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -29,7 +29,7 @@ CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at)
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL DEFAULT '',
-  platform TEXT NOT NULL CHECK (platform IN ('git', 'feishu', 'build', 'device')),
+  platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device')),
   username TEXT NOT NULL,
   label TEXT NOT NULL,
   service_url TEXT NOT NULL DEFAULT '',

@@ -13,6 +13,7 @@ import {
   getWorkItemDeliveryContext,
   listWorkItemSummaries,
   saveWorkItemDeliveryContext,
+  type WorkItemDeliveryContextInput,
 } from '../services/workItemService.js'
 
 function setupWorkItems() {
@@ -51,7 +52,7 @@ function screenshot(bytes = Buffer.from('design screenshot')) {
   }
 }
 
-test('需求交付必须提供拆解、设计稿或截图之一', () => {
+test('需求交付必须提供拆解或设计稿', () => {
   const { db, requirement } = setupWorkItems()
   try {
     assert.throws(
@@ -70,14 +71,39 @@ test('需求交付必须提供拆解、设计稿或截图之一', () => {
   }
 })
 
-test('需求拆解、设计稿链接或截图任一存在即可启动交付', () => {
+test('前端暂存截图不会保存到服务端，也不能替代拆解或设计稿', () => {
+  const { db, requirement } = setupWorkItems()
+  try {
+    const screenshotOnly = {
+      screenshots: [screenshot()],
+    } as unknown as WorkItemDeliveryContextInput
+    assert.throws(
+      () => saveWorkItemDeliveryContext(db, requirement.id, screenshotOnly),
+      /需求交付前必须提供需求拆解/,
+    )
+
+    const breakdown = '目标：支持第三方私有指标；范围：列表和详情；验收：数据一致；影响模块：web 与 lua。'
+    saveWorkItemDeliveryContext(db, requirement.id, {
+      ...screenshotOnly,
+      requirementBreakdown: breakdown,
+    })
+    const stored = db
+      .prepare('SELECT COUNT(*) AS count FROM work_item_attachments WHERE work_item_id = ?')
+      .get(requirement.id) as { count: number }
+    assert.equal(stored.count, 0)
+    assert.equal('screenshots' in getWorkItemDeliveryContext(db, requirement.id), false)
+  } finally {
+    db.close()
+  }
+})
+
+test('需求拆解或设计稿任一存在即可启动交付', () => {
   const { db, requirement } = setupWorkItems()
   try {
     const breakdown = '目标：支持第三方私有指标；范围：列表和详情；验收：数据一致；影响模块：web 与 lua。'
     const withBreakdown = saveWorkItemDeliveryContext(db, requirement.id, {
       requirementBreakdown: breakdown,
       designReference: '',
-      screenshots: [],
     })
     assert.equal(withBreakdown.workItem.requirementBreakdown, breakdown)
     assert.doesNotThrow(() => assertRequirementDeliveryContextReady(db, requirement.id))
@@ -92,20 +118,6 @@ test('需求拆解、设计稿链接或截图任一存在即可启动交付', ()
     })
     assert.equal(withDesign.requirementBreakdown, undefined)
     assert.equal(withDesign.designReference, 'https://ruijie.feishu.cn/wiki/design-1082')
-    assert.doesNotThrow(() => assertRequirementDeliveryContextReady(db, requirement.id))
-
-    const withScreenshot = saveWorkItemDeliveryContext(db, requirement.id, {
-      requirementBreakdown: '',
-      designReference: '',
-      screenshots: [screenshot()],
-    })
-    assert.equal(withScreenshot.screenshots.length, 1)
-    assert.equal(withScreenshot.workItem.requirementScreenshotCount, 1)
-    assert.equal(
-      listWorkItemSummaries(db).find((item) => item.id === requirement.id)
-        ?.requirementScreenshotCount,
-      1,
-    )
     assert.doesNotThrow(() => assertRequirementDeliveryContextReady(db, requirement.id))
   } finally {
     db.close()
@@ -125,55 +137,6 @@ test('缺陷不要求需求拆解、设计稿或截图', () => {
     })
     assert.doesNotThrow(() => assertRequirementDeliveryContextReady(db, defect.id))
     assert.doesNotThrow(() => saveWorkItemDeliveryContext(db, defect.id, {}))
-  } finally {
-    db.close()
-  }
-})
-
-test('截图类型、单张体积与数量受服务端限制', () => {
-  const { db, requirement } = setupWorkItems()
-  try {
-    assert.throws(
-      () =>
-        saveWorkItemDeliveryContext(db, requirement.id, {
-          screenshots: [{ ...screenshot(), mimeType: 'image/svg+xml', dataUrl: 'data:image/svg+xml;base64,eA==' }],
-        }),
-      /仅支持 PNG、JPEG 或 WebP/,
-    )
-    assert.throws(
-      () =>
-        saveWorkItemDeliveryContext(db, requirement.id, {
-          screenshots: [
-            screenshot(Buffer.alloc(501 * 1024, 1)),
-          ],
-        }),
-      /超过 500KB/,
-    )
-    assert.throws(
-      () =>
-        saveWorkItemDeliveryContext(db, requirement.id, {
-          screenshots: [screenshot(), screenshot(), screenshot(), screenshot()],
-        }),
-      /最多上传 3 张/,
-    )
-  } finally {
-    db.close()
-  }
-})
-
-test('交付上下文详情返回可写入客户端文件的截图内容', () => {
-  const { db, requirement } = setupWorkItems()
-  try {
-    saveWorkItemDeliveryContext(db, requirement.id, {
-      screenshots: [screenshot(Buffer.from('image-content'))],
-    })
-    const context = getWorkItemDeliveryContext(db, requirement.id)
-    assert.equal(context.workItem.description, '原始需求描述')
-    assert.equal(context.screenshots[0]?.name, 'design.png')
-    assert.equal(
-      context.screenshots[0]?.dataUrl,
-      `data:image/png;base64,${Buffer.from('image-content').toString('base64')}`,
-    )
   } finally {
     db.close()
   }

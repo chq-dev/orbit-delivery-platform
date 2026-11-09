@@ -12,7 +12,7 @@ import { extname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
-const MAX_FEISHU_IMAGES = 8
+const MAX_FEISHU_IMAGES = 10
 const MAX_FEISHU_IMAGE_BYTES = 15 * 1024 * 1024
 const COMMAND_TIMEOUT_MS = 45_000
 const IMAGE_URL_PATTERN = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)|<img[^>]+src=["'](https?:\/\/[^"']+)["']/gi

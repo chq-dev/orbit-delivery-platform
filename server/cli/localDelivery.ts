@@ -23,7 +23,11 @@ import {
   resolveMeegleMcpRuntime,
 } from '../services/meegleMcpService.js'
 import { buildLocalSkillInstruction } from '../../src/skillInstruction'
-import { requirementDeliveryContextIssue } from '../../src/deliveryContext'
+import {
+  MAX_DELIVERY_SCREENSHOTS,
+  MAX_DELIVERY_SCREENSHOT_BYTES,
+  requirementDeliveryContextIssue,
+} from '../../src/deliveryContext'
 import { describeFetchError } from '../domain/network.js'
 import {
   deliveryCodeFiles,
@@ -39,7 +43,6 @@ import {
   planDeliveryCommitFiles,
   validateDeliveryCommit,
 } from '../services/localDeliveryCommitService.js'
-import { materializeDeliveryScreenshots } from '../services/deliveryContextAssets.js'
 import { loadDeliveryFeishuContext } from '../services/deliveryFeishuContext.js'
 import {
   cleanupDeliveryArtifactDirectory,
@@ -58,7 +61,7 @@ import {
   deliveryBuildFailureOutcome,
   type DeliveryBuildOutcome,
 } from '../services/deliveryBuildService.js'
-import type { Repository, WorkItem, WorkItemScreenshot } from '../../src/types'
+import type { Repository, WorkItem } from '../../src/types'
 
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
@@ -102,7 +105,6 @@ interface WorkItemDeliveryContextData {
   workItem: WorkItem
   requirementBreakdown?: string
   designReference?: string
-  screenshots: WorkItemScreenshot[]
 }
 
 interface LocalDeliveryArgs {
@@ -262,6 +264,35 @@ function parseArgs(argv: string[]): LocalDeliveryArgs {
 
 function platformHeaders(): Record<string, string> {
   return platformSyncToken ? { authorization: `Bearer ${platformSyncToken}` } : {}
+}
+
+function stagedDeliveryScreenshotPaths(): string[] {
+  const raw = process.env.ORBIT_DELIVERY_SCREENSHOTS?.trim()
+  delete process.env.ORBIT_DELIVERY_SCREENSHOTS
+  if (!raw) return []
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    throw new Error('本机暂存截图清单不是合法 JSON')
+  }
+  if (!Array.isArray(value)) throw new Error('本机暂存截图清单必须是数组')
+  if (value.length > MAX_DELIVERY_SCREENSHOTS) {
+    throw new Error(`设计截图最多上传 ${MAX_DELIVERY_SCREENSHOTS} 张`)
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== 'string' || !isAbsolute(entry)) {
+      throw new Error(`第 ${index + 1} 张本机暂存截图路径不合法`)
+    }
+    if (!existsSync(entry) || !statSync(entry).isFile()) {
+      throw new Error(`第 ${index + 1} 张本机暂存截图不存在`)
+    }
+    const size = statSync(entry).size
+    if (size <= 0 || size > MAX_DELIVERY_SCREENSHOT_BYTES) {
+      throw new Error(`第 ${index + 1} 张本机暂存截图大小超出限制`)
+    }
+    return entry
+  })
 }
 
 function deliveryJobId(): string | undefined {
@@ -1047,6 +1078,7 @@ async function main(): Promise<void> {
 
   const bootstrap = await fetchBootstrap(args.api)
   const context = await fetchDeliveryContext(args.api, args.workItem)
+  const stagedScreenshots = stagedDeliveryScreenshotPaths()
   const item = context.workItem
   if (!item || item.id !== args.workItem) throw new Error(`平台中不存在工作项 ${args.workItem}`)
   const contextIssue =
@@ -1054,7 +1086,7 @@ async function main(): Promise<void> {
       ? requirementDeliveryContextIssue({
       requirementBreakdown: context.requirementBreakdown,
       designReference: context.designReference,
-      screenshotCount: context.screenshots.length,
+      screenshotCount: stagedScreenshots.length,
     })
       : undefined
   const repositoryId = args.repo || item.repoId
@@ -1134,9 +1166,9 @@ async function main(): Promise<void> {
     if (feishuContext.description) deliveryItem.description = feishuContext.description
     for (const warning of feishuContext.warnings) console.warn(`提示：${warning}`)
     const screenshotPaths = [
-      ...materializeDeliveryScreenshots(artifactDir, context.screenshots),
+      ...stagedScreenshots,
       ...feishuContext.imagePaths,
-    ]
+    ].slice(0, MAX_DELIVERY_SCREENSHOTS)
     const promptPath = join(artifactDir, 'codex-prompt.md')
     const runDescription = args.run
       ? 'Run the required code changes now; the launcher will not ask for the prompt again.'

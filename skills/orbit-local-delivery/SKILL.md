@@ -16,22 +16,24 @@ Start and keep the local agent running:
 npm run feishu:agent
 ```
 
-In the delivery dialog choose `客户端本地` and click `一键本机执行`. The page posts a
-`delivery_start` command to the same-origin platform API. The local agent claims
-that command on its next heartbeat, fetches `/api/bootstrap`, resolves `localPath`
-and `branch` from the repository configuration, and executes the same runner
-below. The browser never calls the local agent loopback address directly, so
-Chrome Private Network Access restrictions do not apply.
+In the delivery dialog choose `客户端本地` and click `一键本机执行`. When the selected
+client is the current terminal, the page posts directly to the loopback agent so
+design screenshots never leave the browser or reach the platform database. For a
+different online client, the page posts a `delivery_start` command to the
+same-origin platform API and that agent claims it on its next heartbeat. The
+agent fetches `/api/bootstrap`, resolves `localPath` and `branch` from the
+repository configuration, and executes the same runner below.
 
 The delivery command only contains the work-item ID, repository ID and
-commit/push/close booleans. Requirement context (breakdown, design reference and
-screenshots) is saved separately through
-`PUT /api/work-items/:id/delivery-context` and re-read by the runner from
-`GET /api/work-items/:id/delivery-context`. For requirement items at least one of
-the following is mandatory: a requirement breakdown of 20+ characters, a design
-reference, or 1-3 screenshots (max 500KB each, 1.2MB total). Defects are exempt.
-The runner writes screenshots under `delivery-artifacts/<work-item>/requirement-assets/`
-and passes every image to `codex exec --image`. The agent reports seven step states through
+commit/push/close booleans. Requirement breakdown and design reference are saved
+through `PUT /api/work-items/:id/delivery-context`; screenshots are never saved
+there. Screenshots stay in browser IndexedDB and are posted directly to the
+current terminal's loopback agent, which stages them in a temporary directory
+for the runner and removes it after the job. For current-terminal execution a
+requirement can be satisfied by 1-10 screenshots (max 500KB each, 5MB total) or
+a 20+ character breakdown or a design reference. Remote and server execution
+require the breakdown or design reference because screenshots are local-only.
+Defects are exempt. Every selected image is passed to `codex exec --image`. The agent reports seven step states through
 `POST /api/integrations/feishu/agent/commands/:id/progress`: connectivity
 (platform + contract + checkout), requirement analysis, business LDD, business
 coding, evidence, commit/push and platform write-back. At the start of each phase

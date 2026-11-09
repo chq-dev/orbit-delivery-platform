@@ -4,7 +4,6 @@ import {
   ClipboardPaste,
   CloudUpload,
   ExternalLink,
-  FileText,
   Hammer,
   KeyRound,
   LockKeyhole,
@@ -21,7 +20,6 @@ import {
 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuIntegrationCard } from '../components/FeishuIntegrationCard'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
 import { platformMeta } from '../appConfig'
@@ -31,17 +29,18 @@ import type {
   BuildJobInfo,
   BuildTriggerResult,
   PlatformKey,
-  WorkItemType,
 } from '../types'
 import { Field, Modal, StatusBadge } from '../components/ui'
 
-const platformOrder: PlatformKey[] = ['git', 'feishu', 'build', 'device']
+const platformOrder: PlatformKey[] = ['git', 'figma', 'build', 'device']
 
 const aliasMap: Record<string, PlatformKey> = {
   git: 'git',
   gitlab: 'git',
   github: 'git',
   gitee: 'git',
+  figma: 'figma',
+  设计: 'figma',
   feishu: 'feishu',
   飞书: 'feishu',
   build: 'build',
@@ -108,7 +107,6 @@ export function Accounts() {
     updateAccount,
     deleteAccount,
     importAccounts,
-    feishuIntegration,
     feishuAgentClients,
     selectedFeishuAgentClientId,
     notify,
@@ -126,8 +124,6 @@ export function Accounts() {
   const [actionMenuId, setActionMenuId] = useState<string | null>(null)
   const [importText, setImportText] = useState('')
   const [importError, setImportError] = useState('')
-  const [feishuMode, setFeishuMode] = useState<WorkItemType>('requirement')
-  const [feishuImportOpen, setFeishuImportOpen] = useState(false)
   const [buildAccount, setBuildAccount] = useState<Account | null>(null)
   const [buildJob, setBuildJob] = useState<BuildJobInfo | null>(null)
   const [buildValues, setBuildValues] = useState<Record<string, string>>({})
@@ -315,11 +311,6 @@ export function Accounts() {
     reader.readAsText(file)
   }
 
-  const openFeishuImport = (mode: WorkItemType) => {
-    setFeishuMode(mode)
-    setFeishuImportOpen(true)
-  }
-
   return (
     <div className="page-enter">
       <div className="page-header">
@@ -328,7 +319,7 @@ export function Accounts() {
             <KeyRound size={13} /> CREDENTIAL VAULT
           </span>
           <h1>账号中心</h1>
-          <p>统一绑定 Git、飞书、编译系统与设备端账号，供自动化流水线安全调用。</p>
+          <p>统一绑定 Git、Figma、编译系统与设备端账号，供自动化流水线安全调用。</p>
         </div>
         <div className="page-header-actions">
           <button className="btn btn-secondary" onClick={openImport}>
@@ -377,9 +368,7 @@ export function Accounts() {
                 <span className="bound-count">{items.length}</span>
               </div>
               <div className="platform-account-preview">
-                {key === 'feishu' && feishuIntegration.connected && items.length === 0 ? (
-                  <div className="platform-empty">项目 {feishuIntegration.projectKey} 已接入</div>
-                ) : items.length > 0 ? (
+                {items.length > 0 ? (
                   items.slice(0, 2).map((account) => (
                     <span key={account.id}>
                       <span className="mini-avatar">{account.username.slice(0, 1).toUpperCase()}</span>
@@ -394,16 +383,6 @@ export function Accounts() {
                   <div className="platform-empty">尚未绑定账号</div>
                 )}
               </div>
-              {key === 'feishu' && (
-                <div className="platform-external-links">
-                  <button onClick={() => openFeishuImport('requirement')}>
-                    <FileText size={12} /> 导入需求
-                  </button>
-                  <button onClick={() => openFeishuImport('defect')}>
-                    <TriangleAlert size={12} /> 导入缺陷
-                  </button>
-                </div>
-              )}
               {key === 'build' && items[0] && (
                 <div className="platform-external-links build-platform-actions">
                   <button onClick={() => void openBuild(items[0])}>
@@ -414,18 +393,7 @@ export function Accounts() {
                   </button>
                 </div>
               )}
-              {key === 'feishu' ? (
-                <button
-                  className="platform-add"
-                  onClick={() =>
-                    document
-                      .getElementById('feishu-integration')
-                      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                  }
-                >
-                  <KeyRound size={14} /> 应用绑定
-                </button>
-              ) : key === 'build' && items.length > 0 ? null : (
+              {key === 'build' && items.length > 0 ? null : (
                 <button className="platform-add" onClick={() => openManual(key)}>
                   <Plus size={14} /> 添加账号
                 </button>
@@ -673,16 +641,18 @@ export function Accounts() {
               ))}
             </div>
             <div className="field-row">
-              <Field label="登录账号" required>
+              <Field label={platform === 'figma' ? 'Figma 登录邮箱' : '登录账号'} required>
                 <input
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
-                  placeholder="name@company.com"
+                  placeholder={
+                    platform === 'figma' ? 'designer@company.com' : 'name@company.com'
+                  }
                   autoFocus
                 />
               </Field>
               <Field
-                label="密码 / Access Token"
+                label={platform === 'figma' ? 'Personal Access Token' : '密码 / Access Token'}
                 required={!editingAccount}
                 hint={editingAccount ? '留空保持不变' : undefined}
               >
@@ -691,14 +661,24 @@ export function Accounts() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder={
-                    editingAccount ? '留空则保留当前凭据' : '输入平台密码或访问令牌'
+                    editingAccount
+                      ? '留空则保留当前凭据'
+                      : platform === 'figma'
+                        ? '输入 Figma Personal Access Token'
+                        : '输入平台密码或访问令牌'
                   }
                 />
               </Field>
             </div>
             <Field
               label="服务地址"
-              hint={platform === 'build' ? 'Jenkins 任务页面地址' : '可选，支持 http / https 链接'}
+              hint={
+                platform === 'build'
+                  ? 'Jenkins 任务页面地址'
+                  : platform === 'figma'
+                    ? '可选，Figma 团队或设计文件地址'
+                    : '可选，支持 http / https 链接'
+              }
             >
               <input
                 type="url"
@@ -707,7 +687,9 @@ export function Accounts() {
                 placeholder={
                   platform === 'build'
                     ? 'https://jenkins.example.com/job/your-project/'
-                    : 'https://git.example.com 或 https://build.example.com'
+                    : platform === 'figma'
+                      ? 'https://www.figma.com/files/team/...'
+                      : 'https://git.example.com 或 https://build.example.com'
                 }
               />
             </Field>
@@ -715,14 +697,22 @@ export function Accounts() {
               <input
                 value={label}
                 onChange={(event) => setLabel(event.target.value)}
-                placeholder="例如：主研发账号、CI 自动化账号"
+                placeholder={
+                  platform === 'figma'
+                    ? '例如：Figma 设计账号、只读设计令牌'
+                    : '例如：主研发账号、CI 自动化账号'
+                }
               />
             </Field>
             <div className="credential-note">
               <LockKeyhole size={16} />
               <div>
                 <strong>最小权限原则</strong>
-                <p>建议使用专用服务账号，并按平台授予仓库读写、构建触发或设备升级所需的最小权限。</p>
+                <p>
+                  {platform === 'figma'
+                    ? '建议使用只读或最小文件权限的 Figma Personal Access Token，避免授予团队管理权限。'
+                    : '建议使用专用服务账号，并按平台授予仓库读写、构建触发或设备升级所需的最小权限。'}
+                </p>
               </div>
             </div>
           </div>
@@ -757,7 +747,7 @@ export function Accounts() {
                   setImportText(event.target.value)
                   setImportError('')
                 }}
-                placeholder={`git,chen.hua,password123,主研发账号\nfeishu,quality@rjcloud.com,feishu-token,质量中心\nbuild,build-service-01,build-pass,编译服务\n设备,lab-ac03,device-pass,AC/AP 测试床 03`}
+                placeholder={`git,chen.hua,password123,主研发账号\nfigma,designer@company.com,figd_xxx,Figma 设计账号\nbuild,build-service-01,build-pass,编译服务\n设备,lab-ac03,device-pass,AC/AP 测试床 03`}
                 rows={7}
               />
             </Field>
@@ -974,11 +964,6 @@ export function Accounts() {
           </>
         )}
       </Modal>
-      <FeishuImportDialog
-        open={feishuImportOpen}
-        mode={feishuMode}
-        onClose={() => setFeishuImportOpen(false)}
-      />
     </div>
   )
 }

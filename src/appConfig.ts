@@ -23,6 +23,14 @@ export const platformMeta: Record<string, PlatformMeta> = {
     softColor: '#edf3ff',
     shortName: '飞书',
   },
+  figma: {
+    key: 'figma',
+    name: 'Figma 设计',
+    description: '设计稿、标注与切图',
+    color: '#a259ff',
+    softColor: '#f8f1ff',
+    shortName: 'Figma',
+  },
   build: {
     key: 'build',
     name: '编译系统',

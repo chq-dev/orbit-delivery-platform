@@ -1,4 +1,4 @@
-export type PlatformKey = 'git' | 'feishu' | 'build' | 'device'
+export type PlatformKey = 'git' | 'figma' | 'feishu' | 'build' | 'device'
 export type AccountStatus = 'active' | 'expiring'
 export type RepositoryStatus = 'healthy' | 'warning'
 export type WorkItemType = 'requirement' | 'defect'

@@ -6,8 +6,10 @@ import type {
   LocalDeliveryStep,
   PipelineRun,
 } from './types'
+import type { DeliveryScreenshotUpload } from './deliveryContext'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
+const LOCAL_AGENT_BASE = 'http://127.0.0.1:18787'
 
 const LOCAL_DELIVERY_STEP_DEFINITIONS = [
   { key: 'connectivity', name: '连通性校验', description: '读取平台、校验契约并确认客户端仓库与分支' },
@@ -68,6 +70,37 @@ function apiErrorMessage(payload: ApiResponse | null, status: number): string {
   if (typeof payload?.error === 'string') return payload.error
   if (payload?.error?.message) return payload.error.message
   return `平台代理请求失败（HTTP ${status}）`
+}
+
+async function requestLocalAgent<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = 10_000,
+): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(`${LOCAL_AGENT_BASE}${path}`, {
+      ...init,
+      headers: {
+        accept: 'application/json',
+        ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch {
+    throw new Error('无法连接本机代理，请确认代理正在运行且当前页面已获授权')
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | (T & { ok?: boolean; error?: string; message?: string })
+    | null
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(
+      payload?.message || payload?.error || `本机代理请求失败（HTTP ${response.status}）`,
+    )
+  }
+  return payload as T
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -210,6 +243,31 @@ export async function startLocalDelivery(
   return queuedJobFromCommand(command, input)
 }
 
+export async function startLocalDeliveryOnAgent(
+  input: LocalDeliveryStartInput,
+  screenshots: DeliveryScreenshotUpload[],
+): Promise<LocalDeliveryJob> {
+  let payload: { ok: true; job: LocalDeliveryJob }
+  try {
+    payload = await requestLocalAgent<{ ok: true; job: LocalDeliveryJob }>(
+      '/delivery/start',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...input, ...(screenshots.length > 0 ? { screenshots } : {}) }),
+      },
+      60_000,
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (screenshots.length > 0 && /不支持交付参数|not_found|404/.test(message)) {
+      throw new Error('本机代理版本过旧，请更新并重启代理后再发起带截图的交付')
+    }
+    throw error
+  }
+  if (!payload.job?.id) throw new Error('本机代理未返回交付任务')
+  return payload.job
+}
+
 export function getCloudDeliveryReadiness(): Promise<CloudDeliveryReadiness> {
   return request<CloudDeliveryReadiness>('/deliveries/cloud/readiness')
 }
@@ -343,6 +401,41 @@ export async function waitForLocalDelivery(
     }
     if (command?.status === 'succeeded') {
       throw new Error('本机代理已接受命令，但没有返回交付任务状态')
+    }
+  }
+  throw new Error('本机交付执行超时，请检查客户端代理与 Codex 日志')
+}
+
+export async function waitForLocalDeliveryOnAgent(
+  jobId: string,
+  onUpdate: (job: LocalDeliveryJob) => void,
+  timeoutMs = 210 * 60_000,
+  signal?: AbortSignal,
+): Promise<LocalDeliveryJob> {
+  const deadline = Date.now() + timeoutMs
+  let consecutiveErrors = 0
+  throwIfAborted(signal)
+  while (Date.now() < deadline) {
+    await delay(1_500, signal)
+    throwIfAborted(signal)
+    let health: FeishuClientAgentHealth
+    try {
+      health = await requestLocalAgent<FeishuClientAgentHealth>('/health')
+      consecutiveErrors = 0
+    } catch (error) {
+      consecutiveErrors += 1
+      if (consecutiveErrors < 5) continue
+      throw error
+    }
+    throwIfAborted(signal)
+    const job = health.delivery
+    if (!job || job.id !== jobId) continue
+    onUpdate(job)
+    if (job.status === 'succeeded') return job
+    if (job.status === 'failed') {
+      throw Object.assign(new Error(job.error || 'Mac 本机交付执行失败'), {
+        localDeliveryJob: job,
+      })
     }
   }
   throw new Error('本机交付执行超时，请检查客户端代理与 Codex 日志')

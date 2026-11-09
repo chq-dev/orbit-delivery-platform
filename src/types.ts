@@ -12,7 +12,7 @@ export interface AuthUser {
   createdAt: string
 }
 
-export type PlatformKey = 'git' | 'feishu' | 'build' | 'device'
+export type PlatformKey = 'git' | 'figma' | 'feishu' | 'build' | 'device'
 
 export interface Repository {
   id: string

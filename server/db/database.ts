@@ -63,6 +63,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
         migratePipelineReportKinds(db)
         migrateFeishuAgentCommands(db)
         migrateOwnershipTables(db)
+        migrateAccountPlatforms(db)
         backfillOwnershipToFirstUser(db)
         db.exec(
           'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
@@ -121,7 +122,7 @@ const ownershipTableDefinitions: Record<
     tableSql: `CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       owner_user_id TEXT NOT NULL DEFAULT '',
-      platform TEXT NOT NULL CHECK (platform IN ('git', 'feishu', 'build', 'device')),
+      platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device')),
       username TEXT NOT NULL,
       label TEXT NOT NULL,
       service_url TEXT NOT NULL DEFAULT '',
@@ -206,6 +207,33 @@ function migrateOwnershipTables(db: AppDatabase): void {
     if (!row || !definition.legacyPattern.test(row.sql)) continue
     rebuildOwnedTable(db, table, definition.tableSql)
   }
+}
+
+function migrateAccountPlatforms(db: AppDatabase): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'")
+    .get() as { sql: string } | undefined
+  if (!row || row.sql.includes("'figma'")) return
+  rebuildOwnedTable(
+    db,
+    'accounts',
+    `CREATE TABLE accounts (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device')),
+      username TEXT NOT NULL,
+      label TEXT NOT NULL,
+      service_url TEXT NOT NULL DEFAULT '',
+      secret_ciphertext TEXT NOT NULL,
+      secret_iv TEXT NOT NULL,
+      secret_tag TEXT NOT NULL,
+      secret_hint TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active', 'expiring')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (owner_user_id, platform, username)
+    )`,
+  )
 }
 
 function rebuildOwnedTable(db: AppDatabase, table: string, tableSql: string): void {

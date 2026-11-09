@@ -61,6 +61,20 @@ test('编辑时传入新密码会重新加密并更新凭据提示', () => {
   assert.equal(getAccountSecret(db, vault, account.id), 'new-build-secret-9Q4x')
 })
 
+test('Figma 账号使用加密 Token 保存并支持服务地址', () => {
+  const account = createAccount(db, vault, {
+    platform: 'figma',
+    username: 'designer@example.com',
+    password: 'figd_readonly_token',
+    label: 'Figma 设计账号',
+    serviceUrl: 'https://www.figma.com/files/team/123456789',
+  })
+
+  assert.equal(account.platform, 'figma')
+  assert.equal(account.serviceUrl, 'https://www.figma.com/files/team/123456789')
+  assert.equal(getAccountSecret(db, vault, account.id), 'figd_readonly_token')
+})
+
 test('编辑账号会排除自身并拦截与其他账号的平台账号重复', () => {
   const first = createAccount(db, vault, {
     platform: 'device',

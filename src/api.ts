@@ -15,9 +15,7 @@ import type {
   TestReport,
   WorkItem,
   WorkItemType,
-  WorkItemScreenshot,
 } from './types'
-import type { DeliveryScreenshotUpload } from './deliveryContext'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api'
 
@@ -96,14 +94,12 @@ export interface WorkItemInput {
 export interface WorkItemDeliveryContextInput {
   requirementBreakdown?: string
   designReference?: string
-  screenshots?: DeliveryScreenshotUpload[]
 }
 
 export interface WorkItemDeliveryContext {
   workItem: WorkItem
   requirementBreakdown?: string
   designReference?: string
-  screenshots: WorkItemScreenshot[]
 }
 
 export interface ImportResult<T> {
