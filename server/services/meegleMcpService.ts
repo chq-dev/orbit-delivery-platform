@@ -72,10 +72,13 @@ export function resolveMeegleMcpRuntime(
       },
     }
   }
-  const command = resolveMcpExecutable(
-    text(env.MEEGLE_MCP_TSX_BIN) || 'tsx',
-    { env, cwd, platform: options.platform ?? process.platform },
-  )
+  const isStandaloneBundle = /\.mjs$/i.test(scriptPath)
+  const command = isStandaloneBundle
+    ? process.execPath
+    : resolveMcpExecutable(
+        text(env.MEEGLE_MCP_TSX_BIN) || 'tsx',
+        { env, cwd, platform: options.platform ?? process.platform },
+      )
   if (!command) {
     return {
       args: [],

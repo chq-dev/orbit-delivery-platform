@@ -3,6 +3,7 @@ dist
 /public/downloads/feishuClientAgent.mjs
 /public/downloads/feishuSync.mjs
 /public/downloads/localDelivery.mjs
+/public/downloads/meegleServer.mjs
 .DS_Store
 *.local
 npm-debug.log*

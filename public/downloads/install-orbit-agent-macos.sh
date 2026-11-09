@@ -57,6 +57,7 @@ download_agent_file() {
 download_agent_file feishuClientAgent.mjs
 download_agent_file feishuSync.mjs
 download_agent_file localDelivery.mjs
+download_agent_file meegleServer.mjs
 
 launchctl bootout "gui/$UID_VALUE/$LABEL" 2>/dev/null || true
 sleep 1
@@ -94,6 +95,7 @@ NODE_XML="$(xml_escape "$NODE_BIN")"
 AGENT_XML="$(xml_escape "$APP_DIR/feishuClientAgent.mjs")"
 SYNC_CLI_XML="$(xml_escape "$APP_DIR/feishuSync.mjs")"
 DELIVERY_CLI_XML="$(xml_escape "$APP_DIR/localDelivery.mjs")"
+MEEGLE_MCP_XML="$(xml_escape "$APP_DIR/meegleServer.mjs")"
 HOME_XML="$(xml_escape "$HOME")"
 PATH_XML="$(xml_escape "$PATH_VALUE")"
 PLATFORM_XML="$(xml_escape "$PLATFORM_BASE_URL")"
@@ -129,6 +131,7 @@ cat > "$PLIST" <<EOF
     <key>FEISHU_AGENT_ALLOWED_ORIGINS</key><string>$ALLOWED_ORIGINS_XML</string>
     <key>ORBIT_FEISHU_SYNC_CLI</key><string>$SYNC_CLI_XML</string>
     <key>ORBIT_LOCAL_DELIVERY_CLI</key><string>$DELIVERY_CLI_XML</string>
+    <key>MEEGLE_MCP_SCRIPT</key><string>$MEEGLE_MCP_XML</string>
     $CODEX_ENV
     $MEEGLE_ENV
   </dict>
