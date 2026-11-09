@@ -259,7 +259,7 @@ export async function startLocalDeliveryOnAgent(
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (screenshots.length > 0 && /不支持交付参数|not_found|404/.test(message)) {
+    if (screenshots.length > 0 && /请求体过大|不支持交付参数|not_found|404/.test(message)) {
       throw new Error('本机代理版本过旧，请更新并重启代理后再发起带截图的交付')
     }
     throw error
