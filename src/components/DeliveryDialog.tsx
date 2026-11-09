@@ -1507,7 +1507,7 @@ export function DeliveryDialog({
                 <small>
                   {serverExecution
                     ? '服务器临时工作区必须创建提交并推送，才能在任务结束后安全清理'
-                    : '由本机执行脚本在现有仓库创建提交；可按授权推送目标分支'}
+                    : '勾选时由本机按 AICR 规则创建提交；不勾选时将代码加入暂存区并完成流程，不创建提交'}
                 </small>
               </span>
             </label>

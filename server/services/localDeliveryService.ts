@@ -213,7 +213,7 @@ function stageResultsFrom(value: unknown, requireSuccess: boolean): LocalDeliver
     throw unprocessable('缺少真实代码变更证据，不能记录为成功交付')
   }
   if (results[4].status !== 'success') {
-    throw unprocessable('缺少本地提交证据，不能记录为成功交付')
+    throw unprocessable('缺少本地提交或暂存证据，不能记录为成功交付')
   }
   return results
 }
@@ -506,21 +506,25 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
   if (commitInput && !/^[0-9a-f]{7,64}$/i.test(commitInput)) {
     throw unprocessable('提交 SHA 格式不正确')
   }
-  if (outcome === 'success' && !commitInput) {
+  const autoCommit = booleanValue(
+    rawInput.autoCommit,
+    '自动提交',
+    stageResults[4].status === 'success',
+  )
+  const pushed = booleanValue(rawInput.pushed, '是否已推送', false)
+  if (outcome === 'success' && autoCommit && !commitInput) {
     throw unprocessable('提交 SHA 不能为空')
   }
+  if (outcome === 'success' && !autoCommit && pushed) {
+    throw unprocessable('未启用自动提交时不能推送')
+  }
   const commit = commitInput ?? '-'
-  const pushed = booleanValue(rawInput.pushed, '是否已推送', false)
   const autoCloseRequested =
     outcome === 'success' && booleanValue(rawInput.autoClose, '自动关闭缺陷', false)
   if (autoCloseRequested && (!pushed || stageResults[4].status !== 'success')) {
     throw unprocessable('自动关闭飞书缺陷要求代码已提交并推送成功')
   }
   const autoClose = autoCloseRequested
-  const autoCommit =
-    outcome === 'success'
-      ? true
-      : booleanValue(rawInput.autoCommit, '自动提交', stageResults[4].status === 'success')
   const summary = optionalText(rawInput.summary, '交付摘要', 2_000)
   const reports = reportsFrom(rawInput.reports)
 
@@ -656,7 +660,7 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
     )
     stageDefinitions.forEach((stage, index) => {
       const result = stageResults[index]
-      const log = index === 4 && result.status === 'success'
+      const log = index === 4 && result.status === 'success' && autoCommit
         ? `已创建本地提交 ${commit}${pushed ? `，已推送至 origin/${branch}` : '，尚未推送'}`
         : index === 8 && result.status === 'success' && summary
           ? summary

@@ -183,6 +183,11 @@ export function Pipelines({
   )
   const stageByKey = new Map(displayStages.map((stage) => [stage.key, stage]))
   const commitStage = stageByKey.get('commit')
+  const commitDisplay = !run?.autoCommit
+    ? commitStage?.status === 'success'
+      ? '已暂存，未提交'
+      : '未自动提交'
+    : run.commit
   const upgradeStage = stageByKey.get('upgrade')
   const testStage = new Map((run?.stages ?? []).map((stage) => [stage.key, stage])).get('test')
   const displayProgress = run
@@ -298,7 +303,7 @@ export function Pipelines({
                   <h2>{run.title}</h2>
                   <div className="pipeline-detail-submeta">
                     <span><GitBranch size={13} /> {run.repoName} / {run.branch}</span>
-                    <span><GitCommit size={13} /> {run.commit}</span>
+                    <span><GitCommit size={13} /> {commitDisplay}</span>
                     <span><UserRound size={13} /> {run.triggeredBy} 发起</span>
                   </div>
                 </div>
@@ -438,7 +443,10 @@ export function Pipelines({
                         <FolderGit2 size={12} /> {run.localPath || '未记录客户端路径'}
                       </strong>
                     </div>
-                    <div><small>提交哈希</small><strong className="mono">{run.commit}</strong></div>
+                    <div>
+                      <small>{run.autoCommit ? '提交哈希' : '提交状态'}</small>
+                      <strong className={run.autoCommit ? 'mono' : ''}>{commitDisplay}</strong>
+                    </div>
                     <div>
                       <small>执行模式</small>
                       <strong>

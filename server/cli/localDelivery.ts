@@ -183,6 +183,7 @@ interface DeliveryAttemptContext {
   stageResults?: DeliveryStageResult[]
   reports?: ReturnType<typeof deliveryReports>
   commit?: string
+  stagedFileCount?: number
   failureRecorded?: boolean
   workspaceIsolation?: DeliveryWorktreeIsolation
 }
@@ -201,7 +202,7 @@ Options:
   --branch <name>      Platform default branch (local checkout branch wins when different)
   --run                Start Codex in the client checkout after generating the prompt
   --commit-only        Skip coding Codex and resume /aicr-commit on existing changes
-  --no-commit          Leave validated changes uncommitted for human review
+  --no-commit          Stage validated code, record success, and leave it uncommitted
   --push               Push the resulting commit after Codex succeeds (requires confirmation)
   --build              Trigger the build system configured for the repository (default)
   --no-build           Skip system build for this delivery
@@ -662,6 +663,7 @@ function deliveryReports(artifactDir: string): {
 function deliveryStageResults(
   evidence: DeliveryEvidence,
   autoCommit: boolean,
+  stagedFileCount = 0,
 ): DeliveryStageResult[] {
   const changed = evidence.changedFiles.length
   return [
@@ -687,10 +689,12 @@ function deliveryStageResults(
     },
     {
       index: 4,
-      status: autoCommit ? 'success' : 'pending',
+      status: autoCommit || stagedFileCount > 0 ? 'success' : 'pending',
       log: autoCommit
         ? '已按 /aicr-commit 完成暂存区 AICR 审查并创建本地提交'
-        : '未启用自动提交，代码保留在工作区',
+        : stagedFileCount > 0
+          ? `已将 ${stagedFileCount} 个交付文件加入 Git 暂存区；按设置未创建提交，代码等待人工确认`
+          : '未启用自动提交，代码保留在工作区',
     },
     {
       index: 5,
@@ -729,7 +733,7 @@ async function recordPlatformDelivery(
   item: WorkItem,
   repository: Repository,
   checkout: string,
-  commit: string,
+  commit: string | undefined,
   branch: string,
   evidence: DeliveryEvidence,
   stageResults: DeliveryStageResult[],
@@ -763,11 +767,14 @@ async function recordPlatformDelivery(
           repoId: repository.id,
           branch,
           localPath: reportedDeliveryPath || checkout,
-          commit,
+          ...(commit ? { commit } : {}),
+          autoCommit: !args.noCommit,
           autoClose: args.close && item.type === 'defect' && args.push,
           pushed: args.push,
           summary: `${
-            args.push
+            args.noCommit
+              ? `客户端本地交付完成，代码已暂存等待人工确认；本次未创建提交`
+              : args.push
               ? `客户端本地交付完成，提交已推送至 origin/${branch}`
               : '客户端本地交付完成，提交保留在本地'
           }${
@@ -1274,29 +1281,31 @@ async function main(): Promise<void> {
       throw new Error('缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交')
     }
 
+    let finalHead: string | undefined
+    let excludedFiles: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles'] = []
     if (args.noCommit) {
-      const message = '未启用自动提交代码；代码变更已保留在客户端工作区，本次交付未创建提交'
-      attempt.stageResults = deliveryStageResults(evidence, false)
-      const failure = await recordPlatformFailure(
-        attempt,
-        message,
-        4,
-      )
-      attempt.failureRecorded = true
-      throw new Error(`${message}。平台已记录失败流水线 ${failure.id}`)
+      console.log('LOCAL_DELIVERY_STAGE:commit')
+      const staged = stageDeliveryCommitFiles(checkout.checkout, artifactDir)
+      attempt.stagedFileCount = staged.stagedFiles.length
+      excludedFiles = staged.excludedFiles
+    } else {
+      const committed = commitDeliveredChanges({
+        checkout: checkout.checkout,
+        branch,
+        item: deliveryItem,
+        codexCommand,
+        mcpArgs: [],
+        artifactDir,
+      })
+      finalHead = committed.head
+      excludedFiles = committed.excludedFiles
+      attempt.commit = finalHead
     }
-
-    const committed = commitDeliveredChanges({
-      checkout: checkout.checkout,
-      branch,
-      item: deliveryItem,
-      codexCommand,
-      mcpArgs: [],
-      artifactDir,
-    })
-    const finalHead = committed.head
-    attempt.commit = finalHead
-    const stageResults = deliveryStageResults(evidence, true)
+    const stageResults = deliveryStageResults(
+      evidence,
+      !args.noCommit,
+      attempt.stagedFileCount ?? 0,
+    )
     attempt.stageResults = stageResults
     let internalBuild: DeliveryBuildOutcome | undefined
     if (args.push) {
@@ -1368,7 +1377,7 @@ async function main(): Promise<void> {
       try {
         const cleaned = cleanupGeneratedDeliveryFiles(
           checkout.checkout,
-          committed.excludedFiles,
+          excludedFiles,
           attempt.workspaceIsolation?.preexistingFiles,
         )
         if (cleaned.length > 0) {
@@ -1402,16 +1411,17 @@ async function main(): Promise<void> {
         workspaceRestore.warning,
       )
     } catch (error) {
-      throw new Error(
-        `本地代码已提交 ${finalHead}${args.push ? `并推送到 origin/${branch}` : '，尚未推送'}，但${error instanceof Error ? error.message : String(error)}`,
-      )
+      const completedWork = args.noCommit
+        ? `本地代码已暂存 ${attempt.stagedFileCount ?? 0} 个文件，未创建提交`
+        : `本地代码已提交 ${finalHead}${args.push ? `并推送到 origin/${branch}` : '，尚未推送'}`
+      throw new Error(`${completedWork}，但${error instanceof Error ? error.message : String(error)}`)
     }
 
     if (attempt.workspaceIsolation) {
       try {
         const evidenceCleanup = cleanupGeneratedDeliveryFiles(
           checkout.checkout,
-          committed.excludedFiles,
+          excludedFiles,
           attempt.workspaceIsolation.preexistingFiles,
           { includeEvidenceFiles: true },
         )
@@ -1435,7 +1445,8 @@ async function main(): Promise<void> {
       branch,
       configuredBranch: checkout.configuredBranch ?? null,
       previousHead: checkout.head,
-      commit: finalHead,
+      commit: finalHead ?? null,
+      stagedFileCount: attempt.stagedFileCount ?? 0,
       pushed: args.push,
       build: args.build,
       changedFiles: evidence.changedFiles,
@@ -1462,7 +1473,11 @@ async function main(): Promise<void> {
     let recordErrorMessage: string | undefined
     if (!attempt.failureRecorded) {
       if (!attempt.stageResults && attempt.evidence) {
-        attempt.stageResults = deliveryStageResults(attempt.evidence, Boolean(attempt.commit))
+        attempt.stageResults = deliveryStageResults(
+          attempt.evidence,
+          Boolean(attempt.commit),
+          attempt.stagedFileCount ?? 0,
+        )
       }
       try {
         const failure = await recordPlatformFailure(
