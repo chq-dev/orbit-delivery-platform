@@ -19,6 +19,7 @@ import {
   discoverLocalFeishuAgentClientId,
   rememberLocalFeishuAgentClientId,
 } from '../localAgentDiscovery'
+import { setLocalFeishuAgentPairingTarget } from '../feishuAgent'
 import { useData } from '../store'
 import type { FeishuAgentPairingSummary, Repository } from '../types'
 import { StatusBadge } from './ui'
@@ -219,6 +220,7 @@ export function FeishuLiveSyncCard() {
 
   const bindCurrentMac = () =>
     run('pairing', async () => {
+      await setLocalFeishuAgentPairingTarget(platformBaseUrl)
       const clientId = await discoverLocalFeishuAgentClientId(true)
       if (!clientId) {
         setPairingPanelOpen(true)
@@ -227,19 +229,29 @@ export function FeishuLiveSyncCard() {
       }
 
       const existingClient = feishuAgentClients.find((client) => client.clientId === clientId)
-      if (existingClient) {
+      const alreadyBoundToCurrentPlatform = Boolean(
+        existingClient?.online &&
+          existingClient.health?.config.platformBaseUrl === platformBaseUrl,
+      )
+      if (alreadyBoundToCurrentPlatform && existingClient) {
         rememberLocalFeishuAgentClientId(clientId)
         await selectFeishuAgentClient(clientId)
         notify('当前 Mac 已登记', `${existingClient.clientName} 已加入执行客户端列表`)
         return
       }
 
-      const currentPairings = await api.getFeishuAgentPairings()
-      setPairings(currentPairings)
+      let pairing: FeishuAgentPairingSummary | undefined
+      let currentPairings: FeishuAgentPairingSummary[] = []
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        currentPairings = await api.getFeishuAgentPairings()
+        setPairings(currentPairings)
+        pairing = currentPairings.find((item) => item.clientId === clientId)
+        if (pairing) break
+        await new Promise((resolve) => window.setTimeout(resolve, 500))
+      }
       setPairingPanelOpen(true)
-      const pairing = currentPairings.find((item) => item.clientId === clientId)
       if (!pairing) {
-        throw new Error('已检测到当前 Mac 代理，但绑定申请还未到达平台。请稍等几秒后重试。')
+        throw new Error(`本机代理尚未向平台 ${platformBaseUrl} 送达登记申请，请检查 Mac 代理网络后重试。`)
       }
       if (pairing.status === 'approved') {
         rememberLocalFeishuAgentClientId(clientId)

@@ -65,6 +65,9 @@ async function requestLocalAgent<T>(path: string, init?: RequestInit): Promise<T
     | { error?: string; message?: string; config?: unknown }
     | null
   if (!response.ok) {
+    if (path === '/pairing/target' && response.status === 404) {
+      throw new Error('当前 Mac 代理版本过旧，请更新并重启代理后再绑定线上服务')
+    }
     throw new Error(payload?.message || payload?.error || `本机代理请求失败（HTTP ${response.status}）`)
   }
   return payload as T
@@ -77,6 +80,20 @@ export function fetchLocalFeishuAgentHealth(): Promise<FeishuClientAgentHealth> 
 export async function fetchLocalDeliveryJob(): Promise<LocalDeliveryJob | null> {
   const health = await fetchLocalFeishuAgentHealth()
   return health.delivery ?? null
+}
+
+export function setLocalFeishuAgentPairingTarget(
+  platformBaseUrl: string,
+): Promise<{
+  ok: true
+  clientId: string
+  clientName: string
+  platformBaseUrl: string
+}> {
+  return requestLocalAgent('/pairing/target', {
+    method: 'POST',
+    body: JSON.stringify({ platformBaseUrl }),
+  })
 }
 
 export async function cancelLocalDeliveryJob(jobId?: string): Promise<LocalDeliveryJob> {

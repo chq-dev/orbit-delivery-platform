@@ -256,6 +256,7 @@ let deliveryJob: LocalDeliveryJob | null = null
 let deliveryAbortController: AbortController | null = null
 let heartbeatInFlight = false
 let pairingInFlight = false
+let pairingPollQueued = false
 let meegleSetupInFlight = false
 let lastPairingError = ''
 let loginPollInFlight = false
@@ -370,7 +371,28 @@ function pairingVerificationCode(publicKey: string): string {
   return `${fingerprint.slice(0, 4)}-${fingerprint.slice(4, 8)}-${fingerprint.slice(8)}`
 }
 
-function readPendingAgentPairing(): PendingAgentPairing {
+function pairingPlatformUrl(value: unknown): string {
+  const candidate = text(value)
+  let url: URL
+  try {
+    url = new URL(candidate)
+  } catch {
+    throw new Error('平台地址不是有效的 URL')
+  }
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('平台地址必须是无凭据的 HTTP(S) 网站根地址')
+  }
+  return url.origin
+}
+
+function readPendingAgentPairing(targetPlatformBaseUrl?: string): PendingAgentPairing {
   if (existsSync(pairingStatePath)) {
     try {
       const stored = JSON.parse(readFileSync(pairingStatePath, 'utf8')) as Partial<PendingAgentPairing>
@@ -384,13 +406,12 @@ function readPendingAgentPairing(): PendingAgentPairing {
         typeof stored.privateKey === 'string'
       ) {
         const pending = stored as PendingAgentPairing
-        if (
-          pending.platformBaseUrl !== pairingPlatformBaseUrl ||
-          pending.projectKey !== pairingProjectKey
-        ) {
+        const platformBaseUrl =
+          targetPlatformBaseUrl || pending.platformBaseUrl || pairingPlatformBaseUrl
+        if (pending.platformBaseUrl !== platformBaseUrl || pending.projectKey !== pairingProjectKey) {
           const updated = {
             ...pending,
-            platformBaseUrl: pairingPlatformBaseUrl,
+            platformBaseUrl,
             projectKey: pairingProjectKey,
           }
           writeFileSync(pairingStatePath, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 })
@@ -413,15 +434,17 @@ function readPendingAgentPairing(): PendingAgentPairing {
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   })
+  const currentConfig = readConfig()
   const clientId =
     configuredClientId && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(configuredClientId)
       ? configuredClientId
-      : randomUUID()
+      : currentConfig?.clientId || randomUUID()
   const state: PendingAgentPairing = {
     clientId,
-    clientName: configuredClientName?.slice(0, 120) || hostname(),
+    clientName: configuredClientName?.slice(0, 120) || currentConfig?.clientName || hostname(),
     pairingSecret: randomBytes(32).toString('hex'),
-    platformBaseUrl: pairingPlatformBaseUrl,
+    platformBaseUrl:
+      targetPlatformBaseUrl || currentConfig?.platformBaseUrl || pairingPlatformBaseUrl,
     projectKey: pairingProjectKey,
     publicKey: keys.publicKey,
     privateKey: keys.privateKey,
@@ -437,7 +460,11 @@ function readPendingAgentPairing(): PendingAgentPairing {
 }
 
 async function pollAgentPairing(): Promise<void> {
-  if (pairingInFlight || readConfig()) return
+  if (pairingInFlight) {
+    pairingPollQueued = true
+    return
+  }
+  if (readConfig() && !existsSync(pairingStatePath)) return
   pairingInFlight = true
   try {
     const pairing = readPendingAgentPairing()
@@ -521,6 +548,10 @@ async function pollAgentPairing(): Promise<void> {
     }
   } finally {
     pairingInFlight = false
+    if (pairingPollQueued) {
+      pairingPollQueued = false
+      void pollAgentPairing()
+    }
   }
 }
 
@@ -701,7 +732,7 @@ async function currentHealth(): Promise<{
 }> {
   const config = readConfig()
   const pendingPairing =
-    !config && existsSync(pairingStatePath) ? readPendingAgentPairing() : undefined
+    existsSync(pairingStatePath) ? readPendingAgentPairing() : undefined
   const auth = await currentAuthStatus()
   const feishuMcp = await currentFeishuMcpStatus()
   const meegleMcp = resolveMeegleMcpRuntime()
@@ -2107,6 +2138,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     })
     return
   }
+  if (request.method === 'POST' && path === '/pairing/target') {
+    const origin = text(request.headers.origin)
+    if (!isLoopbackRequest(request) || !allowedOrigins.has(origin)) {
+      sendJson(response, 403, { ok: false, error: '客户端登记目标只能由本机页面设置' })
+      return
+    }
+    const body = await readBody(request)
+    const platformBaseUrl = pairingPlatformUrl(body.platformBaseUrl)
+    const pairing = readPendingAgentPairing(platformBaseUrl)
+    void pollAgentPairing()
+    sendJson(response, 202, {
+      ok: true,
+      clientId: pairing.clientId,
+      clientName: pairing.clientName,
+      platformBaseUrl: pairing.platformBaseUrl,
+    })
+    return
+  }
   if (request.method === 'POST' && path === '/setup/meegle') {
     const origin = text(request.headers.origin)
     if (!isLoopbackRequest(request) || !allowedOrigins.has(origin)) {
@@ -2214,11 +2263,11 @@ server.listen(agentPort, agentHost, () => {
 })
 
 function clientRegistrationTick(): void {
-  if (readConfig()) {
+  const config = readConfig()
+  if (config) {
     void sendHeartbeat()
-  } else {
-    void pollAgentPairing()
   }
+  void pollAgentPairing()
 }
 
 const heartbeatTimer = setInterval(clientRegistrationTick, heartbeatIntervalMs)
