@@ -321,6 +321,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
   ensureColumn(db, 'feishu_agent_commands', 'claimed_at', 'TEXT')
   ensureColumn(db, 'feishu_agent_commands', 'completed_at', 'TEXT')
   if (
+    table.sql.includes("'feishu_mcp_login_start'") &&
     table.sql.includes("'configure_repo_paths'") &&
     table.sql.includes("'build_job_read'") &&
     table.sql.includes("'build_trigger'")
@@ -335,7 +336,7 @@ function migrateFeishuAgentCommands(db: AppDatabase): void {
       id TEXT PRIMARY KEY,
       owner_user_id TEXT NOT NULL DEFAULT '',
       client_id TEXT NOT NULL DEFAULT 'primary',
-      command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'configure_repo_paths', 'delivery_start', 'build_job_read', 'build_trigger')),
+      command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'feishu_mcp_login_start', 'sync', 'rotate_token', 'configure_repo_paths', 'delivery_start', 'build_job_read', 'build_trigger')),
       status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
       payload_json TEXT,
       result_json TEXT,

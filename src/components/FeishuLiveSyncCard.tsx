@@ -19,12 +19,16 @@ import {
   discoverLocalFeishuAgentClientId,
   rememberLocalFeishuAgentClientId,
 } from '../localAgentDiscovery'
-import { setLocalFeishuAgentPairingTarget } from '../feishuAgent'
+import {
+  enqueueFeishuAgentCommand,
+  fetchFeishuAgentStatus,
+  setLocalFeishuAgentPairingTarget,
+} from '../feishuAgent'
 import { useData } from '../store'
 import type { FeishuAgentPairingSummary, Repository } from '../types'
 import { StatusBadge } from './ui'
 
-type BusyAction = 'refresh' | 'path' | 'pairing' | 'login' | 'sync' | 'rotate' | null
+type BusyAction = 'refresh' | 'path' | 'pairing' | 'login' | 'mcpLogin' | 'sync' | 'rotate' | null
 
 function isBasicComponentRepository(repository: Repository): boolean {
   return repository.name.trim().toLowerCase() === 'basic-component-cloud' ||
@@ -89,6 +93,10 @@ export function FeishuLiveSyncCard() {
   const [pairingPanelOpen, setPairingPanelOpen] = useState(false)
   const [pairingBusyClientId, setPairingBusyClientId] = useState('')
   const [pairingsRefreshing, setPairingsRefreshing] = useState(false)
+  const [mcpLoginCommand, setMcpLoginCommand] = useState<{
+    id: string
+    clientId: string
+  } | null>(null)
 
   const health = feishuAgent.health
   const agentConfigured = Boolean(health?.config.configured)
@@ -180,6 +188,49 @@ export function FeishuLiveSyncCard() {
     }, 5_000)
     return () => window.clearInterval(timer)
   }, [pairingPanelOpen])
+
+  useEffect(() => {
+    if (!mcpLoginCommand) return
+    let cancelled = false
+    let timer: number | undefined
+
+    const poll = async () => {
+      try {
+        const status = await fetchFeishuAgentStatus(mcpLoginCommand.clientId)
+        if (cancelled) return
+        const command = status.commands.find((entry) => entry.id === mcpLoginCommand.id)
+        if (status.health?.feishuMcp?.authenticated) {
+          setMcpLoginCommand(null)
+          await refreshFeishuAgent(true)
+          notify('Feishu MCP 已登录', '现在可以在本机代理上调用飞书文档、Wiki 和 IM 接口', 'success')
+          return
+        }
+        if (command?.status === 'failed') {
+          setError(command.error || 'Feishu MCP 登录未完成，请检查授权页面后重试')
+          setMcpLoginCommand(null)
+          return
+        }
+        if (
+          command?.status === 'succeeded' &&
+          (command.result as { authenticated?: unknown } | undefined)?.authenticated === true
+        ) {
+          setMcpLoginCommand(null)
+          await refreshFeishuAgent(true)
+          notify('Feishu MCP 已登录', '飞书登录状态已更新', 'success')
+          return
+        }
+      } catch {
+        // Keep waiting through brief network interruptions while the local OAuth flow is open.
+      }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 3_000)
+    }
+
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [mcpLoginCommand, notify, refreshFeishuAgent])
 
   const togglePairingPanel = () => {
     const opening = !pairingPanelOpen
@@ -275,6 +326,22 @@ export function FeishuLiveSyncCard() {
     })
 
   const login = () => run('login', async () => beginFeishuAgentLogin())
+  const loginFeishuMcp = () => run('mcpLogin', async () => {
+    const clientId = selectedFeishuAgentClientId
+    if (!clientId) throw new Error('请先选择要执行 Feishu MCP 登录的客户端')
+    const status = await fetchFeishuAgentStatus(clientId)
+    if (!status.online || !status.health) throw new Error('所选执行客户端离线，无法发起 Feishu MCP 登录')
+    const mcp = status.health.feishuMcp
+    if (!mcp?.enabled) throw new Error('当前客户端已禁用 Feishu MCP')
+    if (!mcp.configured) {
+      throw new Error('当前客户端尚未配置 Feishu MCP。请先在该 Mac 配置 ~/.lark-mcp/config.json 中的 appId 和 appSecret。')
+    }
+    if (!mcp.available) throw new Error(mcp.reason || '当前客户端的 Feishu MCP 命令不可用')
+    if (mcp.authenticated) throw new Error('Feishu MCP 已登录，无需重复授权')
+    const command = await enqueueFeishuAgentCommand('feishu_mcp_login_start', clientId)
+    setMcpLoginCommand({ id: command.id, clientId })
+    notify('请在执行客户端完成飞书登录', '系统会在所选客户端打开飞书授权流程；完成后页面会自动更新状态', 'info')
+  })
   const sync = () => run('sync', () => syncFeishuAgent(true))
   const rotate = () =>
     run('rotate', async () => {
@@ -362,7 +429,7 @@ export function FeishuLiveSyncCard() {
                   ? '缺少 lark-mcp'
                   : feishuMcp.authenticated
                     ? '已授权'
-                    : '已配置'}
+                    : '未登录'}
           </strong>
         </span>
         <span>
@@ -540,7 +607,7 @@ export function FeishuLiveSyncCard() {
       {feishuAgentLogin.challenge && (
         <div className="feishu-login-challenge">
           <div>
-            <strong><LogIn size={15} /> 完成飞书设备授权</strong>
+            <strong><LogIn size={15} /> 完成 Meegle CLI 飞书授权</strong>
             <p>在浏览器打开授权链接，确认后输入下方用户码。页面会自动轮询并触发首次同步。</p>
           </div>
           <div className="feishu-login-code">
@@ -601,6 +668,32 @@ export function FeishuLiveSyncCard() {
         </div>
       )}
 
+      {mcpLoginCommand && (
+        <div className="feishu-login-challenge">
+          <div>
+            <strong><LogIn size={15} /> 正在等待 Feishu MCP 登录</strong>
+            <p>请在所选执行客户端打开的浏览器中完成飞书授权，完成后页面会自动刷新状态。</p>
+          </div>
+          <small>授权会话只保存在该客户端本机。</small>
+        </div>
+      )}
+
+      {selectedClient?.online && feishuMcp?.enabled && !feishuMcp.configured && (
+        <div className="feishu-live-warning">
+          <AlertTriangle size={15} />
+          <span>
+            Feishu MCP 尚未配置。请在所选执行客户端配置 <code>~/.lark-mcp/config.json</code> 的 <code>appId</code> 和 <code>appSecret</code>，再重新检测；应用密钥只需保存在本机。
+          </span>
+        </div>
+      )}
+
+      {selectedClient?.online && feishuMcp?.configured && feishuMcp.available && !feishuMcp.authenticated && !mcpLoginCommand && (
+        <div className="feishu-live-warning">
+          <AlertTriangle size={15} />
+          <span>Feishu MCP 尚未登录。登录后才能使用飞书文档、Wiki 和 IM 接口。</span>
+        </div>
+      )}
+
       <div className="feishu-live-actions">
         <button className="btn btn-secondary" onClick={() => void refresh()} disabled={busy !== null}>
           <RefreshCw size={14} className={busy === 'refresh' || feishuAgent.checking ? 'spin' : ''} />
@@ -618,7 +711,14 @@ export function FeishuLiveSyncCard() {
         {feishuAgent.online && agentConfigured && health?.meegle.available && !meegleAuthenticated && (
           <button className="btn btn-primary" onClick={() => void login()} disabled={busy !== null}>
             {busy === 'login' ? <LoaderCircle size={14} className="spin" /> : <LogIn size={14} />}
-            开始飞书授权
+            登录 Meegle CLI
+          </button>
+        )}
+        {selectedClient?.online && feishuMcp?.enabled && !feishuMcp.authenticated &&
+          (!feishuMcp.configured || feishuMcp.available) && (
+          <button className="btn btn-primary" onClick={() => void loginFeishuMcp()} disabled={busy !== null || mcpLoginCommand !== null}>
+            {busy === 'mcpLogin' || mcpLoginCommand ? <LoaderCircle size={14} className="spin" /> : <LogIn size={14} />}
+            {mcpLoginCommand ? '等待登录完成' : feishuMcp.configured ? '登录 Feishu MCP' : '配置 Feishu MCP'}
           </button>
         )}
         {ready && (

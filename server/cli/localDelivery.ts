@@ -411,6 +411,44 @@ function artifactEvidence(artifactDir: string): DeliveryEvidence {
   }
 }
 
+function explicitDeliveryBlocker(
+  artifactDir: string,
+  lastMessagePath: string,
+  generatedAfter: number,
+): string | undefined {
+  const candidates = [
+    { label: 'Codex 编码结果', path: lastMessagePath },
+    { label: '集成报告', path: join(artifactDir, 'integration-report.md') },
+    { label: '测试报告', path: join(artifactDir, 'test-report.md') },
+    { label: '独立审查', path: join(artifactDir, 'review.md') },
+  ]
+  const blockerPatterns = [
+    /\bblocked and not ready for acceptance\b/i,
+    /\bnot ready for acceptance\b/i,
+    /\bdelivery (?:is )?blocked\b/i,
+    /交付状态为阻塞/,
+    /需求验收阻塞/,
+    /不能按完整需求交付签收/,
+    /审查结论为\s*\**BLOCKED\**/i,
+  ]
+
+  for (const candidate of candidates) {
+    let content: string
+    try {
+      if (statSync(candidate.path).mtimeMs < generatedAfter) continue
+      content = readFileSync(candidate.path, 'utf8')
+    } catch {
+      continue
+    }
+    const line = content
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .find((entry) => blockerPatterns.some((pattern) => pattern.test(entry)))
+    if (line) return `${candidate.label}明确报告未达到验收：${line.slice(0, 400)}`
+  }
+  return undefined
+}
+
 function workTreeFiles(checkout: string): string[] {
   const tracked = requireGit(
     checkout,
@@ -892,6 +930,13 @@ function failureStageIndex(
   message: string,
   stageResults?: DeliveryStageResult[],
 ): number {
+  if (
+    /交付未达到验收要求|blocked and not ready for acceptance|not ready for acceptance/i.test(
+      message,
+    )
+  ) {
+    return 2
+  }
   if (/LOCAL_DELIVERY_PHASE:analysis/.test(message)) return 0
   if (/LOCAL_DELIVERY_PHASE:ldd/.test(message)) return 1
   if (/LOCAL_DELIVERY_PHASE:coding/.test(message)) return 2
@@ -1038,6 +1083,7 @@ function buildPrompt(
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
     'Do not create, amend, stage, or push any Git commit. After this coding run, a separate Codex invocation executes the repository /aicr-commit skill to review the staged diff, write the AICR gate report, and create the local commit. Leave the code changes in the working tree; do not run git add.',
     `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
+    'Before coding, map every acceptance criterion to a concrete user-visible behavior and the source files that implement it. A model/helper plus unit tests is not a complete delivery when the requested page, API integration, or user flow is still missing. If a required contract or dependency is inaccessible, report the exact blocker and do not present the partial change as complete.',
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
     'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages when the task needs them.',
     feishuContextPath
@@ -1220,6 +1266,7 @@ async function main(): Promise<void> {
     const codexCommand = resolveCodexBinary()
     if (!codexCommand) throw new Error(codexBinaryError())
     let mcpArgs: string[] = []
+    let codexStartedAt = 0
     const lastMessagePath = join(artifactDir, 'codex-last-message.md')
     if (!args.commitOnly) {
       if (feishuMcpRequired() && !feishuMcp.status.available) {
@@ -1240,6 +1287,7 @@ async function main(): Promise<void> {
       ]
       resetDeliveryCodexPhaseMarker(checkout.checkout, item.id)
       console.log('LOCAL_DELIVERY_STAGE:codex')
+      codexStartedAt = Date.now()
       const result = spawnSync(
         codexCommand,
         buildCodexExecArgs({
@@ -1308,6 +1356,10 @@ async function main(): Promise<void> {
           ? '没有检测到可提交的非 Markdown 代码文件变更；--commit-only 需要已有代码改动'
           : 'Codex 已结束，但没有检测到非 Markdown 代码文件变更；仅生成说明或报告不算完成编码',
       )
+    }
+    if (!args.commitOnly) {
+      const blocker = explicitDeliveryBlocker(artifactDir, lastMessagePath, codexStartedAt)
+      if (blocker) throw new Error(`交付未达到验收要求：${blocker}`)
     }
     if (!args.noCommit && (!evidence.designReport || !evidence.integrationReport)) {
       throw new Error('缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交')
@@ -1511,11 +1563,17 @@ async function main(): Promise<void> {
           attempt.stagedFileCount ?? 0,
         )
       }
+      const failedIndex = failureStageIndex(message, attempt.stageResults)
+      const failedStage = attempt.stageResults?.find((stage) => stage.index === failedIndex)
+      if (failedStage) {
+        failedStage.status = 'failed'
+        failedStage.log = message.slice(0, 500)
+      }
       try {
         const failure = await recordPlatformFailure(
           attempt,
           message,
-          failureStageIndex(message, attempt.stageResults),
+          failedIndex,
         )
         attempt.failureRecorded = true
         recordedPipelineId = failure.id

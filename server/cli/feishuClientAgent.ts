@@ -36,6 +36,8 @@ import {
 } from '../services/feishuAgentConfig.js'
 import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
 import {
+  buildFeishuMcpLoginCommand,
+  feishuMcpCredentialEnv,
   inspectFeishuMcpAuth,
   resolveFeishuMcpRuntime,
   type FeishuMcpPublicStatus,
@@ -724,6 +726,36 @@ async function currentFeishuMcpStatus(force = false): Promise<FeishuMcpPublicSta
   }
 }
 
+async function loginFeishuMcp(): Promise<{ authenticated: true }> {
+  const resolution = resolveFeishuMcpRuntime()
+  if (!resolution.status.configured) {
+    throw new Error('飞书 MCP 尚未配置，请先在当前 Mac 配置 ~/.lark-mcp/config.json 中的 appId 和 appSecret')
+  }
+  if (!resolution.status.available || !resolution.command) {
+    throw new Error(resolution.status.reason ?? '飞书 MCP 命令不可用')
+  }
+
+  const result = await runCommand(
+    resolution.command,
+    buildFeishuMcpLoginCommand(resolution),
+    { ...process.env, ...feishuMcpCredentialEnv(resolution) },
+    15 * 60_000,
+  )
+  if (result.timedOut) throw new Error('飞书 MCP 登录等待超时，请重新发起登录')
+  if (result.exitCode !== 0) {
+    throw new Error(`飞书 MCP 登录未完成（退出码 ${result.exitCode}），请检查浏览器中的授权结果后重试`)
+  }
+
+  cachedMcpAuth = null
+  cachedMcpAuthAt = 0
+  cachedMcpAuthKey = ''
+  const status = await currentFeishuMcpStatus(true)
+  if (!status.authenticated) {
+    throw new Error(status.reason || '飞书 MCP 登录流程已结束，但未检测到有效登录态')
+  }
+  return { authenticated: true }
+}
+
 async function currentHealth(): Promise<{
   ok: true
   version: number
@@ -757,7 +789,7 @@ async function currentHealth(): Promise<{
   const codexBinary = resolveCodexBinary()
   return {
     ok: true,
-    version: 8,
+    version: 9,
     config: {
       ...publicFeishuAgentConfig(config),
       ...(pendingPairing
@@ -1789,6 +1821,7 @@ async function executeCommand(command: {
   id: string
   type:
     | 'login_start'
+    | 'feishu_mcp_login_start'
     | 'sync'
     | 'rotate_token'
     | 'delivery_start'
@@ -1801,6 +1834,8 @@ async function executeCommand(command: {
     let result: unknown
     if (command.type === 'login_start') {
       result = { challenge: await startLogin() }
+    } else if (command.type === 'feishu_mcp_login_start') {
+      result = await loginFeishuMcp()
     } else if (command.type === 'sync') {
       result = await runSync()
     } else if (command.type === 'delivery_start') {
@@ -1892,6 +1927,7 @@ async function sendHeartbeat(): Promise<void> {
       if (
         !id ||
         (type !== 'login_start' &&
+          type !== 'feishu_mcp_login_start' &&
           type !== 'sync' &&
           type !== 'rotate_token' &&
           type !== 'configure_repo_paths' &&

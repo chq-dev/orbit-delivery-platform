@@ -28,6 +28,7 @@ function syncDeliveryPipelineSafely(db: AppDatabase, job: unknown): void {
 
 export type FeishuAgentCommandType =
   | 'login_start'
+  | 'feishu_mcp_login_start'
   | 'sync'
   | 'rotate_token'
   | 'configure_repo_paths'
@@ -617,6 +618,7 @@ export function enqueueFeishuAgentCommand(
 ): FeishuAgentCommand {
   const supportedTypes: FeishuAgentCommandType[] = [
     'login_start',
+    'feishu_mcp_login_start',
     'sync',
     'rotate_token',
     'configure_repo_paths',

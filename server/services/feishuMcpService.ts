@@ -279,13 +279,10 @@ export function inspectFeishuMcpAuth(
   if (!resolution.command || !resolution.status.available) {
     return { authenticated: false, reason: resolution.status.reason ?? '飞书 MCP 不可用' }
   }
-  if (resolution.source === 'npx') {
-    return { authenticated: false, reason: '通过 npx 回退运行，跳过登录态探测' }
-  }
   const result = spawnSync(resolution.command, resolution.authArgs, {
     encoding: 'utf8',
     env,
-    timeout: 12_000,
+    timeout: resolution.source === 'npx' ? 20_000 : 12_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   if (result.error) return { authenticated: false, reason: result.error.message }

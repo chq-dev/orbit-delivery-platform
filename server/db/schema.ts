@@ -306,7 +306,7 @@ CREATE TABLE IF NOT EXISTS feishu_agent_commands (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL DEFAULT '',
   client_id TEXT NOT NULL DEFAULT 'primary',
-  command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'sync', 'rotate_token', 'configure_repo_paths', 'delivery_start', 'build_job_read', 'build_trigger')),
+  command_type TEXT NOT NULL CHECK (command_type IN ('login_start', 'feishu_mcp_login_start', 'sync', 'rotate_token', 'configure_repo_paths', 'delivery_start', 'build_job_read', 'build_trigger')),
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
   payload_json TEXT,
   result_json TEXT,
