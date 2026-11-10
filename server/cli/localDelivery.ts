@@ -105,6 +105,7 @@ interface WorkItemDeliveryContextData {
   workItem: WorkItem
   requirementBreakdown?: string
   designReference?: string
+  defectNote?: string
 }
 
 interface LocalDeliveryArgs {
@@ -1068,6 +1069,7 @@ function buildPrompt(
       {
         requirementBreakdown: item.requirementBreakdown,
         designReference: item.designReference,
+        defectNote: item.defectNote,
         screenshotPaths,
       },
     ),
@@ -1153,6 +1155,7 @@ async function main(): Promise<void> {
     ...item,
     requirementBreakdown: context.requirementBreakdown ?? item.requirementBreakdown,
     designReference: context.designReference ?? item.designReference,
+    defectNote: context.defectNote ?? item.defectNote,
   }
   const attempt: DeliveryAttemptContext = {
     api: args.api,

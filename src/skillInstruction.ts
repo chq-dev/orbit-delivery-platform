@@ -12,6 +12,7 @@ import type { Repository, WorkItem } from './types'
 export interface LocalSkillDeliveryContext {
   requirementBreakdown?: string
   designReference?: string
+  defectNote?: string
   screenshotPaths?: string[]
 }
 
@@ -26,7 +27,9 @@ export function buildLocalSkillInstruction(
     deliveryContext.requirementBreakdown?.trim() || item.requirementBreakdown?.trim() || ''
   const designReference =
     deliveryContext.designReference?.trim() || item.designReference?.trim() || ''
+  const defectNote = deliveryContext.defectNote?.trim() || item.defectNote?.trim() || ''
   const screenshotPaths = (deliveryContext.screenshotPaths ?? []).filter(Boolean)
+  const screenshotLabel = workItemType === 'defect' ? 'Defect screenshot files' : 'Design screenshot files'
   const localCheckout = repository?.localPath?.replace(/[\\/]+$/, '') || '/Users/chenhuaqu/sme/sme-main'
   const phaseMarkerPath = `${localCheckout}/delivery-artifacts/${item.id}/.phase-current`
   const modeSwitchLddPath = `${localCheckout}/${smeModeSwitchDesignReference.relativePath}`
@@ -52,11 +55,17 @@ export function buildLocalSkillInstruction(
     designReference
       ? 'Treat the design reference as the primary design input when it is readable. If it is a local file or directory, read it before writing the design report; do not ignore it or fabricate missing design content.'
       : '',
-    screenshotPaths.length > 0
-      ? `Design screenshot files:\n${screenshotPaths.map((path) => `- ${path}`).join('\n')}`
+    defectNote ? `Defect note (operator supplied):\n${defectNote}` : '',
+    defectNote
+      ? 'Treat the defect note as operator-confirmed delivery scope and acceptance guidance. Combine it with the work item description and Feishu context before planning or editing code.'
       : '',
     screenshotPaths.length > 0
-      ? 'The design screenshots are attached to this Codex run. Inspect every screenshot before planning or editing, and trace the implemented UI/behavior back to the visible requirements.'
+      ? `${screenshotLabel}:\n${screenshotPaths.map((path) => `- ${path}`).join('\n')}`
+      : '',
+    screenshotPaths.length > 0
+      ? workItemType === 'defect'
+        ? 'The defect screenshots are attached to this Codex run. Inspect every screenshot before planning or editing, and use them to reproduce and verify the reported behavior.'
+        : 'The design screenshots are attached to this Codex run. Inspect every screenshot before planning or editing, and trace the implemented UI/behavior back to the visible requirements.'
       : '',
     'Domain: wireless router, AC/AP and switch device management (WLAN, VLAN/SVI, DHCP, PoE, firmware upgrade).',
     `SME skill manual: ${organizationSkillManual.name} (${organizationSkillManual.url}); baseline ${organizationSkillManual.baseline}.`,

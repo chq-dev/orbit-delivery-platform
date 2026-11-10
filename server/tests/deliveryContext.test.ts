@@ -137,6 +137,17 @@ test('缺陷不要求需求拆解、设计稿或截图', () => {
     })
     assert.doesNotThrow(() => assertRequirementDeliveryContextReady(db, defect.id))
     assert.doesNotThrow(() => saveWorkItemDeliveryContext(db, defect.id, {}))
+    assert.equal(getWorkItemDeliveryContext(db, defect.id).defectNote, undefined)
+
+    const saved = saveWorkItemDeliveryContext(db, defect.id, {
+      defectNote: '复现步骤：AP 漫游后终端无法续租；期望：20 秒内恢复地址。',
+    })
+    assert.equal(saved.defectNote, '复现步骤：AP 漫游后终端无法续租；期望：20 秒内恢复地址。')
+    assert.equal(saved.workItem.defectNote, saved.defectNote)
+    assert.equal(
+      listWorkItemSummaries(db).find((item) => item.id === defect.id)?.defectNote,
+      saved.defectNote,
+    )
   } finally {
     db.close()
   }

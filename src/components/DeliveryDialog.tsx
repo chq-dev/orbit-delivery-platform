@@ -283,6 +283,97 @@ function WorkItemPicker({
   )
 }
 
+function DeliveryScreenshotField({
+  label,
+  hint,
+  screenshots,
+  compressing,
+  error,
+  inputRef,
+  onAddFiles,
+  onRemove,
+}: {
+  label: string
+  hint: string
+  screenshots: DeliveryScreenshotUpload[]
+  compressing: boolean
+  error: string
+  inputRef: React.RefObject<HTMLInputElement | null>
+  onAddFiles: (files: File[]) => void
+  onRemove: (index: number) => void
+}) {
+  return (
+    <div className="field screenshot-field">
+      <span className="field-label">
+        {label}
+        <small>
+          {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 张 · 单张自动压缩到 500KB 内 · 仅本机暂存
+        </small>
+      </span>
+      <div
+        className={`screenshot-uploader ${compressing ? 'busy' : ''}`}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault()
+          onAddFiles(
+            Array.from(event.dataTransfer.files).filter((file) =>
+              file.type.startsWith('image/'),
+            ),
+          )
+        }}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.files).filter((file) =>
+            file.type.startsWith('image/'),
+          )
+          if (files.length === 0) return
+          event.preventDefault()
+          onAddFiles(files)
+        }}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          hidden
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? [])
+            event.target.value = ''
+            onAddFiles(files)
+          }}
+        />
+        {screenshots.map((screenshot, index) => (
+          <div className="screenshot-thumb" key={`${screenshot.name}-${index}`}>
+            <img src={screenshot.dataUrl} alt={screenshot.name} />
+            <button
+              type="button"
+              aria-label={`删除截图 ${screenshot.name}`}
+              onClick={() => onRemove(index)}
+            >
+              <Trash2 size={12} />
+            </button>
+            <span title={screenshot.name}>{screenshot.name}</span>
+          </div>
+        ))}
+        {screenshots.length < MAX_DELIVERY_SCREENSHOTS && (
+          <button
+            type="button"
+            className="screenshot-add"
+            disabled={compressing}
+            onClick={() => inputRef.current?.click()}
+          >
+            <ImagePlus size={20} />
+            <span>{compressing ? '压缩中…' : '添加截图'}</span>
+            <small>点击 / 拖拽 / 粘贴</small>
+          </button>
+        )}
+      </div>
+      {error && <div className="form-error">{error}</div>}
+      <small className="screenshot-saved-note">{hint}</small>
+    </div>
+  )
+}
+
 export function DeliveryDialog({
   open,
   onClose,
@@ -317,6 +408,7 @@ export function DeliveryDialog({
   const [cloudReadinessChecking, setCloudReadinessChecking] = useState(false)
   const [requirementBreakdown, setRequirementBreakdown] = useState('')
   const [designReference, setDesignReference] = useState('')
+  const [defectNote, setDefectNote] = useState('')
   const [screenshots, setScreenshots] = useState<DeliveryScreenshotUpload[]>([])
   const [screenshotError, setScreenshotError] = useState('')
   const [compressingScreenshots, setCompressingScreenshots] = useState(false)
@@ -330,6 +422,7 @@ export function DeliveryDialog({
   const terminationRequestedRef = useRef(false)
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
+  const defectNoteDirtyRef = useRef(false)
   const screenshotsDirtyRef = useRef(false)
   const screenshotDraftWorkItemRef = useRef('')
   const canControlLocalAgent = Boolean(
@@ -486,10 +579,12 @@ export function DeliveryDialog({
     setExecutionMode('auto')
     setRequirementBreakdown(preferred?.requirementBreakdown ?? '')
     setDesignReference(preferred?.designReference ?? '')
+    setDefectNote(preferred?.defectNote ?? '')
     setScreenshots([])
     setScreenshotError('')
     setCompressingScreenshots(false)
     requirementContextDirtyRef.current = false
+    defectNoteDirtyRef.current = false
     screenshotsDirtyRef.current = false
     screenshotDraftWorkItemRef.current = ''
     setDeliveryJob(null)
@@ -499,14 +594,19 @@ export function DeliveryDialog({
   }, [open, initialWorkItemId])
 
   useEffect(() => {
-    if (!open || !workItemId || selectedItem?.type !== 'requirement') return
+    if (!open || !workItemId || !selectedItem) return
     let cancelled = false
     void api
       .getWorkItemDeliveryContext(workItemId)
       .then((context) => {
-        if (cancelled || requirementContextDirtyRef.current) return
-        setRequirementBreakdown(context.requirementBreakdown ?? '')
-        setDesignReference(context.designReference ?? '')
+        if (cancelled) return
+        if (selectedItem.type === 'requirement') {
+          if (requirementContextDirtyRef.current) return
+          setRequirementBreakdown(context.requirementBreakdown ?? '')
+          setDesignReference(context.designReference ?? '')
+        } else if (!defectNoteDirtyRef.current) {
+          setDefectNote(context.defectNote ?? '')
+        }
         setScreenshotError('')
       })
       .catch(() => undefined)
@@ -521,10 +621,10 @@ export function DeliveryDialog({
   }, [open, workItemId, selectedItem?.type])
 
   useEffect(() => {
-    if (!open || !workItemId || selectedItem?.type !== 'requirement') return
+    if (!open || !workItemId) return
     if (screenshotDraftWorkItemRef.current !== workItemId) return
     void saveDeliveryScreenshotDrafts(workItemId, screenshots)
-  }, [open, workItemId, screenshots, selectedItem?.type])
+  }, [open, workItemId, screenshots])
 
   useEffect(() => {
     if (!open) return
@@ -628,9 +728,11 @@ export function DeliveryDialog({
     setWorkItemId(item?.id ?? '')
     setRequirementBreakdown(item?.requirementBreakdown ?? '')
     setDesignReference(item?.designReference ?? '')
+    setDefectNote(item?.defectNote ?? '')
     setScreenshots([])
     setScreenshotError('')
     requirementContextDirtyRef.current = false
+    defectNoteDirtyRef.current = false
     screenshotsDirtyRef.current = false
     screenshotDraftWorkItemRef.current = ''
     setDeliveryJob(null)
@@ -654,10 +756,10 @@ export function DeliveryDialog({
   }
 
   const addScreenshotFiles = async (files: File[]) => {
-    if (selectedItem?.type !== 'requirement' || files.length === 0) return
+    if (!selectedItem || files.length === 0) return
     const available = MAX_DELIVERY_SCREENSHOTS - screenshots.length
     if (available <= 0) {
-      notify('截图数量已达上限', `每条需求最多上传 ${MAX_DELIVERY_SCREENSHOTS} 张截图`, 'warning')
+      notify('截图数量已达上限', `每个工作项最多上传 ${MAX_DELIVERY_SCREENSHOTS} 张截图`, 'warning')
       return
     }
     if (files.length > available) {
@@ -670,7 +772,7 @@ export function DeliveryDialog({
 
     setCompressingScreenshots(true)
     setScreenshotError('')
-    requirementContextDirtyRef.current = true
+    if (selectedItem.type === 'requirement') requirementContextDirtyRef.current = true
     screenshotsDirtyRef.current = true
     const accepted: DeliveryScreenshotUpload[] = []
     const errors: string[] = []
@@ -699,6 +801,12 @@ export function DeliveryDialog({
       notify('截图处理失败', message, 'warning')
     }
     setCompressingScreenshots(false)
+  }
+
+  const removeScreenshot = (index: number) => {
+    if (selectedItem?.type === 'requirement') requirementContextDirtyRef.current = true
+    screenshotsDirtyRef.current = true
+    setScreenshots((current) => current.filter((_, itemIndex) => itemIndex !== index))
   }
 
   const launch = async () => {
@@ -760,7 +868,7 @@ export function DeliveryDialog({
     const directLocalDelivery = canControlLocalAgent && !serverExecution
     if (screenshots.length > 0 && !directLocalDelivery) {
       notify(
-        '设计截图仅支持本机执行',
+        '截图仅支持本机执行',
         '截图只在当前浏览器暂存，不会上传服务端；请选择当前终端执行或移除截图后重试',
         'warning',
       )
@@ -788,6 +896,11 @@ export function DeliveryDialog({
         await api.saveWorkItemDeliveryContext(workItemId, {
           requirementBreakdown: requirementBreakdown.trim(),
           designReference: designReference.trim(),
+        })
+      }
+      if (selectedItem?.type === 'defect') {
+        await api.saveWorkItemDeliveryContext(workItemId, {
+          defectNote: defectNote.trim(),
         })
       }
       const pending = createPendingLocalDeliveryJob({
@@ -1308,77 +1421,16 @@ export function DeliveryDialog({
                 </div>
               </div>
 
-              <div className="field screenshot-field">
-                <span className="field-label">
-                  设计截图
-                  <small>
-                    {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 张 · 单张自动压缩到 500KB 内 · 仅本机暂存
-                  </small>
-                </span>
-                <div
-                  className={`screenshot-uploader ${compressingScreenshots ? 'busy' : ''}`}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    void addScreenshotFiles(
-                      Array.from(event.dataTransfer.files).filter((file) =>
-                        file.type.startsWith('image/'),
-                      ),
-                    )
-                  }}
-                  onPaste={(event) => {
-                    const files = Array.from(event.clipboardData.files).filter((file) =>
-                      file.type.startsWith('image/'),
-                    )
-                    if (files.length === 0) return
-                    event.preventDefault()
-                    void addScreenshotFiles(files)
-                  }}
-                >
-                  <input
-                    ref={screenshotInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    multiple
-                    hidden
-                    onChange={(event) => {
-                      const files = Array.from(event.target.files ?? [])
-                      event.target.value = ''
-                      void addScreenshotFiles(files)
-                    }}
-                  />
-                  {screenshots.map((screenshot, index) => (
-                    <div className="screenshot-thumb" key={`${screenshot.name}-${index}`}>
-                      <img src={screenshot.dataUrl} alt={screenshot.name} />
-                      <button
-                        type="button"
-                        aria-label={`删除截图 ${screenshot.name}`}
-                        onClick={() => {
-                          requirementContextDirtyRef.current = true
-                          screenshotsDirtyRef.current = true
-                          setScreenshots((current) => current.filter((_, itemIndex) => itemIndex !== index))
-                        }}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                      <span title={screenshot.name}>{screenshot.name}</span>
-                    </div>
-                  ))}
-                  {screenshots.length < MAX_DELIVERY_SCREENSHOTS && (
-                    <button
-                      type="button"
-                      className="screenshot-add"
-                      disabled={compressingScreenshots}
-                      onClick={() => screenshotInputRef.current?.click()}
-                    >
-                      <ImagePlus size={20} />
-                      <span>{compressingScreenshots ? '压缩中…' : '添加截图'}</span>
-                      <small>点击 / 拖拽 / 粘贴</small>
-                    </button>
-                  )}
-                </div>
-                {screenshotError && <div className="form-error">{screenshotError}</div>}
-              </div>
+              <DeliveryScreenshotField
+                label="设计截图"
+                hint="截图仅在本机浏览器暂存，交付时作为图像输入传给 Codex"
+                screenshots={screenshots}
+                compressing={compressingScreenshots}
+                error={screenshotError}
+                inputRef={screenshotInputRef}
+                onAddFiles={(files) => void addScreenshotFiles(files)}
+                onRemove={removeScreenshot}
+              />
 
               {requirementContextIssue && (
                 <div className="form-error requirement-context-error">
@@ -1388,6 +1440,49 @@ export function DeliveryDialog({
               )}
             </section>
           )}
+
+          {selectedItem?.type === 'defect' && (
+            <section className="requirement-context defect-context ready">
+              <div className="requirement-context-head">
+                <div>
+                  <span className="eyebrow">
+                    <ImagePlus size={13} /> DEFECT INPUT
+                  </span>
+                  <strong>缺陷交付说明（可选）</strong>
+                  <small>可补充文字说明和截图，Codex 会在编码前读取</small>
+                </div>
+                <span className="requirement-context-state ready">可选</span>
+              </div>
+
+              <div className="field">
+                <span className="field-label">
+                  缺陷说明
+                  <small>复现步骤、期望结果或本次修复约束</small>
+                </span>
+                <textarea
+                  value={defectNote}
+                  onChange={(event) => {
+                    defectNoteDirtyRef.current = true
+                    setDefectNote(event.target.value)
+                  }}
+                  placeholder="可选：补充缺陷现象、复现步骤、期望行为或本次修复约束..."
+                  rows={3}
+                />
+              </div>
+
+              <DeliveryScreenshotField
+                label="缺陷截图"
+                hint="截图仅在本机浏览器暂存，交付时作为图像输入传给 Codex"
+                screenshots={screenshots}
+                compressing={compressingScreenshots}
+                error={screenshotError}
+                inputRef={screenshotInputRef}
+                onAddFiles={(files) => void addScreenshotFiles(files)}
+                onRemove={removeScreenshot}
+              />
+            </section>
+          )}
+
           <Field
             label="执行位置"
             required

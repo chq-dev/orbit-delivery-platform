@@ -31,6 +31,7 @@ interface WorkItemRow {
   project_line: string | null
   design_reference: string | null
   requirement_breakdown: string | null
+  defect_note: string | null
   requirement_screenshot_count: number
   created_at: string
   updated_at: string
@@ -97,6 +98,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     projectLine: row.project_line ?? undefined,
     designReference: row.design_reference ?? undefined,
     requirementBreakdown: row.requirement_breakdown || undefined,
+    defectNote: row.defect_note || undefined,
     requirementScreenshotCount: Number(row.requirement_screenshot_count ?? 0),
   }
 }
@@ -104,7 +106,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
 function selectSql(): string {
   return `SELECT id, type, title, description, priority, status, repo_id, branch, owner,
                  source, external_id, feishu_status, project_line, design_reference,
-                 requirement_breakdown,
+                 requirement_breakdown, defect_note,
                  (SELECT COUNT(*) FROM work_item_attachments
                   WHERE work_item_attachments.work_item_id = work_items.id)
                    AS requirement_screenshot_count,
@@ -126,7 +128,7 @@ export function listWorkItemSummaries(db: AppDatabase, ownerUserId?: string): Wo
   const query =
       `SELECT id, type, title, '' AS description, priority, status, repo_id, branch, owner,
               source, external_id, feishu_status, project_line, design_reference,
-              '' AS requirement_breakdown,
+              '' AS requirement_breakdown, defect_note,
               (SELECT COUNT(*) FROM work_item_attachments
                WHERE work_item_attachments.work_item_id = work_items.id)
                 AS requirement_screenshot_count,
@@ -154,12 +156,14 @@ export function getWorkItem(db: AppDatabase, id: string, ownerUserId?: string): 
 export interface WorkItemDeliveryContextInput {
   requirementBreakdown?: unknown
   designReference?: unknown
+  defectNote?: unknown
 }
 
 export interface WorkItemDeliveryContext {
   workItem: WorkItem
   requirementBreakdown?: string
   designReference?: string
+  defectNote?: string
 }
 
 export function getWorkItemDeliveryContext(
@@ -172,6 +176,7 @@ export function getWorkItemDeliveryContext(
     workItem,
     requirementBreakdown: workItem.requirementBreakdown,
     designReference: workItem.designReference,
+    defectNote: workItem.defectNote,
   }
 }
 
@@ -191,6 +196,10 @@ export function saveWorkItemDeliveryContext(
     rawInput.designReference === undefined
       ? current.designReference
       : optionalText(rawInput.designReference, '设计稿链接或本地路径', 2_000)
+  const defectNote =
+    rawInput.defectNote === undefined
+      ? current.defectNote
+      : optionalText(rawInput.defectNote, '缺陷说明', 20_000)
 
   if (workItem.type === 'requirement') {
     const issue = requirementDeliveryContextIssue({
@@ -204,9 +213,9 @@ export function saveWorkItemDeliveryContext(
   db.transaction(() => {
     db.prepare(
       `UPDATE work_items
-       SET requirement_breakdown = ?, design_reference = ?, updated_at = ?
+       SET requirement_breakdown = ?, design_reference = ?, defect_note = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(requirementBreakdown ?? null, designReference ?? null, now, id)
+    ).run(requirementBreakdown ?? null, designReference ?? null, defectNote ?? null, now, id)
   })()
 
   return getWorkItemDeliveryContext(db, id, ownerUserId)

@@ -94,12 +94,14 @@ export interface WorkItemInput {
 export interface WorkItemDeliveryContextInput {
   requirementBreakdown?: string
   designReference?: string
+  defectNote?: string
 }
 
 export interface WorkItemDeliveryContext {
   workItem: WorkItem
   requirementBreakdown?: string
   designReference?: string
+  defectNote?: string
 }
 
 export interface ImportResult<T> {

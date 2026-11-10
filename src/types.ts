@@ -95,6 +95,7 @@ export interface WorkItem {
   projectLine?: string
   designReference?: string
   requirementBreakdown?: string
+  defectNote?: string
   requirementScreenshotCount?: number
   frontendOnly?: boolean
 }

@@ -96,3 +96,32 @@ test('交付提示词包含需求拆解与截图附件路径', () => {
   assert.match(instruction, /Meegle work items remain platform-provided/)
   assert.match(instruction, /Meegle MCP server named "meegle"/)
 })
+
+test('缺陷交付提示词包含可选的缺陷说明', () => {
+  const item: WorkItem = {
+    id: 'BUG-236',
+    type: 'defect',
+    title: 'AP 漫游后终端无法续租地址',
+    description: '漫游后 DHCP 租约未刷新',
+    priority: '高',
+    status: '待处理',
+    repoId: 'repo-1',
+    branch: 'dev-harvey',
+    owner: 'chenhuaqu',
+    updatedAt: '刚刚',
+    createdAt: '2026-11-10',
+    defectNote: '复现路径：AC 下挂两台 AP，终端从 AP1 漫游到 AP2；期望 20 秒内恢复续租。',
+  }
+
+  const instruction = buildLocalSkillInstruction(item, undefined, {
+    screenshotPaths: [
+      '/Users/chenhuaqu/sme/sme-main/delivery-artifacts/BUG-236/defect-assets/roaming.png',
+    ],
+  })
+
+  assert.match(instruction, /Defect note \(operator supplied\):/)
+  assert.match(instruction, /复现路径：AC 下挂两台 AP/)
+  assert.match(instruction, /operator-confirmed delivery scope/)
+  assert.match(instruction, /Defect screenshot files:/)
+  assert.match(instruction, /use them to reproduce and verify the reported behavior/)
+})
