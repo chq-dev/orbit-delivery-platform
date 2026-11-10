@@ -249,8 +249,10 @@ test('Codex 失败不会因输出中的 autoCommit 被误归到提交步骤', ()
     'codex',
   )
   assert.equal(
-    classifyLocalDeliveryFailure('Codex 已结束，但没有检测到非 Markdown 代码文件变更'),
-    'evidence',
+    classifyLocalDeliveryFailure(
+      'Codex 已结束，但没有检测到非 Markdown 代码文件变更\nLOCAL_DELIVERY_STAGE:connectivity 已隔离客户端原有未提交变更 1 个',
+    ),
+    'coding',
   )
   assert.equal(classifyLocalDeliveryFailure('推送失败：remote rejected'), 'commit')
   assert.equal(classifyLocalDeliveryFailure('未启用自动提交代码；代码保留在工作区'), 'commit')

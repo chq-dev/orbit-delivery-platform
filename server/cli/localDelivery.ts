@@ -751,10 +751,18 @@ function deliveryStageResults(
     },
     {
       index: 3,
-      status: evidence.integrationReport ? 'success' : 'pending',
-      log: evidence.integrationReport
-        ? '已生成 delivery-artifacts/<work-item>/integration-report.md'
-        : '未检测到 integration-report.md，不能标记集成验证完成',
+      status:
+        changed > 0 && evidence.designReport && evidence.integrationReport
+          ? 'success'
+          : 'failed',
+      log:
+        changed === 0
+          ? '未检测到业务代码变更，交付证据不完整'
+          : !evidence.designReport
+            ? '未检测到 design-report.md，不能标记设计报告与业务 LDD 完成'
+            : !evidence.integrationReport
+              ? '未检测到 integration-report.md，不能标记集成验证完成'
+              : '已生成 delivery-artifacts/<work-item>/integration-report.md',
     },
     {
       index: 4,
@@ -937,6 +945,7 @@ function failureStageIndex(
   ) {
     return 2
   }
+  if (/没有检测到.*代码文件变更|仅生成说明或报告/.test(message)) return 2
   if (/LOCAL_DELIVERY_PHASE:analysis/.test(message)) return 0
   if (/LOCAL_DELIVERY_PHASE:ldd/.test(message)) return 1
   if (/LOCAL_DELIVERY_PHASE:coding/.test(message)) return 2
@@ -953,7 +962,6 @@ function failureStageIndex(
   if (/未启用自动提交/.test(message)) return 4
   if (/内部编译|编译系统|Jenkins|编译任务|触发编译/.test(message)) return 5
   if (/Codex 执行失败/.test(message)) return 2
-  if (/没有检测到.*代码文件变更|仅生成说明或报告/.test(message)) return 2
   if (/回写平台|平台未返回|流水线记录/.test(message)) return 8
   if (
     /读取平台|平台服务端|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(

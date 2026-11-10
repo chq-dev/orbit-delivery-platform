@@ -1318,7 +1318,6 @@ function advanceDeliveryExecutionStage(
   if (stage === 'evidence') {
     finishDeliveryStep(job, 'analysis', DELIVERY_CODEX_PHASE_LOGS.analysis.success)
     finishDeliveryStep(job, 'ldd', DELIVERY_CODEX_PHASE_LOGS.ldd.success)
-    finishDeliveryStep(job, 'coding', 'Codex 编码与验证已结束')
     if (job.steps.find((step) => step.key === 'evidence')?.status === 'pending') {
       setStep(job, 'evidence', 'running', '正在确认代码变更与交付报告')
     }

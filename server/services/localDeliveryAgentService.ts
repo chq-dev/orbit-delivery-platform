@@ -350,10 +350,13 @@ export function classifyLocalDeliveryFailure(message: string): string {
   ) {
     return 'contract'
   }
-  if (/未提交变更|工作区.*清理|尚未配置客户端代码路径/.test(message)) return 'checkout'
-  if (/没有检测到.*代码文件变更|缺少 delivery-artifacts|仅生成说明或报告/.test(message)) {
+  if (/没有检测到.*代码文件变更|仅生成说明或报告/.test(message)) {
+    return 'coding'
+  }
+  if (/缺少 delivery-artifacts/.test(message)) {
     return 'evidence'
   }
+  if (/未提交变更|工作区.*清理|尚未配置客户端代码路径/.test(message)) return 'checkout'
   if (/Codex 执行失败|No prompt provided|Reading prompt from stdin/i.test(message)) {
     return 'codex'
   }
@@ -426,6 +429,7 @@ export function resolveLocalDeliveryFailureStep(
 }
 
 export function failedDeliveryStageIndex(message: string, failedStepKey: string): number {
+  if (/没有检测到.*代码文件变更|仅生成说明或报告/.test(message)) return 2
   if (/design-report|缺少 delivery-artifacts 中的设计报告/.test(message)) return 1
   if (/integration-report|缺少 delivery-artifacts 中的集成报告/.test(message)) return 3
   return FAILED_STEP_STAGE_INDEX[failedStepKey] ?? 2
