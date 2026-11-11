@@ -53,6 +53,9 @@ import {
   type FeishuSyncTokenStatus,
   type PipelineRun,
   type Repository,
+  type RuijieConnectionResult,
+  type RuijieSyncInput,
+  type RuijieSyncResult,
   type TestReport,
   type ToastMessage,
   type WorkItem,
@@ -137,6 +140,8 @@ interface DataContextValue {
   connectFeishu: (input: FeishuConnectInput) => Promise<FeishuIntegrationStatus>
   testFeishu: () => Promise<{ ok: true; projectName?: string }>
   syncFeishu: () => Promise<FeishuSyncResult>
+  testRuijie: (accountId: string) => Promise<RuijieConnectionResult>
+  syncRuijie: (input: RuijieSyncInput) => Promise<RuijieSyncResult>
   syncFeishuAgent: (announce?: boolean) => Promise<FeishuSyncResult>
   refreshFeishuAgent: (quiet?: boolean) => Promise<FeishuClientAgentHealth | null>
   selectFeishuAgentClient: (clientId: string) => Promise<void>
@@ -1086,6 +1091,29 @@ export function DataProvider({ children }: { children: ReactNode }) {
     syncFeishuAgent,
   ])
 
+  const testRuijie = useCallback(async (accountId: string) => {
+    try {
+      const result = await api.testRuijie(accountId)
+      notify('锐捷 BUG 登录正常', `${result.username} · ${result.baseUrl}`)
+      return result
+    } catch (error) {
+      reportApiError('锐捷 BUG 登录测试失败', error)
+      throw error
+    }
+  }, [notify, reportApiError])
+
+  const syncRuijie = useCallback(async (input: RuijieSyncInput) => {
+    try {
+      const result = await api.syncRuijie(input)
+      await refreshWorkItems(true).catch(() => undefined)
+      notify('锐捷 BUG 已同步', result.message)
+      return result
+    } catch (error) {
+      reportApiError('锐捷 BUG 同步失败', error)
+      throw error
+    }
+  }, [notify, refreshWorkItems, reportApiError])
+
   const disconnectFeishu = useCallback(async () => {
     try {
       const integration = await api.disconnectFeishu()
@@ -1134,6 +1162,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       connectFeishu,
       testFeishu,
       syncFeishu,
+      testRuijie,
+      syncRuijie,
       syncFeishuAgent,
       refreshFeishuAgent,
       selectFeishuAgentClient,
@@ -1186,10 +1216,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
       rotateFeishuSyncToken,
       selectedFeishuAgentClientId,
       syncFeishuAgent,
+      syncRuijie,
       updateRepositorySettings,
       updateAccount,
       syncFeishu,
       testFeishu,
+      testRuijie,
       toasts,
       workItemsError,
       workItemsLoading,

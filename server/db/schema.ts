@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 25
+export const SCHEMA_VERSION = 27
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -29,7 +29,7 @@ CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at)
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL DEFAULT '',
-  platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device')),
+  platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device', 'ruijie')),
   username TEXT NOT NULL,
   label TEXT NOT NULL,
   service_url TEXT NOT NULL DEFAULT '',
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   repo_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE RESTRICT,
   branch TEXT NOT NULL,
   owner TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('local', 'feishu')),
+  source TEXT NOT NULL CHECK (source IN ('local', 'feishu', 'ruijie')),
   external_id TEXT,
   feishu_status TEXT,
   project_line TEXT,
@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS feishu_sync_credentials (
 
 CREATE TABLE IF NOT EXISTS feishu_agent_credentials (
   client_id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   token_hash TEXT NOT NULL UNIQUE,
   token_hint TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -279,6 +280,7 @@ CREATE TABLE IF NOT EXISTS feishu_agent_credentials (
 
 CREATE TABLE IF NOT EXISTS feishu_agent_pairings (
   client_id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   pairing_secret_hash TEXT NOT NULL,
   client_name TEXT NOT NULL,
   machine_name TEXT NOT NULL,
@@ -295,6 +297,7 @@ CREATE TABLE IF NOT EXISTS feishu_agent_pairings (
 
 CREATE TABLE IF NOT EXISTS feishu_agent_state (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
   client_name TEXT NOT NULL DEFAULT '',
   machine_name TEXT NOT NULL DEFAULT '',
   health_json TEXT NOT NULL,

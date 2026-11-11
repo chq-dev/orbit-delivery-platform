@@ -78,6 +78,10 @@ import {
 } from './services/localDeliveryAgentService.js'
 import { getTestReport, listTestReports, reportAsMarkdown } from './services/reportService.js'
 import {
+  syncRuijieBugs,
+  testRuijieBugConnection,
+} from './services/ruijieBugService.js'
+import {
   createRepository,
   getRepository,
   listRepositories,
@@ -306,14 +310,22 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
   })
 
   router.get('/accounts/:id/build-job', async (request, response) => {
-    getAccount(db, request.params.id, currentUser(request).id)
+    const user = currentUser(request)
+    getAccount(db, request.params.id, user.id)
     response.json(
-      await getBuildJobWithFallback(db, vault, request.params.id, request.query.clientId),
+      await getBuildJobWithFallback(
+        db,
+        vault,
+        request.params.id,
+        request.query.clientId,
+        user.id,
+      ),
     )
   })
 
   router.post('/accounts/:id/build', async (request, response) => {
-    getAccount(db, request.params.id, currentUser(request).id)
+    const user = currentUser(request)
+    getAccount(db, request.params.id, user.id)
     response.status(202).json(
       await triggerBuildWithFallback(
         db,
@@ -321,12 +333,30 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
         request.params.id,
         request.body?.parameters,
         request.body?.clientId,
+        user.id,
       ),
     )
   })
 
   router.get('/feishu/inbox', (request, response) => {
     response.json(listFeishuInbox(db, currentUser(request).id))
+  })
+
+  router.post('/integrations/ruijie/test', async (request, response) => {
+    response.json(
+      await testRuijieBugConnection(
+        db,
+        vault,
+        request.body?.accountId,
+        currentUser(request).id,
+      ),
+    )
+  })
+
+  router.post('/integrations/ruijie/sync', async (request, response) => {
+    response.json(
+      await syncRuijieBugs(db, vault, request.body ?? {}, currentUser(request).id),
+    )
   })
 
   router.get('/feishu/snapshot', (request, response) => {
@@ -398,13 +428,18 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     response.json(requestFeishuAgentPairing(db, request.body, request.ip ?? ''))
   })
 
-  router.get('/integrations/feishu/agent/pairings', (_request, response) => {
-    response.json(listFeishuAgentPairings(db))
+  router.get('/integrations/feishu/agent/pairings', (request, response) => {
+    response.json(listFeishuAgentPairings(db, currentUser(request).id))
   })
 
   router.post('/integrations/feishu/agent/pairings/:clientId/approve', (request, response) => {
     response.json(
-      approveFeishuAgentPairing(db, request.params.clientId, request.body?.repoPaths),
+      approveFeishuAgentPairing(
+        db,
+        request.params.clientId,
+        request.body?.repoPaths,
+        currentUser(request).id,
+      ),
     )
   })
 

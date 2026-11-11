@@ -1,15 +1,20 @@
 import type { AppDatabase } from './database.js'
 
-function firstUserId(db: AppDatabase): string | undefined {
+export function primaryUserId(db: AppDatabase): string | undefined {
   const row = db
     .prepare('SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1')
     .get() as { id: string } | undefined
   return row?.id
 }
 
+export function isPrimaryUser(db: AppDatabase, userId?: string): boolean {
+  if (!userId) return false
+  return primaryUserId(db) === userId
+}
+
 export function defaultOwnerUserId(db: AppDatabase, requested?: string): string {
   if (requested) return requested
-  return firstUserId(db) ?? ''
+  return primaryUserId(db) ?? ''
 }
 
 export function backfillOwnershipToUser(db: AppDatabase, userId: string): void {
@@ -58,11 +63,20 @@ export function backfillOwnershipToUser(db: AppDatabase, userId: string): void {
     db.prepare("UPDATE feishu_agent_commands SET owner_user_id = ? WHERE owner_user_id = ''").run(
       userId,
     )
+    db.prepare("UPDATE feishu_agent_state SET owner_user_id = ? WHERE owner_user_id = ''").run(
+      userId,
+    )
+    db.prepare(
+      "UPDATE feishu_agent_credentials SET owner_user_id = ? WHERE owner_user_id = ''",
+    ).run(userId)
+    db.prepare(
+      "UPDATE feishu_agent_pairings SET owner_user_id = ? WHERE owner_user_id = ''",
+    ).run(userId)
   })()
 }
 
 export function backfillOwnershipToFirstUser(db: AppDatabase): void {
-  const userId = firstUserId(db)
+  const userId = primaryUserId(db)
   if (userId) backfillOwnershipToUser(db, userId)
 }
 

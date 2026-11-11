@@ -9,11 +9,15 @@ import { createDatabase, type AppDatabase } from '../db/database.js'
 import { SCHEMA_VERSION } from '../db/schema.js'
 import { CredentialVault } from '../security/vault.js'
 import { createAccount } from '../services/accountService.js'
-import { recordFeishuAgentHeartbeat } from '../services/feishuAgentBridgeService.js'
+import {
+  getFeishuAgentBridgeStatus,
+  recordFeishuAgentHeartbeat,
+} from '../services/feishuAgentBridgeService.js'
 import { connectFeishu, getFeishuStatus } from '../services/feishuIntegrationService.js'
 import { recordLocalDelivery } from '../services/localDeliveryService.js'
 import { createTestReport } from '../services/reportService.js'
 import { createRepository } from '../services/repositoryService.js'
+import { issueFeishuAgentCredential } from '../services/feishuSyncTokenService.js'
 
 interface Session {
   cookie: string
@@ -359,17 +363,52 @@ test('飞书集成、代理交付状态和代理命令按登录账号隔离', as
         },
       },
     })
+    issueFeishuAgentCredential(db, 'owner-b-client', userB.userId)
+    recordFeishuAgentHeartbeat(db, {
+      clientId: 'owner-b-client',
+      clientName: 'owner-b-agent',
+      machineName: 'owner-b-machine',
+      health: {
+        config: { configured: true, projectKey: 'project-b' },
+        meegle: { available: true, authenticated: true },
+        running: true,
+        lastRun: null,
+        delivery: {
+          id: 'job-b',
+          status: 'running',
+          stage: '业务编码',
+          workItemId: targetB.itemId,
+          repoId: targetB.repoId,
+          steps: [],
+        },
+      },
+    })
 
     const agentA = await apiJson<{
       health?: { running: boolean; delivery?: { workItemId?: string } | null }
+      clients: { clientId: string }[]
     }>(server.base, userA.cookie, '/integrations/feishu/agent/status?clientId=primary')
     const agentB = await apiJson<{
       health?: { running: boolean; delivery?: { workItemId?: string } | null }
+      clients: { clientId: string }[]
+      clientId?: string
     }>(server.base, userB.cookie, '/integrations/feishu/agent/status?clientId=primary')
+    const agentBOwn = await apiJson<{
+      health?: { running: boolean; delivery?: { workItemId?: string } | null }
+      clients: { clientId: string }[]
+      clientId?: string
+    }>(server.base, userB.cookie, '/integrations/feishu/agent/status?clientId=owner-b-client')
     assert.equal(agentA.body.health?.running, true)
     assert.equal(agentA.body.health?.delivery?.workItemId, targetA.itemId)
-    assert.equal(agentB.body.health?.running, false)
-    assert.equal(agentB.body.health?.delivery, null)
+    assert.deepEqual(
+      new Set(agentA.body.clients.map((client) => client.clientId)),
+      new Set(['primary', 'owner-b-client']),
+    )
+    assert.deepEqual(agentB.body.clients.map((client) => client.clientId), ['owner-b-client'])
+    assert.equal(agentB.body.health, undefined)
+    assert.equal(agentBOwn.body.clientId, 'owner-b-client')
+    assert.equal(agentBOwn.body.health?.running, true)
+    assert.equal(agentBOwn.body.health?.delivery?.workItemId, targetB.itemId)
 
     const buildAccountA = await apiJson<{ id: string }>(server.base, userA.cookie, '/accounts', {
       method: 'POST',
@@ -787,6 +826,77 @@ test('版本 22 数据库升级后为飞书集成补列并回填所属用户', (
       )
       .get() as { owner_user_id: string }
     assert.equal(integration.owner_user_id, 'integration-owner')
+    upgraded.close()
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('版本 25 数据库升级后客户端绑定归属首个用户', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'orbit-agent-ownership-'))
+  const filename = join(directory, 'orbit.db')
+  try {
+    const seeded = createDatabase({ filename })
+    const now = '2026-01-01T00:00:00.000Z'
+    seeded.prepare(
+      `INSERT INTO users (id, username, username_normalized, password_hash, created_at, updated_at)
+       VALUES ('agent-owner-a', 'Agent.Owner.A', 'agent.owner.a', 'hash', ?, ?)`,
+    ).run(now, now)
+    seeded.prepare(
+      `INSERT INTO users (id, username, username_normalized, password_hash, created_at, updated_at)
+       VALUES ('agent-owner-b', 'Agent.Owner.B', 'agent.owner.b', 'hash', ?, ?)`,
+    ).run('2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z')
+    seeded.prepare(
+      `INSERT INTO feishu_agent_credentials
+        (client_id, token_hash, token_hint, created_at, updated_at)
+       VALUES ('legacy-client', 'legacy-token-hash', '••••test', ?, ?)`,
+    ).run(now, now)
+    seeded.prepare(
+      `INSERT INTO feishu_agent_state
+        (id, client_name, machine_name, health_json, last_seen_at, created_at, updated_at)
+       VALUES ('legacy-client', '旧客户端', 'legacy-machine', '{}', ?, ?, ?)`,
+    ).run(now, now, now)
+    seeded.prepare(
+      `INSERT INTO feishu_agent_pairings
+        (client_id, pairing_secret_hash, client_name, machine_name, platform_base_url,
+         project_key, public_key, source_ip, status, config_ciphertext,
+         created_at, updated_at, expires_at)
+       VALUES ('legacy-client', 'secret-hash', '旧客户端', 'legacy-machine',
+         'https://orbit.example.com', 'rjcloud', 'public-key', '', 'pending', NULL, ?, ?, ?)`,
+    ).run(now, now, '2026-01-01T00:30:00.000Z')
+    seeded.exec(`
+      DROP INDEX IF EXISTS idx_feishu_agent_state_owner;
+      DROP INDEX IF EXISTS idx_feishu_agent_credentials_owner;
+      DROP INDEX IF EXISTS idx_feishu_agent_pairings_owner;
+      ALTER TABLE feishu_agent_state DROP COLUMN owner_user_id;
+      ALTER TABLE feishu_agent_credentials DROP COLUMN owner_user_id;
+      ALTER TABLE feishu_agent_pairings DROP COLUMN owner_user_id;
+      PRAGMA user_version = 25;
+    `)
+    seeded.close()
+
+    const upgraded = createDatabase({ filename })
+    assert.equal(upgraded.pragma('user_version', { simple: true }), SCHEMA_VERSION)
+    for (const [table, idColumn, idValue] of [
+      ['feishu_agent_state', 'id', 'legacy-client'],
+      ['feishu_agent_credentials', 'client_id', 'legacy-client'],
+      ['feishu_agent_pairings', 'client_id', 'legacy-client'],
+    ] as const) {
+      const row = upgraded
+        .prepare(`SELECT owner_user_id FROM ${table} WHERE ${idColumn} = ?`)
+        .get(idValue) as { owner_user_id: string }
+      assert.equal(row.owner_user_id, 'agent-owner-a')
+    }
+    assert.deepEqual(
+      getFeishuAgentBridgeStatus(upgraded, undefined, 'agent-owner-b').clients,
+      [],
+    )
+    assert.deepEqual(
+      getFeishuAgentBridgeStatus(upgraded, undefined, 'agent-owner-a').clients.map(
+        (client) => client.clientId,
+      ),
+      ['legacy-client'],
+    )
     upgraded.close()
   } finally {
     rmSync(directory, { recursive: true, force: true })

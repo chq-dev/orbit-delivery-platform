@@ -12,6 +12,9 @@ import type {
   PlatformKey,
   Priority,
   Repository,
+  RuijieConnectionResult,
+  RuijieSyncInput,
+  RuijieSyncResult,
   TestReport,
   WorkItem,
   WorkItemType,
@@ -85,7 +88,7 @@ export interface WorkItemInput {
   repoId: string
   branch: string
   owner: string
-  source?: 'local' | 'feishu'
+  source?: 'local' | 'feishu' | 'ruijie'
   externalId?: string
   designReference?: string
   requirementBreakdown?: string
@@ -234,6 +237,16 @@ export const api = {
   syncFeishu: () =>
     request<FeishuSyncResult>('/integrations/feishu/sync', {
       method: 'POST',
+    }),
+  testRuijie: (accountId: string) =>
+    request<RuijieConnectionResult>('/integrations/ruijie/test', {
+      method: 'POST',
+      body: JSON.stringify({ accountId }),
+    }),
+  syncRuijie: (input: RuijieSyncInput) =>
+    request<RuijieSyncResult>('/integrations/ruijie/sync', {
+      method: 'POST',
+      body: JSON.stringify(input),
     }),
   getFeishuSyncTokenStatus: () =>
     request<FeishuSyncTokenStatus>('/integrations/feishu/sync-token'),

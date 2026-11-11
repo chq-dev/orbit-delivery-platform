@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
+import { isPrimaryUser } from '../db/ownership.js'
 import { errorMessage, notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
 import { parseFeishuAgentRepoPaths } from './feishuAgentConfig.js'
@@ -170,6 +171,7 @@ export interface FeishuAgentClientStatus {
 
 interface AgentStateRow {
   id: string
+  owner_user_id: string
   client_name: string
   machine_name: string
   health_json: string
@@ -510,7 +512,7 @@ export function recordFeishuAgentHeartbeat(
   const machineName = text(payload.machineName, 120)
   const existingState = db
     .prepare(
-      'SELECT id, client_name, machine_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?',
+      'SELECT id, owner_user_id, client_name, machine_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?',
     )
     .get(clientId) as AgentStateRow | undefined
   if (
@@ -523,21 +525,31 @@ export function recordFeishuAgentHeartbeat(
     )
   }
   const storedMachineName = machineName || existingState?.machine_name || ''
+  const credentialOwner = (
+    db
+      .prepare('SELECT owner_user_id FROM feishu_agent_credentials WHERE client_id = ?')
+      .get(clientId) as { owner_user_id: string } | undefined
+  )?.owner_user_id ?? ''
+  const ownerUserId = credentialOwner || existingState?.owner_user_id || ''
   const health = sanitizeFeishuAgentHealth(
     'health' in payload ? payload.health : input,
   )
   const activeCommandIds = runningCommandIds(payload.runningCommandIds)
   const now = nowIso()
   db.prepare(
-    `INSERT INTO feishu_agent_state (id, client_name, machine_name, health_json, last_seen_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO feishu_agent_state (id, owner_user_id, client_name, machine_name, health_json, last_seen_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+       owner_user_id = CASE
+         WHEN excluded.owner_user_id <> '' THEN excluded.owner_user_id
+         ELSE feishu_agent_state.owner_user_id
+       END,
        client_name = excluded.client_name,
        machine_name = excluded.machine_name,
        health_json = excluded.health_json,
        last_seen_at = excluded.last_seen_at,
        updated_at = excluded.updated_at`,
-  ).run(clientId, clientName, storedMachineName, JSON.stringify(health), now, now, now)
+  ).run(clientId, ownerUserId, clientName, storedMachineName, JSON.stringify(health), now, now, now)
   renewRunningCommands(db, clientId, activeCommandIds, now)
   return {
     clientId,
@@ -553,7 +565,11 @@ function onlineAt(lastSeenAt: string, now = Date.now()): boolean {
   return Number.isFinite(lastSeen) && now - lastSeen <= FEISHU_AGENT_ONLINE_WINDOW_MS
 }
 
-export function resolveCommandClientId(db: AppDatabase, requestedClientId: unknown): string {
+export function resolveCommandClientId(
+  db: AppDatabase,
+  requestedClientId: unknown,
+  ownerUserId?: string,
+): string {
   const requested = agentClientId(requestedClientId)
   if (text(requestedClientId, 128) && !requested) {
     throw unprocessable('执行客户端标识格式不正确')
@@ -563,11 +579,14 @@ export function resolveCommandClientId(db: AppDatabase, requestedClientId: unkno
   }
   const state = db
     .prepare(
-      'SELECT id, client_name, machine_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?',
+      'SELECT id, owner_user_id, client_name, machine_name, health_json, last_seen_at FROM feishu_agent_state WHERE id = ?',
     )
     .get(requested) as AgentStateRow | undefined
   if (!state) {
     throw unprocessable('执行客户端不存在或尚未上报心跳，请确认客户端代理已启动')
+  }
+  if (ownerUserId && !isPrimaryUser(db, ownerUserId) && state.owner_user_id !== ownerUserId) {
+    throw notFound('执行客户端')
   }
   if (!onlineAt(state.last_seen_at)) {
     throw unprocessable(
@@ -614,7 +633,7 @@ export function enqueueFeishuAgentCommand(
   type: unknown,
   payload?: unknown,
   requestedClientId?: unknown,
-  requestedOwnerUserId = '',
+  requestedOwnerUserId?: string,
 ): FeishuAgentCommand {
   const supportedTypes: FeishuAgentCommandType[] = [
     'login_start',
@@ -631,7 +650,7 @@ export function enqueueFeishuAgentCommand(
   }
   const commandType = type as FeishuAgentCommandType
   const isBuildCommand = commandType === 'build_job_read' || commandType === 'build_trigger'
-  const clientId = resolveCommandClientId(db, requestedClientId)
+  const clientId = resolveCommandClientId(db, requestedClientId, requestedOwnerUserId)
   const deliveryRequest =
     commandType === 'delivery_start' ? parseLocalDeliveryAgentRequest(payload) : undefined
   const buildRequest = isBuildCommand ? parseBuildAgentCommandRequest(payload) : undefined
@@ -648,7 +667,7 @@ export function enqueueFeishuAgentCommand(
     commandType,
     deliveryRequest?.workItemId,
     buildRequest?.accountId,
-    requestedOwnerUserId,
+    requestedOwnerUserId ?? '',
   )
   if (!isBuildCommand) {
     const existing = db
@@ -922,13 +941,23 @@ export function getFeishuAgentBridgeStatus(
   requestedClientId?: unknown,
   ownerUserId?: string,
 ): FeishuAgentBridgeStatus {
-  const states = db
-    .prepare(
-      `SELECT id, client_name, machine_name, health_json, last_seen_at
-       FROM feishu_agent_state
-       ORDER BY last_seen_at DESC`,
-    )
-    .all() as AgentStateRow[]
+  const visibleToAll = ownerUserId === undefined || isPrimaryUser(db, ownerUserId)
+  const states = (visibleToAll
+    ? db
+        .prepare(
+          `SELECT id, owner_user_id, client_name, machine_name, health_json, last_seen_at
+           FROM feishu_agent_state
+           ORDER BY last_seen_at DESC`,
+        )
+        .all()
+    : db
+        .prepare(
+          `SELECT id, owner_user_id, client_name, machine_name, health_json, last_seen_at
+           FROM feishu_agent_state
+           WHERE owner_user_id = ?
+           ORDER BY last_seen_at DESC`,
+        )
+        .all(ownerUserId)) as AgentStateRow[]
   const now = Date.now()
   const clients = states
     .map((state) => clientStatus(db, state, now, ownerUserId))

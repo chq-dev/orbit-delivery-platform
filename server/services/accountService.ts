@@ -7,7 +7,7 @@ import type { Account, AccountStatus, PlatformKey } from '../domain/types.js'
 import { httpUrl, oneOf, optionalText, requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
 
-const platforms = ['git', 'figma', 'feishu', 'build', 'device'] as const
+const platforms = ['git', 'figma', 'feishu', 'build', 'device', 'ruijie'] as const
 
 interface AccountRow {
   id: string

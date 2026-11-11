@@ -8,6 +8,7 @@ import {
   constants,
 } from 'node:crypto'
 import type { AppDatabase } from '../db/database.js'
+import { defaultOwnerUserId, isPrimaryUser } from '../db/ownership.js'
 import { conflict, notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
 import { parseFeishuAgentRepoPaths } from './feishuAgentConfig.js'
@@ -19,6 +20,7 @@ const MAX_PENDING_PER_IP = 20
 
 interface PairingRow {
   client_id: string
+  owner_user_id: string
   pairing_secret_hash: string
   client_name: string
   machine_name: string
@@ -232,35 +234,80 @@ export function requestFeishuAgentPairing(
   return { status: 'pending', clientId }
 }
 
-export function listFeishuAgentPairings(db: AppDatabase): FeishuAgentPairingSummary[] {
+export function listFeishuAgentPairings(
+  db: AppDatabase,
+  ownerUserId?: string,
+): FeishuAgentPairingSummary[] {
   const now = nowIso()
-  const rows = db
-    .prepare(
-      `SELECT * FROM feishu_agent_pairings
-       WHERE expires_at > ? ORDER BY created_at DESC, client_id ASC`,
-    )
-    .all(now) as PairingRow[]
+  const rows = (ownerUserId === undefined || isPrimaryUser(db, ownerUserId)
+    ? db
+        .prepare(
+          `SELECT * FROM feishu_agent_pairings
+           WHERE expires_at > ? ORDER BY created_at DESC, client_id ASC`,
+        )
+        .all(now)
+    : db
+        .prepare(
+          `SELECT * FROM feishu_agent_pairings
+           WHERE expires_at > ? AND (owner_user_id = '' OR owner_user_id = ?)
+           ORDER BY created_at DESC, client_id ASC`,
+        )
+        .all(now, ownerUserId)) as PairingRow[]
   return rows.map(publicPairing)
+}
+
+function persistAgentOwner(db: AppDatabase, clientId: string, ownerUserId: string): void {
+  if (!ownerUserId) return
+  db.prepare(
+    "UPDATE feishu_agent_credentials SET owner_user_id = ? WHERE client_id = ? AND owner_user_id = ''",
+  ).run(ownerUserId, clientId)
+  db.prepare(
+    "UPDATE feishu_agent_state SET owner_user_id = ? WHERE id = ? AND owner_user_id = ''",
+  ).run(ownerUserId, clientId)
+  db.prepare(
+    "UPDATE feishu_agent_pairings SET owner_user_id = ? WHERE client_id = ? AND owner_user_id = ''",
+  ).run(ownerUserId, clientId)
 }
 
 export function approveFeishuAgentPairing(
   db: AppDatabase,
   clientIdInput: unknown,
   repoPathsInput: unknown,
+  ownerUserId?: string,
 ): FeishuAgentPairingSummary {
   const clientId = validClientId(clientIdInput)
   if (!clientId) throw unprocessable('客户端标识格式不正确')
   const repoPaths = parseFeishuAgentRepoPaths(repoPathsInput, true)
+  const callerOwnerId = ownerUserId ?? defaultOwnerUserId(db)
+  const callerCanManageAll = ownerUserId === undefined || isPrimaryUser(db, ownerUserId)
 
   const row = db
     .prepare('SELECT * FROM feishu_agent_pairings WHERE client_id = ?')
     .get(clientId) as PairingRow | undefined
   if (!row || Date.parse(row.expires_at) <= Date.now()) throw notFound('待绑定客户端')
-  if (row.status === 'approved') return publicPairing(row)
+  const credentialOwner = (
+    db
+      .prepare('SELECT owner_user_id FROM feishu_agent_credentials WHERE client_id = ?')
+      .get(clientId) as { owner_user_id: string } | undefined
+  )?.owner_user_id ?? ''
+  const stateOwner = (
+    db.prepare('SELECT owner_user_id FROM feishu_agent_state WHERE id = ?').get(clientId) as
+      | { owner_user_id: string }
+      | undefined
+  )?.owner_user_id ?? ''
+  const existingOwner = row.owner_user_id || credentialOwner || stateOwner
+  if (existingOwner && existingOwner !== callerOwnerId && !callerCanManageAll) {
+    throw notFound('待绑定客户端')
+  }
+  const effectiveOwner = existingOwner || callerOwnerId
+  if (row.status === 'approved') {
+    persistAgentOwner(db, clientId, effectiveOwner)
+    return publicPairing(row)
+  }
 
   try {
     return db.transaction(() => {
-      const syncToken = issueFeishuAgentCredential(db, clientId)
+      const syncToken = issueFeishuAgentCredential(db, clientId, effectiveOwner)
       const payload = JSON.stringify({
         platformBaseUrl: row.platform_base_url,
         syncToken,
@@ -294,10 +341,12 @@ export function approveFeishuAgentPairing(
       const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString()
       const update = db.prepare(
         `UPDATE feishu_agent_pairings
-         SET status = 'approved', config_ciphertext = ?, updated_at = ?, expires_at = ?
+         SET owner_user_id = ?, status = 'approved', config_ciphertext = ?,
+             updated_at = ?, expires_at = ?
          WHERE client_id = ? AND status = 'pending'`,
-      ).run(configCiphertext, now, expiresAt, clientId)
+      ).run(effectiveOwner, configCiphertext, now, expiresAt, clientId)
       if (update.changes !== 1) throw conflict('待绑定请求已被其他操作更新，请刷新后重试')
+      persistAgentOwner(db, clientId, effectiveOwner)
       return {
         ...publicPairing(row),
         status: 'approved' as const,

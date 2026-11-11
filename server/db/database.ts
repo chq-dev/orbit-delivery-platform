@@ -55,6 +55,9 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
         ensureColumn(db, 'work_items', 'defect_note', 'TEXT')
         ensureColumn(db, 'feishu_agent_state', 'client_name', "TEXT NOT NULL DEFAULT ''")
         ensureColumn(db, 'feishu_agent_state', 'machine_name', "TEXT NOT NULL DEFAULT ''")
+        ensureColumn(db, 'feishu_agent_state', 'owner_user_id', "TEXT NOT NULL DEFAULT ''")
+        ensureColumn(db, 'feishu_agent_credentials', 'owner_user_id', "TEXT NOT NULL DEFAULT ''")
+        ensureColumn(db, 'feishu_agent_pairings', 'owner_user_id', "TEXT NOT NULL DEFAULT ''")
         ensureColumn(
           db,
           'feishu_agent_commands',
@@ -65,6 +68,7 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
         migrateFeishuAgentCommands(db)
         migrateOwnershipTables(db)
         migrateAccountPlatforms(db)
+        migrateWorkItemSources(db)
         backfillOwnershipToFirstUser(db)
         db.exec(
           'CREATE INDEX IF NOT EXISTS idx_work_items_archived ON work_items(source, archived_at)',
@@ -110,6 +114,15 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_feishu_agent_commands_owner ON feishu_agent_commands(owner_user_id, status, created_at)',
   )
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_feishu_agent_state_owner ON feishu_agent_state(owner_user_id)',
+  )
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_feishu_agent_credentials_owner ON feishu_agent_credentials(owner_user_id)',
+  )
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_feishu_agent_pairings_owner ON feishu_agent_pairings(owner_user_id)',
+  )
 
   return db
 }
@@ -123,7 +136,7 @@ const ownershipTableDefinitions: Record<
     tableSql: `CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       owner_user_id TEXT NOT NULL DEFAULT '',
-      platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device')),
+      platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device', 'ruijie')),
       username TEXT NOT NULL,
       label TEXT NOT NULL,
       service_url TEXT NOT NULL DEFAULT '',
@@ -171,7 +184,7 @@ const ownershipTableDefinitions: Record<
       repo_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE RESTRICT,
       branch TEXT NOT NULL,
       owner TEXT NOT NULL,
-      source TEXT NOT NULL CHECK (source IN ('local', 'feishu')),
+      source TEXT NOT NULL CHECK (source IN ('local', 'feishu', 'ruijie')),
       external_id TEXT,
       feishu_status TEXT,
       project_line TEXT,
@@ -215,14 +228,14 @@ function migrateAccountPlatforms(db: AppDatabase): void {
   const row = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'")
     .get() as { sql: string } | undefined
-  if (!row || row.sql.includes("'figma'")) return
+  if (!row || row.sql.includes("'ruijie'")) return
   rebuildOwnedTable(
     db,
     'accounts',
     `CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
       owner_user_id TEXT NOT NULL DEFAULT '',
-      platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device')),
+      platform TEXT NOT NULL CHECK (platform IN ('git', 'figma', 'feishu', 'build', 'device', 'ruijie')),
       username TEXT NOT NULL,
       label TEXT NOT NULL,
       service_url TEXT NOT NULL DEFAULT '',
@@ -236,6 +249,14 @@ function migrateAccountPlatforms(db: AppDatabase): void {
       UNIQUE (owner_user_id, platform, username)
     )`,
   )
+}
+
+function migrateWorkItemSources(db: AppDatabase): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_items'")
+    .get() as { sql: string } | undefined
+  if (!row || row.sql.includes("'ruijie'")) return
+  rebuildOwnedTable(db, 'work_items', ownershipTableDefinitions.work_items.tableSql)
 }
 
 function rebuildOwnedTable(db: AppDatabase, table: string, tableSql: string): void {

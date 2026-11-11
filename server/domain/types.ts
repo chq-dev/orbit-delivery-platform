@@ -1,4 +1,4 @@
-export type PlatformKey = 'git' | 'figma' | 'feishu' | 'build' | 'device'
+export type PlatformKey = 'git' | 'figma' | 'feishu' | 'build' | 'device' | 'ruijie'
 export type AccountStatus = 'active' | 'expiring'
 export type RepositoryStatus = 'healthy' | 'warning'
 export type WorkItemType = 'requirement' | 'defect'
@@ -46,7 +46,7 @@ export interface WorkItem {
   owner: string
   updatedAt: string
   createdAt: string
-  source?: 'local' | 'feishu'
+  source?: 'local' | 'feishu' | 'ruijie'
   externalId?: string
   feishuStatus?: string
   projectLine?: string

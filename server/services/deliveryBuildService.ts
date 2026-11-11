@@ -97,6 +97,7 @@ export async function triggerDeliveryBuild(
     account.id,
     undefined,
     input.clientId,
+    ownerUserId,
   )
   return {
     configured: true,

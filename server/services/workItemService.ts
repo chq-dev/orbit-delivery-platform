@@ -25,7 +25,7 @@ interface WorkItemRow {
   repo_id: string
   branch: string
   owner: string
-  source: 'local' | 'feishu'
+  source: 'local' | 'feishu' | 'ruijie'
   external_id: string | null
   feishu_status: string | null
   project_line: string | null
@@ -61,6 +61,17 @@ export interface SyncedFeishuWorkItem {
   updatedAt: string
   status?: WorkItemStatus
   feishuStatus?: string
+  projectLine?: string
+}
+
+export interface SyncedRuijieWorkItem {
+  externalId: string
+  type: WorkItemType
+  title: string
+  description: string
+  priority: Priority
+  owner: string
+  updatedAt: string
   projectLine?: string
 }
 
@@ -242,7 +253,7 @@ interface NormalizedWorkItem {
   priority: Priority
   repoId: string
   owner: string
-  source: 'local' | 'feishu'
+  source: 'local' | 'feishu' | 'ruijie'
   externalId?: string
   designReference?: string
   requirementBreakdown?: string
@@ -250,7 +261,9 @@ interface NormalizedWorkItem {
 
 function normalizeWorkItemInput(input: WorkItemInput, forcedSource?: 'feishu'): NormalizedWorkItem {
   const type = oneOf(input.type, '工作项类型', workItemTypes)
-  const source = forcedSource ?? (input.source === 'feishu' ? 'feishu' : 'local')
+  const source =
+    forcedSource ??
+    (input.source === 'feishu' || input.source === 'ruijie' ? input.source : 'local')
   return {
     type,
     title: requiredText(input.title, '标题', { max: 300 }),
@@ -376,10 +389,26 @@ export function importWorkItems(
   return { items: created, skipped }
 }
 
-export function upsertFeishuWorkItems(
+type ExternalWorkItemSource = 'feishu' | 'ruijie'
+
+interface SyncedExternalWorkItem {
+  externalId: string
+  type: WorkItemType
+  title: string
+  description: string
+  priority: Priority
+  owner: string
+  updatedAt: string
+  status?: WorkItemStatus
+  feishuStatus?: string
+  projectLine?: string
+}
+
+function upsertExternalWorkItems(
   db: AppDatabase,
   repoId: string,
-  items: SyncedFeishuWorkItem[],
+  items: SyncedExternalWorkItem[],
+  source: ExternalWorkItemSource,
 ): WorkItemUpsertResult {
   const repository = db
     .prepare('SELECT branch, owner_user_id FROM repositories WHERE id = ?')
@@ -390,9 +419,9 @@ export function upsertFeishuWorkItems(
   const existingRows = db
     .prepare(
       `SELECT id, external_id FROM work_items
-       WHERE owner_user_id = ? AND source = 'feishu' AND external_id IS NOT NULL`,
+       WHERE owner_user_id = ? AND source = ? AND external_id IS NOT NULL`,
     )
-    .all(ownerUserId) as Array<{ id: string; external_id: string }>
+    .all(ownerUserId, source) as Array<{ id: string; external_id: string }>
   const existingByIdentity = new Map(
     existingRows.map((row) => [externalIdentity(row.external_id), row.id]),
   )
@@ -411,7 +440,7 @@ export function upsertFeishuWorkItems(
     `INSERT INTO work_items
       (id, owner_user_id, type, title, description, priority, status, repo_id, branch, owner, source, external_id,
        feishu_status, project_line, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'feishu', ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
 
   let created = 0
@@ -457,6 +486,7 @@ export function upsertFeishuWorkItems(
       repoId,
       repository.branch,
       item.owner,
+      source,
       item.externalId,
       feishuStatus,
       projectLine,
@@ -468,6 +498,22 @@ export function upsertFeishuWorkItems(
   }
 
   return { created, updated }
+}
+
+export function upsertFeishuWorkItems(
+  db: AppDatabase,
+  repoId: string,
+  items: SyncedFeishuWorkItem[],
+): WorkItemUpsertResult {
+  return upsertExternalWorkItems(db, repoId, items, 'feishu')
+}
+
+export function upsertRuijieWorkItems(
+  db: AppDatabase,
+  repoId: string,
+  items: SyncedRuijieWorkItem[],
+): WorkItemUpsertResult {
+  return upsertExternalWorkItems(db, repoId, items, 'ruijie')
 }
 
 export function reconcileFeishuWorkItems(

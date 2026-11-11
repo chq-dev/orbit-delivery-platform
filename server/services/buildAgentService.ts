@@ -34,11 +34,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function resolveBuildAgentClientId(
   db: AppDatabase,
   requestedClientId?: unknown,
+  ownerUserId?: string,
 ): string {
   if (requestedClientId !== undefined && requestedClientId !== null && requestedClientId !== '') {
-    return resolveCommandClientId(db, requestedClientId)
+    return resolveCommandClientId(db, requestedClientId, ownerUserId)
   }
-  const status = getFeishuAgentBridgeStatus(db)
+  const status = getFeishuAgentBridgeStatus(db, undefined, ownerUserId)
   const online = status.clients.filter((client) => client.online)
   if (online.length === 1) return online[0].clientId
   if (online.length === 0) {
@@ -117,11 +118,12 @@ async function runAgentBuild<T>(
   accountId: string,
   parameters: unknown,
   requestedClientId: unknown,
+  ownerUserId: string | undefined,
   select: (result: Record<string, unknown>) => T,
 ): Promise<T> {
   const request = parseBuildAgentCommandRequest({ accountId, parameters })
-  const clientId = resolveBuildAgentClientId(db, requestedClientId)
-  const command = enqueueFeishuAgentCommand(db, type, request, clientId)
+  const clientId = resolveBuildAgentClientId(db, requestedClientId, ownerUserId)
+  const command = enqueueFeishuAgentCommand(db, type, request, clientId, ownerUserId)
   return waitForAgentBuildResult(db, command.id, select)
 }
 
@@ -134,12 +136,21 @@ export async function getBuildJobWithFallback(
   vault: CredentialVault,
   accountId: string,
   clientId?: unknown,
+  ownerUserId?: string,
 ): Promise<BuildJobInfo> {
   try {
     return await getBuildJob(db, vault, accountId)
   } catch (error) {
     if (!directUnavailable(error)) throw error
-    return runAgentBuild(db, 'build_job_read', accountId, undefined, clientId, selectJob)
+    return runAgentBuild(
+      db,
+      'build_job_read',
+      accountId,
+      undefined,
+      clientId,
+      ownerUserId,
+      selectJob,
+    )
   }
 }
 
@@ -149,11 +160,20 @@ export async function triggerBuildWithFallback(
   accountId: string,
   parameters: unknown,
   clientId?: unknown,
+  ownerUserId?: string,
 ): Promise<BuildTriggerResult> {
   try {
     return await triggerBuild(db, vault, accountId, parameters)
   } catch (error) {
     if (!directUnavailable(error)) throw error
-    return runAgentBuild(db, 'build_trigger', accountId, parameters, clientId, selectBuild)
+    return runAgentBuild(
+      db,
+      'build_trigger',
+      accountId,
+      parameters,
+      clientId,
+      ownerUserId,
+      selectBuild,
+    )
   }
 }

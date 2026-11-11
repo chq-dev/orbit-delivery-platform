@@ -12,7 +12,7 @@ export interface AuthUser {
   createdAt: string
 }
 
-export type PlatformKey = 'git' | 'figma' | 'feishu' | 'build' | 'device'
+export type PlatformKey = 'git' | 'figma' | 'feishu' | 'build' | 'device' | 'ruijie'
 
 export interface Repository {
   id: string
@@ -89,7 +89,7 @@ export interface WorkItem {
   owner: string
   updatedAt: string
   createdAt: string
-  source?: 'local' | 'feishu'
+  source?: 'local' | 'feishu' | 'ruijie'
   externalId?: string
   feishuStatus?: string
   projectLine?: string
@@ -221,6 +221,40 @@ export interface FeishuSyncResult {
   skipped: number
   message: string
   syncedAt: string
+}
+
+export interface RuijieSyncInput {
+  accountId: string
+  repoId: string
+  bugIds?: string
+  keyword?: string
+  limit?: number
+}
+
+export interface RuijieBugSummary {
+  bugId: string
+  title: string
+  url: string
+  priority: Priority
+}
+
+export interface RuijieSyncResult {
+  accountId: string
+  username: string
+  fetched: number
+  created: number
+  updated: number
+  bugs: RuijieBugSummary[]
+  message: string
+  syncedAt: string
+}
+
+export interface RuijieConnectionResult {
+  ok: true
+  accountId: string
+  username: string
+  baseUrl: string
+  message: string
 }
 
 export interface FeishuSyncTokenStatus {

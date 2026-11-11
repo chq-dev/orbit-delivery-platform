@@ -43,6 +43,7 @@ function getCredentialRow(db: AppDatabase): CredentialRow | undefined {
 
 interface AgentCredentialRow {
   client_id: string
+  owner_user_id: string
   token_hash: string
   token_hint: string
   created_at: string
@@ -56,24 +57,32 @@ function agentCredentialForToken(
   if (!token) return undefined
   const rows = db
     .prepare(
-      'SELECT client_id, token_hash, token_hint, created_at, updated_at FROM feishu_agent_credentials',
+      'SELECT client_id, owner_user_id, token_hash, token_hint, created_at, updated_at FROM feishu_agent_credentials',
     )
     .all() as AgentCredentialRow[]
   return rows.find((row) => safeHashEqual(row.token_hash, tokenHash(token)))
 }
 
-export function issueFeishuAgentCredential(db: AppDatabase, clientId: string): string {
+export function issueFeishuAgentCredential(
+  db: AppDatabase,
+  clientId: string,
+  ownerUserId = '',
+): string {
   const token = createToken()
   const now = nowIso()
   db.prepare(
     `INSERT INTO feishu_agent_credentials
-      (client_id, token_hash, token_hint, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+      (client_id, owner_user_id, token_hash, token_hint, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(client_id) DO UPDATE SET
+       owner_user_id = CASE
+         WHEN excluded.owner_user_id <> '' THEN excluded.owner_user_id
+         ELSE feishu_agent_credentials.owner_user_id
+       END,
        token_hash = excluded.token_hash,
        token_hint = excluded.token_hint,
        updated_at = excluded.updated_at`,
-  ).run(clientId, tokenHash(token), `••••${token.slice(-4)}`, now, now)
+  ).run(clientId, ownerUserId, tokenHash(token), `••••${token.slice(-4)}`, now, now)
   return token
 }
 

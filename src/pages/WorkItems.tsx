@@ -26,6 +26,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FeishuImportDialog } from '../components/FeishuImportDialog'
 import { FeishuLiveSyncCard } from '../components/FeishuLiveSyncCard'
+import { RuijieBugImportDialog } from '../components/RuijieBugImportDialog'
 import { Avatar, Field, Modal, StatusBadge } from '../components/ui'
 import { WorkItemDialog } from '../components/WorkItemDialog'
 import { codingSkills, smeDeliveryStageChain } from '../codingSkills'
@@ -63,6 +64,7 @@ export function WorkItems({
     workItems,
     workItemsLoading,
     workItemsError,
+    accounts,
     repositories,
     pipelines,
     notify,
@@ -89,6 +91,7 @@ export function WorkItems({
   const [detailLoading, setDetailLoading] = useState(false)
   const [importMode, setImportMode] = useState<WorkItemType>('requirement')
   const [importOpen, setImportOpen] = useState(false)
+  const [ruijieOpen, setRuijieOpen] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   const [meegleSetupBusy, setMeegleSetupBusy] = useState(false)
   const [meegleChallenge, setMeegleChallenge] = useState<FeishuLoginChallenge>()
@@ -208,6 +211,8 @@ export function WorkItems({
   const backendFeishuCount = workItems.filter(
     (item) => item.source === 'feishu' && !item.frontendOnly,
   ).length
+  const ruijieAccounts = accounts.filter((account) => account.platform === 'ruijie')
+  const ruijieBugCount = workItems.filter((item) => item.source === 'ruijie').length
 
   const openFeishuSync = async (type: WorkItemType) => {
     setImportMode(type)
@@ -387,6 +392,33 @@ export function WorkItems({
         </div>
       </div>
 
+      <div className="integration-links-strip ruijie-integration-strip">
+        <div className="integration-source">
+          <span className="ruijie-project-mark">锐捷</span>
+          <span>
+            <strong>锐捷 BUG 系统</strong>
+            <small>
+              {ruijieAccounts.length === 0
+                ? '尚未绑定 BUG 系统账号，请先到账号中心添加账号'
+                : `已绑定 ${ruijieAccounts.length} 个账号，平台已加载 ${ruijieBugCount} 条锐捷 BUG`}
+            </small>
+          </span>
+        </div>
+        <div className="integration-link-actions">
+          <button
+            onClick={() =>
+              ruijieAccounts.length > 0 ? setRuijieOpen(true) : onNavigate('accounts')
+            }
+          >
+            {ruijieAccounts.length > 0 ? (
+              <><CloudDownload size={14} /> 同步锐捷 BUG</>
+            ) : (
+              <><KeyRound size={14} /> 绑定锐捷账号</>
+            )}
+          </button>
+        </div>
+      </div>
+
       <FeishuLiveSyncCard />
 
       <article className="card work-items-card" ref={tableCardRef}>
@@ -494,6 +526,9 @@ export function WorkItems({
                           <strong>{item.title}</strong>
                           <small>
                             {item.source === 'feishu' && item.externalId ? `飞书 ${item.externalId} · ` : ''}
+                            {item.source === 'ruijie' && item.externalId
+                              ? `锐捷 BUG ${item.externalId.replace(/^ruijie:/, '')} · `
+                              : ''}
                             {item.id}
                             {item.frontendOnly && ' · 前端快照'}
                             {item.type === 'defect' && ' · 测试通过后自动关闭'}
@@ -657,6 +692,10 @@ export function WorkItems({
         open={importOpen}
         mode={importMode}
         onClose={() => setImportOpen(false)}
+      />
+      <RuijieBugImportDialog
+        open={ruijieOpen}
+        onClose={() => setRuijieOpen(false)}
       />
 
       <Modal

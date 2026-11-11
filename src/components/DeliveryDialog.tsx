@@ -1126,11 +1126,11 @@ export function DeliveryDialog({
               : !localFeishuAgentClientId
                 ? feishuAgentClients.length > 0
                   ? '当前 Mac 尚未登记代理；请选择已在线的执行客户端，或先完成本机代理绑定'
-                  : '尚未发现执行客户端；请先完成本机代理绑定或选择服务器临时执行'
+                  : '当前账号尚未绑定执行客户端；请先完成本机代理绑定或选择服务器临时执行'
               : !selectedFeishuAgentClientId
                 ? feishuAgentClients.length > 0
                   ? '请先明确选择执行客户端，平台不会再自动选择机器'
-                  : '尚未发现执行客户端，请先登记并绑定一台客户端'
+                  : '当前账号尚未绑定执行客户端，请先登记并绑定一台客户端'
               : !localAgent.platformReady
                 ? localAgent.error || '平台服务端未升级，当前无法下发客户端交付'
               : !localAgent.online
@@ -1536,7 +1536,7 @@ export function DeliveryDialog({
               >
                 {!selectedFeishuAgentClientId && (
                   <option value="">
-                    {feishuAgentClients.length > 0 ? '请选择执行客户端' : '未发现执行客户端'}
+                    {feishuAgentClients.length > 0 ? '请选择执行客户端' : '当前账号未绑定执行客户端'}
                   </option>
                 )}
                 {feishuAgentClients.map((client) => (

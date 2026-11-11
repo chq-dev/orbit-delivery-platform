@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Hammer,
   KeyRound,
+  LoaderCircle,
   LockKeyhole,
   MoreHorizontal,
   Pencil,
@@ -32,7 +33,7 @@ import type {
 } from '../types'
 import { Field, Modal, StatusBadge } from '../components/ui'
 
-const platformOrder: PlatformKey[] = ['git', 'figma', 'build', 'device']
+const platformOrder: PlatformKey[] = ['git', 'figma', 'build', 'device', 'ruijie']
 
 const aliasMap: Record<string, PlatformKey> = {
   git: 'git',
@@ -49,6 +50,15 @@ const aliasMap: Record<string, PlatformKey> = {
   device: 'device',
   ota: 'device',
   设备: 'device',
+  ruijie: 'ruijie',
+  ruijiebug: 'ruijie',
+  'ruijie bug': 'ruijie',
+  bug: 'ruijie',
+  bugs: 'ruijie',
+  锐捷: 'ruijie',
+  锐捷bug: 'ruijie',
+  '锐捷 bug': 'ruijie',
+  缺陷: 'ruijie',
 }
 
 interface ImportRow {
@@ -107,6 +117,7 @@ export function Accounts() {
     updateAccount,
     deleteAccount,
     importAccounts,
+    testRuijie,
     feishuAgentClients,
     selectedFeishuAgentClientId,
     notify,
@@ -131,6 +142,7 @@ export function Accounts() {
   const [buildStarting, setBuildStarting] = useState(false)
   const [buildError, setBuildError] = useState('')
   const [buildResult, setBuildResult] = useState<BuildTriggerResult | null>(null)
+  const [testingRuijieId, setTestingRuijieId] = useState<string>()
   const fileRef = useRef<HTMLInputElement>(null)
   const buildRequestId = useRef(0)
   const buildClientName = feishuAgentClients.find(
@@ -235,6 +247,18 @@ export function Accounts() {
     }
   }
 
+  const testRuijieAccount = async (account: Account) => {
+    setActionMenuId(null)
+    setTestingRuijieId(account.id)
+    try {
+      await testRuijie(account.id)
+    } catch {
+      // The data provider already reports the API error as a toast.
+    } finally {
+      setTestingRuijieId(undefined)
+    }
+  }
+
   const openBuild = async (account: Account) => {
     const requestId = ++buildRequestId.current
     setActionMenuId(null)
@@ -319,7 +343,7 @@ export function Accounts() {
             <KeyRound size={13} /> CREDENTIAL VAULT
           </span>
           <h1>账号中心</h1>
-          <p>统一绑定 Git、Figma、编译系统与设备端账号，供自动化流水线安全调用。</p>
+          <p>统一绑定 Git、Figma、编译系统、设备端与锐捷 BUG 账号，供自动化流水线安全调用。</p>
         </div>
         <div className="page-header-actions">
           <button className="btn btn-secondary" onClick={openImport}>
@@ -393,7 +417,25 @@ export function Accounts() {
                   </button>
                 </div>
               )}
-              {key === 'build' && items.length > 0 ? null : (
+              {key === 'ruijie' && items[0] && (
+                <div className="platform-external-links ruijie-platform-actions">
+                  <button
+                    onClick={() => void testRuijieAccount(items[0])}
+                    disabled={Boolean(testingRuijieId)}
+                  >
+                    {testingRuijieId === items[0].id ? (
+                      <LoaderCircle size={12} className="spin" />
+                    ) : (
+                      <ShieldCheck size={12} />
+                    )}
+                    测试登录
+                  </button>
+                  <button onClick={() => openManual('ruijie')}>
+                    <Plus size={12} /> 添加账号
+                  </button>
+                </div>
+              )}
+              {(key === 'build' || key === 'ruijie') && items.length > 0 ? null : (
                 <button className="platform-add" onClick={() => openManual(key)}>
                   <Plus size={14} /> 添加账号
                 </button>
@@ -519,6 +561,19 @@ export function Accounts() {
                               <Hammer size={14} /> 内部编译
                             </button>
                           )}
+                          {account.platform === 'ruijie' && (
+                            <button
+                              onClick={() => void testRuijieAccount(account)}
+                              disabled={Boolean(testingRuijieId)}
+                            >
+                              {testingRuijieId === account.id ? (
+                                <LoaderCircle size={14} className="spin" />
+                              ) : (
+                                <ShieldCheck size={14} />
+                              )}
+                              测试登录
+                            </button>
+                          )}
                           <button onClick={() => openEdit(account)}>
                             <Pencil size={14} /> 编辑账号
                           </button>
@@ -641,18 +696,37 @@ export function Accounts() {
               ))}
             </div>
             <div className="field-row">
-              <Field label={platform === 'figma' ? 'Figma 登录邮箱' : '登录账号'} required>
+              <Field
+                label={
+                  platform === 'figma'
+                    ? 'Figma 登录邮箱'
+                    : platform === 'ruijie'
+                      ? '锐捷 BUG 登录账号'
+                      : '登录账号'
+                }
+                required
+              >
                 <input
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
                   placeholder={
-                    platform === 'figma' ? 'designer@company.com' : 'name@company.com'
+                    platform === 'figma'
+                      ? 'designer@company.com'
+                      : platform === 'ruijie'
+                        ? '工号或域账号'
+                        : 'name@company.com'
                   }
                   autoFocus
                 />
               </Field>
               <Field
-                label={platform === 'figma' ? 'Personal Access Token' : '密码 / Access Token'}
+                label={
+                  platform === 'figma'
+                    ? 'Personal Access Token'
+                    : platform === 'ruijie'
+                      ? '登录密码'
+                      : '密码 / Access Token'
+                }
                 required={!editingAccount}
                 hint={editingAccount ? '留空保持不变' : undefined}
               >
@@ -665,6 +739,8 @@ export function Accounts() {
                       ? '留空则保留当前凭据'
                       : platform === 'figma'
                         ? '输入 Figma Personal Access Token'
+                        : platform === 'ruijie'
+                          ? '输入锐捷统一身份认证密码'
                         : '输入平台密码或访问令牌'
                   }
                 />
@@ -677,7 +753,9 @@ export function Accounts() {
                   ? 'Jenkins 任务页面地址'
                   : platform === 'figma'
                     ? '可选，Figma 团队或设计文件地址'
-                    : '可选，支持 http / https 链接'
+                    : platform === 'ruijie'
+                      ? '可选，留空使用默认 BUG 系统地址'
+                      : '可选，支持 http / https 链接'
               }
             >
               <input
@@ -689,7 +767,9 @@ export function Accounts() {
                     ? 'https://jenkins.example.com/job/your-project/'
                     : platform === 'figma'
                       ? 'https://www.figma.com/files/team/...'
-                      : 'https://git.example.com 或 https://build.example.com'
+                      : platform === 'ruijie'
+                        ? 'http://bugs.ruijie.com.cn/bug_switch/bug/main'
+                        : 'https://git.example.com 或 https://build.example.com'
                 }
               />
             </Field>
@@ -700,7 +780,9 @@ export function Accounts() {
                 placeholder={
                   platform === 'figma'
                     ? '例如：Figma 设计账号、只读设计令牌'
-                    : '例如：主研发账号、CI 自动化账号'
+                    : platform === 'ruijie'
+                      ? '例如：锐捷 BUG 测试账号'
+                      : '例如：主研发账号、CI 自动化账号'
                 }
               />
             </Field>
@@ -711,6 +793,8 @@ export function Accounts() {
                 <p>
                   {platform === 'figma'
                     ? '建议使用只读或最小文件权限的 Figma Personal Access Token，避免授予团队管理权限。'
+                    : platform === 'ruijie'
+                      ? '建议使用具有 BUG 查看权限的专用账号；密码只在服务端解密，用于建立登录会话。'
                     : '建议使用专用服务账号，并按平台授予仓库读写、构建触发或设备升级所需的最小权限。'}
                 </p>
               </div>
@@ -747,7 +831,7 @@ export function Accounts() {
                   setImportText(event.target.value)
                   setImportError('')
                 }}
-                placeholder={`git,chen.hua,password123,主研发账号\nfigma,designer@company.com,figd_xxx,Figma 设计账号\nbuild,build-service-01,build-pass,编译服务\n设备,lab-ac03,device-pass,AC/AP 测试床 03`}
+                placeholder={`git,chen.hua,password123,主研发账号\nfigma,designer@company.com,figd_xxx,Figma 设计账号\nbuild,build-service-01,build-pass,编译服务\n设备,lab-ac03,device-pass,AC/AP 测试床 03\n锐捷,bug.user,bug-pass,锐捷 BUG 测试账号`}
                 rows={7}
               />
             </Field>

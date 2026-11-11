@@ -4,6 +4,7 @@ export const platformLinks = {
   gitRepository: 'http://cloudgit.rj.link/sme/sme-main.git',
   feishuIssue: 'https://project.feishu.cn/rjcloud/issue/homepage',
   feishuStory: 'https://project.feishu.cn/rjcloud/story/homepage',
+  ruijieBug: 'http://bugs.ruijie.com.cn/bug_switch/bug/main',
 } as const
 
 export const platformMeta: Record<string, PlatformMeta> = {
@@ -46,5 +47,13 @@ export const platformMeta: Record<string, PlatformMeta> = {
     color: '#0f9f87',
     softColor: '#e9faf6',
     shortName: '设备',
+  },
+  ruijie: {
+    key: 'ruijie',
+    name: '锐捷 BUG',
+    description: 'BUG 系统缺陷同步',
+    color: '#d94a3a',
+    softColor: '#fff0ed',
+    shortName: '锐捷',
   },
 }
