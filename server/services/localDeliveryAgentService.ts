@@ -368,7 +368,9 @@ export function classifyLocalDeliveryFailure(message: string): string {
     return 'commit'
   }
   if (/回写平台|平台未返回|平台已记录.*流水线|流水线记录/.test(message)) return 'writeback'
-  if (/路径|分支|Git 工作区|工作区根目录/.test(message)) return 'checkout'
+  if (/路径|分支|Git 工作区|工作区根目录|未解决的合并冲突|未合并路径/.test(message)) {
+    return 'checkout'
+  }
   if (
     /读取平台|尚未绑定平台|本机代理|fetch failed|HTTP|超时|timeout|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
       message,

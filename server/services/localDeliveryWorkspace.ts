@@ -13,6 +13,7 @@ export interface DeliveryWorktreeIsolation {
   checkout: string
   active: boolean
   stashHash?: string
+  baseHead?: string
   preexistingFiles: string[]
 }
 
@@ -50,6 +51,15 @@ function splitNullList(output: string): string[] {
     .filter(Boolean)
 }
 
+export function unmergedDeliveryFiles(checkout: string): string[] {
+  return requireGit(checkout, ['ls-files', '-u', '-z'], '检查未解决的合并冲突')
+    .split('\0')
+    .filter(Boolean)
+    .map((entry) => entry.slice(entry.indexOf('\t') + 1))
+    .map(normalizeDeliveryPath)
+    .filter(Boolean)
+}
+
 export function listDeliveryWorktreeFiles(checkout: string): string[] {
   const tracked = requireGit(checkout, ['diff', 'HEAD', '--name-only', '-z'], '读取工作区变更')
   const untracked = requireGit(
@@ -68,6 +78,12 @@ export function isolatePreexistingDeliveryChanges(
   checkout: string,
   label: string,
 ): DeliveryWorktreeIsolation {
+  const unmerged = unmergedDeliveryFiles(checkout)
+  if (unmerged.length > 0) {
+    throw new Error(
+      `客户端仓库存在未解决的合并冲突，不能开始本地交付：${unmerged.slice(0, 8).join(', ')}`,
+    )
+  }
   const files = preexistingFiles(checkout)
   const isolation: DeliveryWorktreeIsolation = {
     checkout,
@@ -77,6 +93,7 @@ export function isolatePreexistingDeliveryChanges(
   const isolatedFiles = files.filter((file) => !file.startsWith(DELIVERY_ARTIFACT_PREFIX))
   if (isolatedFiles.length === 0) return isolation
 
+  isolation.baseHead = requireGit(checkout, ['rev-parse', 'HEAD'], '记录隔离前提交')
   clearStaleGitIndexLock(checkout)
   const message = `orbit-delivery-${label.replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 80)}`
   const result = git(checkout, [
@@ -137,6 +154,28 @@ export function restorePreexistingDeliveryChanges(
       warning: `未找到交付前保存的 Git stash ${isolation.stashHash.slice(0, 12)}，请手工检查 git stash list`,
     }
   }
+
+  const currentFiles = new Set(preexistingFiles(isolation.checkout))
+  if (isolation.baseHead) {
+    const committed = requireGit(
+      isolation.checkout,
+      ['diff', '--name-only', '-z', `${isolation.baseHead}..HEAD`],
+      '检查交付提交文件',
+    )
+    for (const file of splitNullList(committed)) currentFiles.add(file)
+  }
+  const overlaps = isolation.preexistingFiles.filter(
+    (file) =>
+      !file.startsWith(DELIVERY_ARTIFACT_PREFIX) &&
+      currentFiles.has(file),
+  )
+  if (overlaps.length > 0) {
+    return {
+      restored: false,
+      warning: `恢复交付前未提交代码时发生冲突：为避免覆盖本次交付改动，未自动应用 ${selector}；重复路径：${overlaps.slice(0, 8).join(', ')}。原有改动仍保存在该 stash 中`,
+    }
+  }
+
   clearStaleGitIndexLock(isolation.checkout)
   const apply = git(isolation.checkout, ['stash', 'apply', '--quiet', selector])
   if (apply.status !== 0) {

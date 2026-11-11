@@ -49,6 +49,7 @@ import {
   cleanupGeneratedDeliveryFiles,
   isolatePreexistingDeliveryChanges,
   restorePreexistingDeliveryChanges,
+  unmergedDeliveryFiles,
   type DeliveryWorktreeIsolation,
 } from '../services/localDeliveryWorkspace.js'
 import {
@@ -332,6 +333,12 @@ function validateCheckout(localPath: string, configuredBranch?: string) {
   const topLevel = realpathSync(requireGit(checkout, ['rev-parse', '--show-toplevel'], '读取 Git 工作区'))
   if (topLevel !== checkout) {
     throw new Error(`客户端代码路径不是 Git 工作区根目录：${localPath}`)
+  }
+  const unmerged = unmergedDeliveryFiles(checkout)
+  if (unmerged.length > 0) {
+    throw new Error(
+      `客户端仓库存在未解决的合并冲突，不能开始本地交付：${unmerged.slice(0, 8).join(', ')}`,
+    )
   }
   const currentBranch = requireGit(checkout, ['symbolic-ref', '--short', 'HEAD'], '读取本地分支')
   const resolved = resolveLocalDeliveryBranch(currentBranch, configuredBranch)
@@ -639,7 +646,7 @@ function restoreDeliveryWorkspace(
             '原有文件：',
             ...(context.workspaceIsolation?.preexistingFiles ?? []).map((file) => `- ${file}`),
             '',
-            '本次交付的代码提交与推送不受影响；请根据 Git stash 手工恢复与本次交付重叠的文件。',
+            '交付前的代码仍保存在上述 Git stash 中。为避免覆盖本次交付改动，runner 没有自动应用有重复路径的 stash；核对后再手工恢复需要的文件。',
             '',
           ].join('\n'),
           'utf8',
