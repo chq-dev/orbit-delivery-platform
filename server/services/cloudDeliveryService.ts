@@ -218,6 +218,9 @@ export function startCloudDelivery(
     throw unprocessable('临时检出任务需要启用自动提交和推送，否则清理工作区后代码无法保留')
   }
   const platformUrl = new URL(config.cloudDeliveryPlatformUrl)
+  const workItem = db
+    .prepare('SELECT type FROM work_items WHERE id = ?')
+    .get(request.workItemId) as { type: 'requirement' | 'defect' } | undefined
 
   const job: CloudDeliveryJob = {
     id: `cloud-delivery-${randomUUID()}`,
@@ -226,7 +229,7 @@ export function startCloudDelivery(
     workItemId: request.workItemId,
     repoId: request.repoId,
     startedAt: new Date().toISOString(),
-    steps: createLocalDeliveryAgentSteps(),
+    steps: createLocalDeliveryAgentSteps(workItem?.type),
   }
   jobs.set(job.id, job)
   activeJobId = job.id

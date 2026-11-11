@@ -71,7 +71,9 @@ export function buildLocalSkillInstruction(
     `SME skill manual: ${organizationSkillManual.name} (${organizationSkillManual.url}); baseline ${organizationSkillManual.baseline}.`,
     `Authoritative SME stage chain: ${smeDeliveryStageChain.map((entry) => `${entry.stage}=${entry.entry}`).join(' → ')}.`,
     `Stage handoffs: ${smeDeliveryStageChain.map((entry) => `${entry.stage}=${entry.artifact}`).join('; ')}.`,
-    'Use the stage entry that matches this work item. Do not skip the requirement card, design/case, implementation self-check, integration evidence, independent E2E evidence, or AICR review.',
+    workItemType === 'defect'
+      ? 'Use the stage entry that matches this work item. Do not skip defect analysis, implementation self-check, integration evidence, independent E2E evidence, or AICR review. A business LDD is not required for a defect fix.'
+      : 'Use the stage entry that matches this work item. Do not skip the requirement card, design/case, implementation self-check, integration evidence, independent E2E evidence, or AICR review.',
     `Commit-stage skill: ${smeCommitSkill.invocation} (${smeCommitSkill.codexEntry} when the current Codex session exposes it). This coding run must not stage or commit; after it finishes, the local delivery runner starts a separate Codex pass that executes the commit skill and creates the local commit.`,
     'The /aicr-commit contract requires a staged review report for the current diff with approved: true before commit. Never commit .env* files, credentials, tokens, or other secrets; never use --force or an unauthorized amend; push only when the runner was invoked with --push and the user authorized the external write.',
     'Commit message follows the shared AICR title rules: 【缺陷修复】{id} {description} for defects, 【需求实现】{id} {description} for requirements, otherwise use 【工程】, 【AI】, 【国际化】, 【样式】, 【重构】, 【性能】, 【文档】 or 【NA】. Do not add a second feat:/fix: prefix.',
@@ -94,13 +96,21 @@ export function buildLocalSkillInstruction(
     'Use $design-to-l1 or $design-to-l2 only when architecture knowledge also needs normalization.',
     '',
     'Work only in the configured local checkout. For web/ changes read web/AGENTS.md first; for lua/ changes read lua/AGENTS.md and preserve the api -> service -> middle -> utils layering.',
-    'Keep the whole workflow local. First analyze the requirement and produce a development design report covering requirement interpretation, affected modules, implementation plan, compatibility, and test strategy.',
-    `Run the delivery in three visible phases: requirement analysis, business LDD generation (generate or update the LDD affected by this work item), then business coding. At the start of each phase write its name to ${phaseMarkerPath}: \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. The marker is progress telemetry only and is never delivery evidence.`,
-    'Then implement the code changes and targeted unit tests according to that design.',
+    workItemType === 'defect'
+      ? 'Keep the whole workflow local. First analyze the defect reproduction conditions, expected behavior, affected modules, fix plan, compatibility, and regression risk.'
+      : 'Keep the whole workflow local. First analyze the requirement and produce a development design report covering requirement interpretation, affected modules, implementation plan, compatibility, and test strategy.',
+    workItemType === 'defect'
+      ? `Run the delivery in two visible phases: defect analysis, then business coding. At the start of each phase write its name to ${phaseMarkerPath}: \`analysis\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\` and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. Do not write \`ldd\` or print \`LOCAL_DELIVERY_PHASE:ldd\` for a defect fix. The marker is progress telemetry only and is never delivery evidence.`
+      : `Run the delivery in three visible phases: requirement analysis, business LDD generation (generate or update the LDD affected by this work item), then business coding. At the start of each phase write its name to ${phaseMarkerPath}: \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. The marker is progress telemetry only and is never delivery evidence.`,
+    workItemType === 'defect'
+      ? 'Then implement the defect fix and targeted unit tests directly from the defect analysis, without generating or updating a business LDD.'
+      : 'Then implement the code changes and targeted unit tests according to that design.',
     'Run integration validation next: project-native type checks, Lua module tests, static analysis, firmware/web build checks, and the narrowest useful regression. Produce an integration report with actual results, compatibility findings, and remaining risks.',
     'Do not create, stage, amend, or push Git commits. Leave validated code changes in the working tree; after checking the reports and real code changes, the local delivery runner runs a separate Codex pass that follows the /aicr-commit contract and creates the work-item commit.',
     'Build the artifact, run the authorized AC/AP or switch firmware upgrade and automated tests, then archive the test report with real evidence.',
-    'Store the design report, integration report, and test report under the project report directory (or delivery-artifacts/<work-item-id>/ if the project has no convention). Never fabricate report content or results.',
+    workItemType === 'defect'
+      ? 'Store the integration report and test report under the project report directory (or delivery-artifacts/<work-item-id>/ if the project has no convention). Never fabricate report content or results.'
+      : 'Store the design report, integration report, and test report under the project report directory (or delivery-artifacts/<work-item-id>/ if the project has no convention). Never fabricate report content or results.',
     'Do not open Git or Feishu web pages. Ask before a shared-branch change, production OTA, or any external write other than the configured acceptance push.',
   ]
     .filter((line, index, lines) => line !== '' || lines[index - 1] !== '')

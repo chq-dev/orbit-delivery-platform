@@ -178,8 +178,8 @@ export function Pipelines({
         (entry): entry is PipelineReport => Boolean(entry),
       )
   const displayStages = useMemo(
-    () => displayDeliveryStages(run?.stages ?? []),
-    [run?.stages],
+    () => displayDeliveryStages(run?.stages ?? [], run?.itemType),
+    [run?.stages, run?.itemType],
   )
   const stageByKey = new Map(displayStages.map((stage) => [stage.key, stage]))
   const commitStage = stageByKey.get('commit')

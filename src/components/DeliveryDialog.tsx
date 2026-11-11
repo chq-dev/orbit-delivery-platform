@@ -560,9 +560,9 @@ export function DeliveryDialog({
         if (writebackIndex >= 0) stages.splice(writebackIndex, 0, ...optionalStages)
         else stages.push(...optionalStages)
       }
-      return displayDeliveryStages(stages)
+      return displayDeliveryStages(stages, selectedItem?.type)
     },
-    [effectiveDeliveryJob?.result?.evidence, effectiveDeliveryJob?.steps],
+    [effectiveDeliveryJob?.result?.evidence, effectiveDeliveryJob?.steps, selectedItem?.type],
   )
 
   useEffect(() => {
@@ -1101,7 +1101,9 @@ export function DeliveryDialog({
       title="启动一键交付"
       subtitle={serverExecution
         ? '优先使用 Mac 已有仓库；找不到时可在服务器临时检出，任务完成后清理'
-        : '在所选客户端执行需求分析、业务 LDD、编码、验证、提交与推送；推送后可按项目配置触发系统编译'}
+        : selectedItem?.type === 'defect'
+          ? '在所选客户端执行缺陷分析、编码、验证、提交与推送；推送后可按项目配置触发系统编译'
+          : '在所选客户端执行需求分析、业务 LDD、编码、验证、提交与推送；推送后可按项目配置触发系统编译'}
       size="lg"
       footer={
         <>
@@ -1777,8 +1779,16 @@ export function DeliveryDialog({
             </div>
             <div>
               <FileText size={15} />
-              <span>需求分析 · 业务 LDD · 自动编码</span>
-              <small>确认影响范围、生成本次业务 LDD 并实现代码</small>
+              <span>
+                {selectedItem?.type === 'defect'
+                  ? '缺陷分析 · 自动编码'
+                  : '需求分析 · 业务 LDD · 自动编码'}
+              </span>
+              <small>
+                {selectedItem?.type === 'defect'
+                  ? '确认复现条件与影响范围并实现修复'
+                  : '确认影响范围、生成本次业务 LDD 并实现代码'}
+              </small>
             </div>
             <div>
               <GitMerge size={15} />
@@ -1787,8 +1797,10 @@ export function DeliveryDialog({
             </div>
           </div>
           <div className="preview-footer">
-            <span>{deliveryStages.length || 7} 个执行阶段</span>
-            <span>3 份交付报告</span>
+            <span>
+              {deliveryStages.length || (selectedItem?.type === 'defect' ? 6 : 7)} 个执行阶段
+            </span>
+            <span>{selectedItem?.type === 'defect' ? 2 : 3} 份交付报告</span>
           </div>
         </aside>
       </div>

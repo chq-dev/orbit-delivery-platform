@@ -33,8 +33,30 @@ export const LOCAL_DELIVERY_AGENT_STEPS: readonly LocalDeliveryAgentStepDefiniti
   },
 ]
 
-export function createLocalDeliveryAgentSteps(): LocalDeliveryAgentStep[] {
-  return LOCAL_DELIVERY_AGENT_STEPS.map((step) => ({ ...step, status: 'pending' }))
+export function createLocalDeliveryAgentSteps(
+  workItemType?: 'requirement' | 'defect',
+): LocalDeliveryAgentStep[] {
+  return LOCAL_DELIVERY_AGENT_STEPS
+    .filter((step) => !(workItemType === 'defect' && step.key === 'ldd'))
+    .map((step) => {
+      if (workItemType !== 'defect') return { ...step, status: 'pending' as const }
+      if (step.key === 'analysis') {
+        return {
+          ...step,
+          name: '缺陷分析',
+          description: '识别缺陷复现条件、期望行为与影响模块',
+          status: 'pending' as const,
+        }
+      }
+      if (step.key === 'coding') {
+        return {
+          ...step,
+          description: '按缺陷分析与修复方案实现代码变更和单元测试',
+          status: 'pending' as const,
+        }
+      }
+      return { ...step, status: 'pending' as const }
+    })
 }
 
 export function updateLocalDeliveryAgentStep(
@@ -134,6 +156,7 @@ export interface LocalDeliveryBootstrapRepository {
 
 export interface LocalDeliveryBootstrapWorkItem {
   id: string
+  type?: 'requirement' | 'defect'
   title?: string
   repoId?: string
   branch?: string

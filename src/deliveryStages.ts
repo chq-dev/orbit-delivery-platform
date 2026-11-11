@@ -1,4 +1,4 @@
-import type { PipelineStage } from './types'
+import type { PipelineStage, WorkItemType } from './types'
 
 const hiddenInternalStages = new Set(['test'])
 const optionalStages = new Set(['build', 'upgrade'])
@@ -69,13 +69,31 @@ function connectivityFromAnalysis(analysis: PipelineStage): PipelineStage {
   }
 }
 
-export function displayDeliveryStages(stages: readonly PipelineStage[]): PipelineStage[] {
+export function displayDeliveryStages(
+  stages: readonly PipelineStage[],
+  itemType?: WorkItemType,
+): PipelineStage[] {
   const visible: PipelineStage[] = []
   for (const stage of stages) {
     if (hiddenInternalStages.has(stage.key)) continue
+    if (itemType === 'defect' && stage.key === 'ldd') continue
     if (optionalStages.has(stage.key) && !optionalStageVisible(stage)) continue
     const alias = stageAliases[stage.key]
-    visible.push(alias ? { ...stage, ...alias } : stage)
+    const visibleStage = alias ? { ...stage, ...alias } : stage
+    if (itemType === 'defect' && visibleStage.key === 'analysis') {
+      visible.push({
+        ...visibleStage,
+        name: '缺陷分析',
+        description: '识别缺陷复现条件、期望行为与影响模块',
+      })
+    } else if (itemType === 'defect' && visibleStage.key === 'coding') {
+      visible.push({
+        ...visibleStage,
+        description: '按缺陷分析与修复方案实现代码变更和单元测试',
+      })
+    } else {
+      visible.push(visibleStage)
+    }
   }
 
   if (visible.some((stage) => stage.key === 'connectivity')) return visible

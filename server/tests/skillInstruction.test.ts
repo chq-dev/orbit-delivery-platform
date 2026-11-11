@@ -124,4 +124,8 @@ test('缺陷交付提示词包含可选的缺陷说明', () => {
   assert.match(instruction, /operator-confirmed delivery scope/)
   assert.match(instruction, /Defect screenshot files:/)
   assert.match(instruction, /use them to reproduce and verify the reported behavior/)
+  assert.match(instruction, /Run the delivery in two visible phases: defect analysis/)
+  assert.match(instruction, /Do not write `ldd`/)
+  assert.match(instruction, /business LDD is not required for a defect fix/)
+  assert.doesNotMatch(instruction, /Run the delivery in three visible phases/)
 })
