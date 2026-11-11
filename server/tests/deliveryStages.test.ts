@@ -69,3 +69,26 @@ test('已有连通性步骤时不会重复插入', () => {
   )
   assert.equal(stages[1].status, 'running')
 })
+
+test('缺陷交付隐藏业务 LDD 步骤并使用缺陷分析文案', () => {
+  const stages = displayDeliveryStages(
+    [
+      stage('connectivity', '连通性校验', 'success'),
+      stage('analysis', '需求分析', 'success'),
+      stage('ldd', '业务 LDD', 'success'),
+      stage('coding', '业务编码', 'success'),
+      stage('evidence', '检查证据', 'success'),
+      stage('commit', '提交推送', 'success'),
+      stage('writeback', '回写并关闭缺陷', 'success'),
+    ],
+    'defect',
+  )
+
+  assert.deepEqual(
+    stages.map((entry) => entry.key),
+    ['connectivity', 'analysis', 'coding', 'evidence', 'commit', 'writeback'],
+  )
+  assert.equal(stages[1].name, '缺陷分析')
+  assert.match(stages[1].description, /复现条件/)
+  assert.match(stages[2].description, /修复方案/)
+})

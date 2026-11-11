@@ -349,6 +349,16 @@ test('本机交付步骤会记录运行、成功、失败与日志', () => {
   assert.ok(failed?.finishedAt)
 })
 
+test('缺陷交付步骤不包含业务 LDD，并使用缺陷分析文案', () => {
+  const steps = createLocalDeliveryAgentSteps('defect')
+  assert.deepEqual(
+    steps.map((step) => step.key),
+    ['connectivity', 'analysis', 'coding', 'evidence', 'commit', 'writeback'],
+  )
+  assert.equal(steps.find((step) => step.key === 'analysis')?.name, '缺陷分析')
+  assert.match(steps.find((step) => step.key === 'coding')?.description ?? '', /修复方案/)
+})
+
 test('平台请求遇到瞬时连接失败会重试并返回成功结果', async () => {
   const originalFetch = globalThis.fetch
   let calls = 0

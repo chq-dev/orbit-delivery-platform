@@ -1248,15 +1248,15 @@ function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
 
 const DELIVERY_CODEX_PHASE_LOGS: Record<DeliveryCodexPhase, { running: string; success: string }> = {
   analysis: {
-    running: 'Codex 正在分析需求、验收条件与影响模块',
-    success: '需求分析与影响范围已确认',
+    running: 'Codex 正在分析工作项、验收条件与影响模块',
+    success: '工作项分析与影响范围已确认',
   },
   ldd: {
     running: 'Codex 正在生成本次业务涉及的 LDD',
     success: '业务 LDD 已生成',
   },
   coding: {
-    running: 'Codex 正在按 LDD 实现业务代码与单元测试',
+    running: 'Codex 正在实现业务代码与单元测试',
     success: '业务编码与单元测试已完成',
   },
 }
@@ -1460,6 +1460,16 @@ async function executeLocalDelivery(
       }
     }
     const target = resolveLocalDeliveryTarget(bootstrap, request, repoPaths)
+    if (target.workItem.type === 'defect') {
+      const analysis = job.steps.find((step) => step.key === 'analysis')
+      if (analysis) {
+        analysis.name = '缺陷分析'
+        analysis.description = '识别缺陷复现条件、期望行为与影响模块'
+      }
+      const coding = job.steps.find((step) => step.key === 'coding')
+      if (coding) coding.description = '按缺陷分析与修复方案实现代码变更和单元测试'
+      job.steps = job.steps.filter((step) => step.key !== 'ldd')
+    }
     let targetPath = target.localPath
     if (target.temporaryCheckout) {
       if (!target.repository.url || !target.branch) {
@@ -1492,7 +1502,9 @@ async function executeLocalDelivery(
     job.localPath = checkout.checkout
     job.branch = checkout.branch
     setStep(job, 'analysis', 'running', DELIVERY_CODEX_PHASE_LOGS.analysis.running)
-    job.stage = 'Codex 正在执行需求分析、业务 LDD 与编码'
+    job.stage = target.workItem.type === 'defect'
+      ? 'Codex 正在执行缺陷分析与编码'
+      : 'Codex 正在执行需求分析、业务 LDD 与编码'
     resetDeliveryCodexPhaseMarker(checkout.checkout, request.workItemId)
     let stopPhaseTracker: (() => void) | undefined
 

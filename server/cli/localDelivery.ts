@@ -733,33 +733,45 @@ function deliveryReports(artifactDir: string): {
 function deliveryStageResults(
   evidence: DeliveryEvidence,
   autoCommit: boolean,
+  itemType: WorkItem['type'],
   stagedFileCount = 0,
 ): DeliveryStageResult[] {
   const changed = evidence.changedFiles.length
+  const isDefect = itemType === 'defect'
   return [
-    { index: 0, status: 'success', log: 'Codex 已实际读取需求、检查代码并完成需求分析' },
+    {
+      index: 0,
+      status: 'success',
+      log: isDefect
+        ? 'Codex 已实际读取缺陷、检查代码并完成缺陷分析'
+        : 'Codex 已实际读取需求、检查代码并完成需求分析',
+    },
     {
       index: 1,
-      status: evidence.designReport ? 'success' : 'pending',
-      log: evidence.designReport
-        ? '已生成 delivery-artifacts/<work-item>/design-report.md（含业务 LDD 路径与设计决策）'
-        : '未检测到 design-report.md，不能标记设计报告与业务 LDD 完成',
+      status: isDefect || evidence.designReport ? 'success' : 'pending',
+      log: isDefect
+        ? '缺陷修复无需业务 LDD，已跳过设计阶段'
+        : evidence.designReport
+          ? '已生成 delivery-artifacts/<work-item>/design-report.md（含业务 LDD 路径与设计决策）'
+          : '未检测到 design-report.md，不能标记设计报告与业务 LDD 完成',
     },
     {
       index: 2,
       status: changed > 0 ? 'success' : 'failed',
-      log: `Codex 实际完成业务编码，修改代码文件 ${changed} 个：${evidence.changedFiles.slice(0, 8).join(', ') || '无'}`,
+      log: `Codex 实际完成${isDefect ? '缺陷修复' : '业务编码'}，修改代码文件 ${changed} 个：${evidence.changedFiles.slice(0, 8).join(', ') || '无'}`,
     },
     {
       index: 3,
       status:
-        changed > 0 && evidence.designReport && evidence.integrationReport
+        changed > 0 &&
+        (isDefect || evidence.designReport) &&
+        evidence.integrationReport
           ? 'success'
           : 'failed',
       log:
         changed === 0
           ? '未检测到业务代码变更，交付证据不完整'
-          : !evidence.designReport
+          : !isDefect && !evidence.designReport
             ? '未检测到 design-report.md，不能标记设计报告与业务 LDD 完成'
             : !evidence.integrationReport
               ? '未检测到 integration-report.md，不能标记集成验证完成'
@@ -1062,6 +1074,7 @@ function buildPrompt(
   feishuContextPath?: string,
 ): string {
   const phaseMarkerPath = join(localPath, 'delivery-artifacts', item.id, '.phase-current')
+  const isDefect = item.type === 'defect'
   return [
     buildLocalSkillInstruction(
       item,
@@ -1085,10 +1098,16 @@ function buildPrompt(
     feishuContextPath
       ? 'Do not claim screenshots or textual details are missing when feishu-context.md contains them. If a screenshot download failed, state the exact warning instead of inventing content.'
       : '',
-    `Work in three explicit phases: requirement analysis, business LDD, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. This file is progress telemetry only; never treat it as design or test evidence.`,
-    'Phase 2 must generate or update the business LDD affected by this work item under the project LDD convention (for mode-switch work use web/docs/ldd/SME-模式切换-LDD.md). Record the LDD path and key decisions in design-report.md; do not invent an LDD that the code does not follow.',
-    'Before writing the LDD, extract every requirement detail, acceptance condition and unresolved item from feishu-context.md, including comments and screenshots. Resolve the unresolved items in the design and implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.',
-    `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: design-report.md, integration-report.md, and test-report.md when the corresponding work actually ran.`,
+    isDefect
+      ? `Work in two explicit phases: defect analysis, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\` and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. Do not write \`ldd\` or print \`LOCAL_DELIVERY_PHASE:ldd\` for a defect fix. This file is progress telemetry only; never treat it as design or test evidence.`
+      : `Work in three explicit phases: requirement analysis, business LDD, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. This file is progress telemetry only; never treat it as design or test evidence.`,
+    isDefect
+      ? 'Do not generate or update a business LDD for this defect fix. Go directly from defect analysis to implementation, and keep the fix scoped to the reported behavior and its regression risk.'
+      : 'Phase 2 must generate or update the business LDD affected by this work item under the project LDD convention (for mode-switch work use web/docs/ldd/SME-模式切换-LDD.md). Record the LDD path and key decisions in design-report.md; do not invent an LDD that the code does not follow.',
+    isDefect
+      ? 'Before coding, extract every defect reproduction condition, expected behavior, acceptance point and unresolved item from feishu-context.md, including comments and screenshots. Resolve the unresolved items in the implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.'
+      : 'Before writing the LDD, extract every requirement detail, acceptance condition and unresolved item from feishu-context.md, including comments and screenshots. Resolve the unresolved items in the design and implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.',
+    `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: ${isDefect ? 'integration-report.md and test-report.md' : 'design-report.md, integration-report.md, and test-report.md'} when the corresponding work actually ran.`,
     'Unit tests may be added or run as verification, but test files are not part of the delivery commit and must remain uncommitted.',
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
     'Do not create, amend, stage, or push any Git commit. After this coding run, a separate Codex invocation executes the repository /aicr-commit skill to review the staged diff, write the AICR gate report, and create the local commit. Leave the code changes in the working tree; do not run git add.',
@@ -1372,8 +1391,16 @@ async function main(): Promise<void> {
       const blocker = explicitDeliveryBlocker(artifactDir, lastMessagePath, codexStartedAt)
       if (blocker) throw new Error(`交付未达到验收要求：${blocker}`)
     }
-    if (!args.noCommit && (!evidence.designReport || !evidence.integrationReport)) {
-      throw new Error('缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交')
+    const missingRequiredReport =
+      deliveryItem.type === 'defect'
+        ? !evidence.integrationReport
+        : !evidence.designReport || !evidence.integrationReport
+    if (!args.noCommit && missingRequiredReport) {
+      throw new Error(
+        deliveryItem.type === 'defect'
+          ? '缺少 delivery-artifacts 中的集成报告，已停止创建交付提交'
+          : '缺少 delivery-artifacts 中的设计报告或集成报告，已停止创建交付提交',
+      )
     }
 
     let finalHead: string | undefined
@@ -1399,6 +1426,7 @@ async function main(): Promise<void> {
     const stageResults = deliveryStageResults(
       evidence,
       !args.noCommit,
+      deliveryItem.type,
       attempt.stagedFileCount ?? 0,
     )
     attempt.stageResults = stageResults
@@ -1571,6 +1599,7 @@ async function main(): Promise<void> {
         attempt.stageResults = deliveryStageResults(
           attempt.evidence,
           Boolean(attempt.commit),
+          attempt.item.type,
           attempt.stagedFileCount ?? 0,
         )
       }
