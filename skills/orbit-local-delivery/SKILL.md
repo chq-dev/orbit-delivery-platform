@@ -33,7 +33,7 @@ for the runner and removes it after the job. For current-terminal execution a
 requirement can be satisfied by 1-10 screenshots (max 500KB each, 5MB total) or
 a 20+ character breakdown or a design reference. Remote and server execution
 require the breakdown or design reference because screenshots are local-only.
-Defects are exempt. Every selected image is passed to `codex exec --image`. The agent reports seven step states through
+Defects are exempt. Selected images and Feishu defect attachments are passed to `codex exec --image`; animated GIF, APNG, animated WebP and MP4 video inputs are sampled into ordered static contact sheets first so the model does not only see the first frame. The agent reports seven step states through
 `POST /api/integrations/feishu/agent/commands/:id/progress`: connectivity
 (platform + contract + checkout), requirement analysis, business LDD, business
 coding, evidence, commit/push and platform write-back. At the start of each phase

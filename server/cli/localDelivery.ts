@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { spawnSync } from 'node:child_process'
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -8,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { codexBinaryError, resolveCodexBinary } from '../services/codexBinaryService.js'
@@ -44,6 +45,8 @@ import {
   validateDeliveryCommit,
 } from '../services/localDeliveryCommitService.js'
 import { loadDeliveryFeishuContext } from '../services/deliveryFeishuContext.js'
+import { adaptCodexImages } from '../services/imageAdaptation.js'
+import { adaptCodexVideos } from '../services/videoAdaptation.js'
 import {
   cleanupDeliveryArtifactDirectory,
   cleanupGeneratedDeliveryFiles,
@@ -1105,6 +1108,7 @@ function buildPrompt(
     feishuContextPath
       ? 'Do not claim screenshots or textual details are missing when feishu-context.md contains them. If a screenshot download failed, state the exact warning instead of inventing content.'
       : '',
+    'Images are supplied through codex exec --image. Animated GIF/APNG/WebP inputs and MP4 defect videos have already been sampled into ordered contact sheets; read those sheets left-to-right, top-to-bottom and use the recorded frame timeline in feishu-context.md.',
     isDefect
       ? `Work in two explicit phases: defect analysis, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\` and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. Do not write \`ldd\` or print \`LOCAL_DELIVERY_PHASE:ldd\` for a defect fix. This file is progress telemetry only; never treat it as design or test evidence.`
       : `Work in three explicit phases: requirement analysis, business LDD, then business coding. At the start of each phase persist the phase name to ${phaseMarkerPath}: write \`analysis\`, then \`ldd\`, then \`coding\`. Also print \`LOCAL_DELIVERY_PHASE:analysis\`, \`LOCAL_DELIVERY_PHASE:ldd\`, and \`LOCAL_DELIVERY_PHASE:coding\` when each phase starts. This file is progress telemetry only; never treat it as design or test evidence.`,
@@ -1112,8 +1116,8 @@ function buildPrompt(
       ? 'Do not generate or update a business LDD for this defect fix. Go directly from defect analysis to implementation, and keep the fix scoped to the reported behavior and its regression risk.'
       : 'Phase 2 must generate or update the business LDD affected by this work item under the project LDD convention (for mode-switch work use web/docs/ldd/SME-模式切换-LDD.md). Record the LDD path and key decisions in design-report.md; do not invent an LDD that the code does not follow.',
     isDefect
-      ? 'Before coding, extract every defect reproduction condition, expected behavior, acceptance point and unresolved item from feishu-context.md, including comments and screenshots. Resolve the unresolved items in the implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.'
-      : 'Before writing the LDD, extract every requirement detail, acceptance condition and unresolved item from feishu-context.md, including comments and screenshots. Resolve the unresolved items in the design and implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.',
+      ? 'Before coding, extract every defect reproduction condition, expected behavior, acceptance point and unresolved item from feishu-context.md, including comments, static screenshots, animated-image frame sheets and video frame sheets. Resolve the unresolved items in the implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.'
+      : 'Before writing the LDD, extract every requirement detail, acceptance condition and unresolved item from feishu-context.md, including comments, static screenshots, animated-image frame sheets and video frame sheets. Resolve the unresolved items in the design and implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.',
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: ${isDefect ? 'integration-report.md and test-report.md' : 'design-report.md, integration-report.md, and test-report.md'} when the corresponding work actually ran.`,
     'Unit tests may be added or run as verification, but test files are not part of the delivery commit and must remain uncommitted.',
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
@@ -1123,7 +1127,7 @@ function buildPrompt(
     'The platform marks build, upgrade, and test as unexecuted unless the matching evidence file exists. Never invent build, device, test, or report results.',
     'If the Codex session exposes a Feishu MCP server named "feishu", use it to read linked Feishu documents, Wiki pages, screenshots or messages when the task needs them.',
     feishuContextPath
-      ? 'The Feishu defect description, comments and downloaded screenshots are authoritative design inputs for this delivery; inspect every attached image before editing.'
+      ? 'The Feishu defect description, comments, downloaded images and sampled video frame sheets are authoritative design inputs for this delivery; inspect every attached image and video frame sheet before editing.'
       : '',
     'If the Codex session exposes a Meegle MCP server named "meegle", use it to query live requirement or defect details. The platform-provided work item remains authoritative for scope. MCP output is supporting input, not acceptance evidence; run the required checks before claiming success.',
   ].join('\n')
@@ -1248,10 +1252,75 @@ async function main(): Promise<void> {
     })
     if (feishuContext.description) deliveryItem.description = feishuContext.description
     for (const warning of feishuContext.warnings) console.warn(`提示：${warning}`)
+    const localImages = await adaptCodexImages(stagedScreenshots, artifactDir, {
+      prefix: 'local',
+      failOnError: true,
+    })
+    for (const warning of localImages.warnings) console.warn(`提示：${warning}`)
+    const feishuImages = await adaptCodexImages(feishuContext.imagePaths, artifactDir, {
+      prefix: 'feishu',
+    })
+    for (const warning of feishuImages.warnings) console.warn(`提示：${warning}`)
+    const feishuVideos = await adaptCodexVideos(feishuContext.videoPaths, artifactDir, {
+      prefix: 'feishu-video',
+    })
+    for (const warning of feishuVideos.warnings) console.warn(`提示：${warning}`)
+    for (const adaptation of feishuVideos.adaptations) {
+      for (const warning of adaptation.warnings) console.warn(`提示：${warning}`)
+    }
     const screenshotPaths = [
-      ...stagedScreenshots,
-      ...feishuContext.imagePaths,
+      ...localImages.imagePaths,
+      ...feishuImages.imagePaths,
+      ...feishuVideos.imagePaths,
     ].slice(0, MAX_DELIVERY_SCREENSHOTS)
+    if (feishuContext.contextPath) {
+      const imageNotes = [...localImages.adaptations, ...feishuImages.adaptations]
+        .slice(0, MAX_DELIVERY_SCREENSHOTS)
+        .map(
+          (adaptation) =>
+            adaptation.kind === 'animated'
+              ? `- ${basename(adaptation.sourcePath)}：动图共 ${adaptation.frameCount} 帧，按顺序采样 ${adaptation.sampledFrames
+                  .map((frame) => `第 ${frame.index + 1} 帧@${frame.atMs}ms`)
+                  .join('、')}，合成为 ${adaptation.paths.join(', ')}`
+              : `- ${basename(adaptation.sourcePath)}：静态图 ${adaptation.paths.join(', ')}`,
+        )
+      const videoNotes = feishuVideos.adaptations.map(
+        (adaptation) =>
+          `- ${basename(adaptation.sourcePath)}：视频${
+            adaptation.durationMs ? `时长 ${adaptation.durationMs}ms，` : ''
+          }采样 ${adaptation.sampledFrames
+            .map((frame) => `第 ${frame.index + 1} 帧@${frame.atMs}ms`)
+            .join('、')}，通过 ${adaptation.extractor} 合成为 ${adaptation.paths.join(', ')}`,
+      )
+      const videoWarnings = feishuVideos.adaptations.flatMap((adaptation) =>
+        adaptation.warnings.map((warning) => `${basename(adaptation.sourcePath)}：${warning}`),
+      )
+      appendFileSync(
+        feishuContext.contextPath,
+        [
+          '',
+          '## Codex 图像输入',
+          ...(screenshotPaths.length > 0
+            ? screenshotPaths.map((path, index) => `- 图像 ${index + 1}：${path}`)
+            : ['- 无可传给 Codex 的图片']),
+          ...(imageNotes.length > 0 ? ['', '### 图片适配', ...imageNotes] : []),
+          ...(videoNotes.length > 0 ? ['', '### 视频抽帧', ...videoNotes] : []),
+          ...(feishuImages.warnings.length > 0
+            ? ['', '### 图片适配警告', ...feishuImages.warnings.map((item) => `- ${item}`)]
+            : []),
+          ...(feishuVideos.warnings.length + videoWarnings.length > 0
+            ? [
+                '',
+                '### 视频适配警告',
+                ...feishuVideos.warnings.map((item) => `- ${item}`),
+                ...videoWarnings.map((item) => `- ${item}`),
+              ]
+            : []),
+          '',
+        ].join('\n'),
+        'utf8',
+      )
+    }
     const promptPath = join(artifactDir, 'codex-prompt.md')
     const runDescription = args.run
       ? 'Run the required code changes now; the launcher will not ask for the prompt again.'

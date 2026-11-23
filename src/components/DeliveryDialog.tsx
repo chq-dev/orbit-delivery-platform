@@ -283,6 +283,14 @@ function WorkItemPicker({
   )
 }
 
+function isSupportedDeliveryMedia(file: File): boolean {
+  return (
+    file.type.startsWith('image/') ||
+    file.type === 'video/mp4' ||
+    /\.(?:mp4|m4v)$/i.test(file.name)
+  )
+}
+
 function DeliveryScreenshotField({
   label,
   hint,
@@ -307,7 +315,7 @@ function DeliveryScreenshotField({
       <span className="field-label">
         {label}
         <small>
-          {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 张 · 单张自动压缩到 500KB 内 · 仅本机暂存
+          {screenshots.length}/{MAX_DELIVERY_SCREENSHOTS} 项 · 支持图片、动图和 MP4 · 本机抽帧后暂存
         </small>
       </span>
       <div
@@ -316,15 +324,11 @@ function DeliveryScreenshotField({
         onDrop={(event) => {
           event.preventDefault()
           onAddFiles(
-            Array.from(event.dataTransfer.files).filter((file) =>
-              file.type.startsWith('image/'),
-            ),
+            Array.from(event.dataTransfer.files).filter(isSupportedDeliveryMedia),
           )
         }}
         onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files).filter((file) =>
-            file.type.startsWith('image/'),
-          )
+          const files = Array.from(event.clipboardData.files).filter(isSupportedDeliveryMedia)
           if (files.length === 0) return
           event.preventDefault()
           onAddFiles(files)
@@ -333,7 +337,7 @@ function DeliveryScreenshotField({
         <input
           ref={inputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp"
+          accept="image/png,image/jpeg,image/webp,image/gif,video/mp4"
           multiple
           hidden
           onChange={(event) => {
@@ -1424,8 +1428,8 @@ export function DeliveryDialog({
               </div>
 
               <DeliveryScreenshotField
-                label="设计截图"
-                hint="截图仅在本机浏览器暂存，交付时作为图像输入传给 Codex"
+                label="设计截图 / 动图 / 视频"
+                hint="MP4 会在浏览器内抽帧；帧图仅在本机暂存并作为图像输入传给 Codex"
                 screenshots={screenshots}
                 compressing={compressingScreenshots}
                 error={screenshotError}
@@ -1473,8 +1477,8 @@ export function DeliveryDialog({
               </div>
 
               <DeliveryScreenshotField
-                label="缺陷截图"
-                hint="截图仅在本机浏览器暂存，交付时作为图像输入传给 Codex"
+                label="缺陷截图 / 动图 / 视频"
+                hint="MP4 会在浏览器内抽帧；帧图仅在本机暂存并作为图像输入传给 Codex"
                 screenshots={screenshots}
                 compressing={compressingScreenshots}
                 error={screenshotError}

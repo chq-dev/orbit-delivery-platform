@@ -12,6 +12,7 @@ export const DELIVERY_SCREENSHOT_MIME_TYPES = [
   'image/png',
   'image/jpeg',
   'image/webp',
+  'image/gif',
 ] as const
 
 export type DeliveryScreenshotMimeType = (typeof DELIVERY_SCREENSHOT_MIME_TYPES)[number]

@@ -15,6 +15,7 @@ const EXTENSIONS: Record<DeliveryScreenshotMimeType, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
+  'image/gif': 'gif',
 }
 
 function safeFileName(name: string, index: number, mimeType: DeliveryScreenshotMimeType): string {
@@ -46,7 +47,7 @@ export function parseDeliveryScreenshots(value: unknown): DeliveryScreenshotUplo
     if (!isRecord(entry)) throw new Error(`第 ${index + 1} 张设计截图格式不正确`)
     const mimeType = typeof entry.mimeType === 'string' ? entry.mimeType.trim() : ''
     if (!isDeliveryScreenshotMimeType(mimeType)) {
-      throw new Error('设计截图仅支持 PNG、JPEG 或 WebP')
+      throw new Error('设计截图仅支持 PNG、JPEG、WebP 或 GIF')
     }
     const dataUrl = typeof entry.dataUrl === 'string' ? entry.dataUrl.trim() : ''
     const prefix = `data:${mimeType};base64,`

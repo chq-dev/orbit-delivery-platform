@@ -58,6 +58,7 @@ download_agent_file feishuClientAgent.mjs
 download_agent_file feishuSync.mjs
 download_agent_file localDelivery.mjs
 download_agent_file meegleServer.mjs
+download_agent_file webp-wasm.wasm
 
 launchctl bootout "gui/$UID_VALUE/$LABEL" 2>/dev/null || true
 sleep 1

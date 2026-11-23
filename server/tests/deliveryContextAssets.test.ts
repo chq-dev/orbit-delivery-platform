@@ -58,7 +58,7 @@ test('本机代理最多接收 10 张前端暂存截图', () => {
 test('本机代理拒绝非图片和超限截图', () => {
   assert.throws(
     () => parseDeliveryScreenshots([{ ...screenshot(), mimeType: 'image/svg+xml' }]),
-    /仅支持 PNG、JPEG 或 WebP/,
+    /仅支持 PNG、JPEG、WebP 或 GIF/,
   )
   assert.throws(
     () => parseDeliveryScreenshots([screenshot(Buffer.alloc(501 * 1024, 1))]),

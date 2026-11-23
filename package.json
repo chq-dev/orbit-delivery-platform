@@ -23,7 +23,7 @@
     "sync:feishu:snapshot:watch": "tsx server/cli/feishuSync.ts --snapshot-only --watch",
     "snapshot:from-db": "tsx server/cli/exportFeishuSnapshot.ts",
     "tls:generate": "bash scripts/generate-dev-cert.sh",
-    "build:agent": "esbuild server/cli/feishuClientAgent.ts server/cli/feishuSync.ts server/cli/localDelivery.ts --bundle --platform=node --format=esm --target=node18 --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --out-extension:.js=.mjs --outdir=public/downloads && esbuild server/mcp/meegleServer.ts --bundle --platform=node --format=esm --target=node18 --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=public/downloads/meegleServer.mjs",
+    "build:agent": "esbuild server/cli/feishuClientAgent.ts server/cli/feishuSync.ts server/cli/localDelivery.ts --bundle --platform=node --format=esm --target=node18 --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --out-extension:.js=.mjs --outdir=public/downloads && esbuild server/mcp/meegleServer.ts --bundle --platform=node --format=esm --target=node18 --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=public/downloads/meegleServer.mjs && cp node_modules/wasm-webp/dist/esm/webp-wasm.wasm public/downloads/webp-wasm.wasm",
     "typecheck:server": "tsc -p tsconfig.server.json",
     "test:server": "node --import tsx --import ./server/tests/setup.ts --test server/tests/*.test.ts",
     "build": "tsc -b && npm run typecheck:server && npm run build:agent && vite build",
@@ -32,13 +32,17 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "apng-js": "^1.1.5",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
+    "gifuct-js": "^2.1.2",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "undici": "^6.29.1",
+    "upng-js": "^2.1.0",
+    "wasm-webp": "^0.1.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

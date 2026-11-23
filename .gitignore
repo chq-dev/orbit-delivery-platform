@@ -4,6 +4,7 @@ dist
 /public/downloads/feishuSync.mjs
 /public/downloads/localDelivery.mjs
 /public/downloads/meegleServer.mjs
+/public/downloads/webp-wasm.wasm
 .DS_Store
 *.local
 npm-debug.log*

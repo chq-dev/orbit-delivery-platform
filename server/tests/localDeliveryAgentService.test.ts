@@ -25,6 +25,7 @@ const request = {
   pushAfterAcceptance: true,
   runBuild: true,
   autoClose: true,
+  temporaryCheckout: false,
 }
 
 test('一键交付请求只接受受控参数，不允许浏览器下发本地路径', () => {

@@ -379,7 +379,9 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
       repoId: 'repo-1',
       autoCommit: true,
       pushAfterAcceptance: false,
+      runBuild: true,
       autoClose: false,
+      temporaryCheckout: false,
     }, TEST_CLIENT_ID)
     assert.equal(command.type, 'delivery_start')
     assert.equal(command.status, 'pending')
@@ -390,6 +392,7 @@ test('交付命令携带受控参数并通过进度接口回传七步状态', ()
       pushAfterAcceptance: false,
       runBuild: true,
       autoClose: false,
+      temporaryCheckout: false,
     })
 
     const claimed = recordFeishuAgentHeartbeat(db, testClient)
