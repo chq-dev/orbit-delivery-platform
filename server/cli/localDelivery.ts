@@ -100,11 +100,6 @@ function lastCodexPhase(output: string): 'analysis' | 'ldd' | 'coding' | undefin
   ).at(-1)?.[1] as 'analysis' | 'ldd' | 'coding' | undefined
 }
 
-interface BootstrapData {
-  repositories: Repository[]
-  workItems: WorkItem[]
-}
-
 interface WorkItemDeliveryContextData {
   workItem: WorkItem
   requirementBreakdown?: string
@@ -363,7 +358,7 @@ function validateCheckout(localPath: string, configuredBranch?: string) {
   }
 }
 
-async function fetchBootstrap(api: string): Promise<BootstrapData> {
+async function fetchRepositories(api: string): Promise<Repository[]> {
   const health = await fetchJsonWithRetry<unknown>(`${api}/api/health`, {
     label: '读取平台版本',
     attempts: 3,
@@ -374,15 +369,17 @@ async function fetchBootstrap(api: string): Promise<BootstrapData> {
       '平台服务端尚未部署真实交付契约，无法保证代码变更、提交和阶段证据；请先升级服务器后重试',
     )
   }
-  return fetchJsonWithRetry<BootstrapData>(
-    `${api}/api/bootstrap?includeWorkItems=1&includeFeishuInbox=0`,
+  const repositories = await fetchJsonWithRetry<unknown>(
+    `${api}/api/repositories`,
     {
-      label: '读取平台工作项与仓库配置',
+      label: '读取平台仓库配置',
       attempts: 2,
-      timeoutMs: 30_000,
+      timeoutMs: 15_000,
       init: { headers: platformHeaders() },
     },
   )
+  if (!Array.isArray(repositories)) throw new Error('平台返回的仓库数据格式不正确')
+  return repositories as Repository[]
 }
 
 async function fetchDeliveryContext(
@@ -1162,8 +1159,10 @@ async function main(): Promise<void> {
   }
   console.log('LOCAL_DELIVERY_STAGE:connectivity')
 
-  const bootstrap = await fetchBootstrap(args.api)
-  const context = await fetchDeliveryContext(args.api, args.workItem)
+  const [repositories, context] = await Promise.all([
+    fetchRepositories(args.api),
+    fetchDeliveryContext(args.api, args.workItem),
+  ])
   const stagedScreenshots = stagedDeliveryScreenshotPaths()
   const item = context.workItem
   if (!item || item.id !== args.workItem) throw new Error(`平台中不存在工作项 ${args.workItem}`)
@@ -1176,7 +1175,7 @@ async function main(): Promise<void> {
     })
       : undefined
   const repositoryId = args.repo || item.repoId
-  const repository = bootstrap.repositories.find((entry) => entry.id === repositoryId)
+  const repository = repositories.find((entry) => entry.id === repositoryId)
   if (!repository) throw new Error(`平台中不存在仓库 ${repositoryId}`)
 
   const localPath = args.path || repository.localPath || ''

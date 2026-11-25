@@ -933,47 +933,63 @@ async function fetchPlatformHealth(
 async function fetchDeliveryBootstrap(
   job: LocalDeliveryJob,
   config: FeishuAgentStoredConfig,
+  workItemId: string,
 ): Promise<LocalDeliveryBootstrap> {
-  const payload = await fetchJsonWithRetry<unknown>(
-    `${config.platformBaseUrl}/api/bootstrap?includeWorkItems=1&includeFeishuInbox=0`,
-    {
-      label: '读取平台工作项与仓库配置',
+  const headers = { authorization: `Bearer ${config.syncToken}` }
+  const retryLog = (label: string) =>
+    ({ attempt, attempts, error }: { attempt: number; attempts: number; error: string }) => {
+      setStep(
+        job,
+        'connectivity',
+        'running',
+        `第 ${attempt}/${attempts} 次${label}失败：${error}；准备重试`,
+      )
+    }
+  const [repositoriesPayload, contextPayload] = await Promise.all([
+    fetchJsonWithRetry<unknown>(`${config.platformBaseUrl}/api/repositories`, {
+      label: '读取平台仓库配置',
       attempts: 2,
-      timeoutMs: 35_000,
-      init: {
-        headers: { authorization: `Bearer ${config.syncToken}` },
+      timeoutMs: 15_000,
+      init: { headers },
+      onRetry: retryLog('读取平台仓库配置'),
+    }),
+    fetchJsonWithRetry<unknown>(
+      `${config.platformBaseUrl}/api/work-items/${encodeURIComponent(workItemId)}/delivery-context`,
+      {
+        label: '读取平台工作项配置',
+        attempts: 2,
+        timeoutMs: 15_000,
+        init: { headers },
+        onRetry: retryLog('读取平台工作项配置'),
       },
-      onRetry: ({ attempt, attempts, error }) => {
-        setStep(
-          job,
-          'connectivity',
-          'running',
-          `第 ${attempt}/${attempts} 次读取平台配置失败：${error}；准备重试`,
-        )
-      },
-    },
-  )
-  if (
-    !isRecord(payload) ||
-    !Array.isArray(payload.repositories) ||
-    !Array.isArray(payload.workItems)
-  ) {
-    throw new Error('平台返回的仓库或工作项数据格式不正确')
+    ),
+  ])
+  if (!Array.isArray(repositoriesPayload)) {
+    throw new Error('平台返回的仓库数据格式不正确')
   }
+  if (!isRecord(contextPayload) || !isRecord(contextPayload.workItem)) {
+    throw new Error('平台返回的工作项数据格式不正确')
+  }
+  const workItem = contextPayload.workItem
   return {
-    repositories: payload.repositories.filter(isRecord).map((repository) => ({
+    repositories: repositoriesPayload.filter(isRecord).map((repository) => ({
       id: text(repository.id),
       name: optionalText(repository.name),
       url: optionalText(repository.url),
       branch: optionalText(repository.branch),
       localPath: optionalText(repository.localPath),
     })),
-    workItems: payload.workItems.filter(isRecord).map((workItem) => ({
-      id: text(workItem.id),
-      title: optionalText(workItem.title),
-      repoId: optionalText(workItem.repoId),
-      branch: optionalText(workItem.branch),
-    })),
+    workItems: [
+      {
+        id: text(workItem.id),
+        type: workItem.type === 'requirement' || workItem.type === 'defect'
+          ? workItem.type
+          : undefined,
+        title: optionalText(workItem.title),
+        repoId: optionalText(workItem.repoId),
+        branch: optionalText(workItem.branch),
+      },
+    ],
   }
 }
 
@@ -1436,7 +1452,7 @@ async function executeLocalDelivery(
     )
 
     job.stage = '读取平台工作项与仓库配置'
-    const bootstrap = await fetchDeliveryBootstrap(job, config)
+    const bootstrap = await fetchDeliveryBootstrap(job, config, request.workItemId)
     setStep(job, 'platform', 'success', '已读取工作项与仓库配置')
     const configuredRepository = bootstrap.repositories.find((entry) => entry.id === request.repoId)
     let repoPaths = config.repoPaths
