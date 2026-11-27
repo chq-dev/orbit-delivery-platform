@@ -27,6 +27,7 @@ import { buildLocalSkillInstruction } from '../../src/skillInstruction'
 import {
   MAX_DELIVERY_SCREENSHOTS,
   MAX_DELIVERY_SCREENSHOT_BYTES,
+  defectResolutionIssue,
   requirementDeliveryContextIssue,
 } from '../../src/deliveryContext'
 import { describeFetchError } from '../domain/network.js'
@@ -65,7 +66,8 @@ import {
   deliveryBuildFailureOutcome,
   type DeliveryBuildOutcome,
 } from '../services/deliveryBuildService.js'
-import type { Repository, WorkItem } from '../../src/types'
+import { resolveMeegleDefect } from '../services/meegleResolutionService.js'
+import type { DefectResolution, Repository, WorkItem } from '../../src/types'
 
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
@@ -105,6 +107,8 @@ interface WorkItemDeliveryContextData {
   requirementBreakdown?: string
   designReference?: string
   defectNote?: string
+  defectResolution?: DefectResolution
+  feishuWriteback?: 'direct' | 'cli'
 }
 
 interface LocalDeliveryArgs {
@@ -836,6 +840,7 @@ async function recordPlatformDelivery(
   stageResults: DeliveryStageResult[],
   reports: ReturnType<typeof deliveryReports>,
   workspaceWarning?: string,
+  feishuResolutionApplied = false,
 ): Promise<unknown> {
   let payload: {
     id?: unknown
@@ -876,7 +881,9 @@ async function recordPlatformDelivery(
               : '客户端本地交付完成，提交保留在本地'
           }${
             args.close && item.type === 'defect' && args.push
-              ? '；飞书缺陷已进入关闭队列'
+              ? feishuResolutionApplied
+                ? '；飞书缺陷已更新为已解决并写入解决信息'
+                : '；飞书缺陷已进入关闭队列'
               : ''
           }${workspaceWarning ? `；${workspaceWarning}` : ''}`,
           stageResults,
@@ -1185,6 +1192,7 @@ async function main(): Promise<void> {
     requirementBreakdown: context.requirementBreakdown ?? item.requirementBreakdown,
     designReference: context.designReference ?? item.designReference,
     defectNote: context.defectNote ?? item.defectNote,
+    defectResolution: context.defectResolution ?? item.defectResolution,
   }
   const attempt: DeliveryAttemptContext = {
     api: args.api,
@@ -1199,6 +1207,14 @@ async function main(): Promise<void> {
 
   try {
     if (contextIssue) throw new Error(contextIssue)
+    const externalFeishuWriteback =
+      deliveryItem.type === 'defect' &&
+      deliveryItem.source === 'feishu' &&
+      context.feishuWriteback === 'cli'
+    if (args.close && externalFeishuWriteback) {
+      const resolutionIssue = defectResolutionIssue(deliveryItem.defectResolution)
+      if (resolutionIssue) throw new Error(resolutionIssue)
+    }
     if (!localPath) {
       throw new Error('未配置客户端代码路径，请先在仓库配置中填写本地绝对路径')
     }
@@ -1593,8 +1609,25 @@ async function main(): Promise<void> {
     attempt.reports = reports
 
     let platformPipeline: unknown = null
+    let feishuResolution: Record<string, unknown> | undefined
     try {
       console.log('LOCAL_DELIVERY_STAGE:writeback')
+      if (
+        args.close &&
+        deliveryItem.type === 'defect' &&
+        deliveryItem.source === 'feishu' &&
+        context.feishuWriteback === 'cli'
+      ) {
+        feishuResolution = resolveMeegleDefect(
+          deliveryItem.externalId ?? '',
+          deliveryItem.defectResolution!,
+        )
+        console.log(
+          feishuResolution.alreadyResolved
+            ? '飞书缺陷已处于已解决状态，已补写解决信息'
+            : `飞书缺陷已流转到${String(feishuResolution.stateName ?? '已解决')}并写入解决信息`,
+        )
+      }
       platformPipeline = await recordPlatformDelivery(
         args.api,
         args,
@@ -1607,6 +1640,7 @@ async function main(): Promise<void> {
         stageResults,
         reports,
         workspaceRestore.warning,
+        Boolean(feishuResolution),
       )
     } catch (error) {
       const completedWork = args.noCommit
@@ -1656,6 +1690,7 @@ async function main(): Promise<void> {
         upgradeReport: evidence.upgradeReport,
       },
       internalBuild,
+      feishuResolution,
       workspaceRestore,
       stageResults,
       platformPipeline,

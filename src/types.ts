@@ -70,6 +70,14 @@ export type WorkItemType = 'requirement' | 'defect'
 export type WorkItemStatus = '待处理' | '进行中' | '已交付' | '已关闭'
 export type Priority = '紧急' | '高' | '中' | '低'
 
+export interface DefectResolution {
+  legacyBug?: boolean
+  introduced?: boolean
+  solution?: string
+  rootCause?: string
+  impact?: string
+}
+
 export interface WorkItemScreenshot {
   name: string
   mimeType: string
@@ -96,6 +104,7 @@ export interface WorkItem {
   designReference?: string
   requirementBreakdown?: string
   defectNote?: string
+  defectResolution?: DefectResolution
   requirementScreenshotCount?: number
   frontendOnly?: boolean
 }

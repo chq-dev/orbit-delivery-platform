@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 27
+export const SCHEMA_VERSION = 28
 
 export const schemaSql = `
 CREATE TABLE IF NOT EXISTS sequences (
@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS work_items (
   design_reference TEXT,
   requirement_breakdown TEXT,
   defect_note TEXT,
+  delivery_resolution TEXT,
   archived_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -329,6 +330,7 @@ CREATE TABLE IF NOT EXISTS feishu_outbox (
   action TEXT NOT NULL CHECK (action IN ('close')),
   status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'sent', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  resolution_json TEXT,
   next_attempt_at TEXT NOT NULL,
   last_error TEXT,
   created_at TEXT NOT NULL,

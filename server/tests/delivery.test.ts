@@ -42,6 +42,7 @@ import {
   getWorkItem,
   importWorkItems,
   listWorkItems,
+  saveWorkItemDeliveryContext,
 } from '../services/workItemService.js'
 
 const vaultKey = 'test-vault-key-with-enough-length'
@@ -826,6 +827,15 @@ test('关闭系统编译后仍完成推送并关闭飞书缺陷', () => {
     },
   ])
   const item = imported.items[0]
+  saveWorkItemDeliveryContext(db, item.id, {
+    defectResolution: {
+      legacyBug: false,
+      introduced: false,
+      solution: '修复缺陷逻辑',
+      rootCause: '边界条件未处理',
+      impact: '影响相关配置页面',
+    },
+  })
   const run = recordLocalDelivery(db, {
     workItemId: item.id,
     repoId: repositoryId,
@@ -1057,6 +1067,15 @@ test('飞书绑定状态、Webhook 验签和缺陷关闭回写队列', () => {
     },
   ])
   const feishuDefect = imported.items[0]
+  saveWorkItemDeliveryContext(db, feishuDefect.id, {
+    defectResolution: {
+      legacyBug: false,
+      introduced: false,
+      solution: '修复缺陷逻辑',
+      rootCause: '边界条件未处理',
+      impact: '影响相关配置页面',
+    },
+  })
   const started = startPipeline(db, {
     workItemId: feishuDefect.id,
     repoId: repositoryId,
@@ -1068,12 +1087,27 @@ test('飞书绑定状态、Webhook 验签和缺陷关闭回写队列', () => {
 
   assert.equal(getWorkItem(db, feishuDefect.id).status, '已关闭')
   const outbox = db
-    .prepare('SELECT external_id, action, status FROM feishu_outbox WHERE work_item_id = ?')
-    .get(feishuDefect.id) as { external_id: string; action: string; status: string } | undefined
-  assert.deepEqual(outbox, {
-    external_id: 'rjcloud:issue:9001',
-    action: 'close',
-    status: 'pending',
+    .prepare(
+      `SELECT external_id, action, status, resolution_json
+       FROM feishu_outbox WHERE work_item_id = ?`,
+    )
+    .get(feishuDefect.id) as
+    | {
+        external_id: string
+        action: string
+        status: string
+        resolution_json: string
+      }
+    | undefined
+  assert.equal(outbox?.external_id, 'rjcloud:issue:9001')
+  assert.equal(outbox?.action, 'close')
+  assert.equal(outbox?.status, 'pending')
+  assert.deepEqual(JSON.parse(outbox?.resolution_json ?? '{}'), {
+    legacyBug: false,
+    introduced: false,
+    solution: '修复缺陷逻辑',
+    rootCause: '边界条件未处理',
+    impact: '影响相关配置页面',
   })
 })
 

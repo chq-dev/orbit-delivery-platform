@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { test } from 'node:test'
-import { FeishuProjectClient } from '../services/feishuClient.js'
+import {
+  buildFeishuResolutionFields,
+  FeishuProjectClient,
+} from '../services/feishuClient.js'
 
 async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
@@ -48,7 +51,33 @@ test('飞书项目客户端完成鉴权、同步、字段映射和关闭流转',
       return
     }
     if (request.url === '/open_api/rjcloud/work_item/issue/meta') {
-      json(response, { data: { fields: [] } })
+      json(response, {
+        data: {
+          fields: [
+            {
+              field_key: 'field_880d7e',
+              field_name: '是否遗留BUG',
+              field_type: 'select',
+              option: [
+                { option_id: 'legacy-yes', option_name: '是' },
+                { option_id: 'legacy-no', option_name: '否' },
+              ],
+            },
+            {
+              field_key: 'field_e34974',
+              field_name: '是否修订引入',
+              field_type: 'select',
+              option: [
+                { option_id: 'introduced-yes', option_name: '是' },
+                { option_id: 'introduced-no', option_name: '否' },
+              ],
+            },
+            { field_key: 'field_953b68', field_name: '解决方案', field_type: 'multi-text' },
+            { field_key: 'field_462c75', field_name: '根因分析', field_type: 'multi-text' },
+            { field_key: 'field_b70e69', field_name: '影响面分析', field_type: 'multi-text' },
+          ],
+        },
+      })
       return
     }
     if (request.url === '/open_api/rjcloud/work_item/filter') {
@@ -97,7 +126,19 @@ test('飞书项目客户端完成鉴权、同步、字段映射和关闭流转',
       return
     }
     if (request.url === '/open_api/rjcloud/workflow/issue/201/node/state_change') {
-      assert.deepEqual(body, { transition_id: 123456 })
+      assert.equal(body.transition_id, 123456)
+      if (Array.isArray(body.fields)) {
+        assert.deepEqual(body.fields, [
+          { field_key: 'field_880d7e', field_value: { label: '否', value: 'legacy-no' } },
+          {
+            field_key: 'field_e34974',
+            field_value: { label: '是', value: 'introduced-yes' },
+          },
+          { field_key: 'field_953b68', field_value: '修复边界判断' },
+          { field_key: 'field_462c75', field_value: '空值未校验' },
+          { field_key: 'field_b70e69', field_value: '影响配置页面提交' },
+        ])
+      }
       json(response, { data: {} })
       return
     }
@@ -161,13 +202,23 @@ test('飞书项目客户端完成鉴权、同步、字段映射和关闭流转',
 
     await client.closeWorkItem('rjcloud', 'issue', '201', '123456')
     await client.closeWorkItem('rjcloud', 'issue', '201')
+    const metadata = await client.getWorkItemFieldMetadata('issue')
+    const resolutionFields = buildFeishuResolutionFields(metadata, {
+      legacyBug: false,
+      introduced: true,
+      solution: '修复边界判断',
+      rootCause: '空值未校验',
+      impact: '影响配置页面提交',
+    })
+    assert.equal(resolutionFields.length, 5)
+    await client.closeWorkItem('rjcloud', 'issue', '201', '123456', resolutionFields)
     assert.equal(
       calls.filter((call) => call.path.endsWith('/workflow/query')).length,
       1,
     )
     assert.equal(
       calls.filter((call) => call.path.endsWith('/node/state_change')).length,
-      2,
+      3,
     )
 
     const authorizedCalls = calls.filter((call) => !call.path.endsWith('/plugin_token'))

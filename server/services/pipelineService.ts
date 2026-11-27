@@ -15,6 +15,7 @@ import type {
 } from '../domain/types.js'
 import { booleanValue, optionalText, requiredText } from '../domain/validation.js'
 import { enqueueFeishuCloseOutbox } from './feishuIntegrationService.js'
+import { assertDefectResolutionReady } from './workItemService.js'
 import {
   commitLocalChanges,
   inspectLocalRepository,
@@ -219,6 +220,9 @@ export function startPipeline(db: AppDatabase, rawInput: StartPipelineInput): Pi
       .get(workItemId) as WorkItemRow | undefined
     if (!workItem) throw notFound('工作项')
     if (workItem.status === '已关闭') throw conflict('已关闭的工作项不能发起交付')
+    if (workItem.type === 'defect' && autoClose) {
+      assertDefectResolutionReady(db, workItemId, workItem.owner_user_id)
+    }
 
     const active = db
       .prepare("SELECT id FROM pipelines WHERE work_item_id = ? AND status IN ('queued', 'running')")

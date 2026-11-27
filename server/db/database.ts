@@ -53,6 +53,8 @@ export function createDatabase(options: DatabaseOptions): AppDatabase {
         ensureColumn(db, 'work_items', 'design_reference', 'TEXT')
         ensureColumn(db, 'work_items', 'requirement_breakdown', 'TEXT')
         ensureColumn(db, 'work_items', 'defect_note', 'TEXT')
+        ensureColumn(db, 'work_items', 'delivery_resolution', 'TEXT')
+        ensureColumn(db, 'feishu_outbox', 'resolution_json', 'TEXT')
         ensureColumn(db, 'feishu_agent_state', 'client_name', "TEXT NOT NULL DEFAULT ''")
         ensureColumn(db, 'feishu_agent_state', 'machine_name', "TEXT NOT NULL DEFAULT ''")
         ensureColumn(db, 'feishu_agent_state', 'owner_user_id', "TEXT NOT NULL DEFAULT ''")
@@ -191,6 +193,7 @@ const ownershipTableDefinitions: Record<
       design_reference TEXT,
       requirement_breakdown TEXT,
       defect_note TEXT,
+      delivery_resolution TEXT,
       archived_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,

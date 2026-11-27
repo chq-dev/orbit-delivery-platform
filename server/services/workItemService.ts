@@ -4,13 +4,17 @@ import { nextSequence } from '../db/sequences.js'
 import { conflict, notFound, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
 import type {
+  DefectResolution,
   Priority,
   WorkItem,
   WorkItemStatus,
   WorkItemType,
 } from '../domain/types.js'
 import { optionalText, oneOf, requiredText } from '../domain/validation.js'
-import { requirementDeliveryContextIssue } from '../../src/deliveryContext.js'
+import {
+  defectResolutionIssue,
+  requirementDeliveryContextIssue,
+} from '../../src/deliveryContext.js'
 
 const workItemTypes = ['requirement', 'defect'] as const
 const priorities = ['紧急', '高', '中', '低'] as const
@@ -32,6 +36,7 @@ interface WorkItemRow {
   design_reference: string | null
   requirement_breakdown: string | null
   defect_note: string | null
+  delivery_resolution: string | null
   requirement_screenshot_count: number
   created_at: string
   updated_at: string
@@ -90,6 +95,53 @@ function externalIdentity(externalId: string): string {
   return parts.length >= 2 ? parts.slice(-2).join(':') : externalId
 }
 
+function parseDefectResolution(value: string | null): DefectResolution | undefined {
+  if (!value) return undefined
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const record = parsed as Record<string, unknown>
+    const resolution: DefectResolution = {}
+    if (typeof record.legacyBug === 'boolean') resolution.legacyBug = record.legacyBug
+    if (typeof record.introduced === 'boolean') resolution.introduced = record.introduced
+    if (typeof record.solution === 'string') resolution.solution = record.solution
+    if (typeof record.rootCause === 'string') resolution.rootCause = record.rootCause
+    if (typeof record.impact === 'string') resolution.impact = record.impact
+    return Object.keys(resolution).length > 0 ? resolution : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeDefectResolution(value: unknown): DefectResolution | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return undefined
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw unprocessable('飞书缺陷解决信息格式不正确')
+  }
+  const record = value as Record<string, unknown>
+  const resolution: DefectResolution = {}
+  if (record.legacyBug !== undefined) {
+    if (typeof record.legacyBug !== 'boolean') {
+      throw unprocessable('是否遗留BUG必须是布尔值')
+    }
+    resolution.legacyBug = record.legacyBug
+  }
+  if (record.introduced !== undefined) {
+    if (typeof record.introduced !== 'boolean') {
+      throw unprocessable('是否修订引入必须是布尔值')
+    }
+    resolution.introduced = record.introduced
+  }
+  const solution = optionalText(record.solution, '解决方案', 10_000)
+  const rootCause = optionalText(record.rootCause, '根因分析', 10_000)
+  const impact = optionalText(record.impact, '影响面分析', 10_000)
+  if (solution) resolution.solution = solution
+  if (rootCause) resolution.rootCause = rootCause
+  if (impact) resolution.impact = impact
+  return Object.keys(resolution).length > 0 ? resolution : undefined
+}
+
 function rowToWorkItem(row: WorkItemRow): WorkItem {
   return {
     id: row.id,
@@ -110,6 +162,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
     designReference: row.design_reference ?? undefined,
     requirementBreakdown: row.requirement_breakdown || undefined,
     defectNote: row.defect_note || undefined,
+    defectResolution: parseDefectResolution(row.delivery_resolution),
     requirementScreenshotCount: Number(row.requirement_screenshot_count ?? 0),
   }
 }
@@ -117,7 +170,7 @@ function rowToWorkItem(row: WorkItemRow): WorkItem {
 function selectSql(): string {
   return `SELECT id, type, title, description, priority, status, repo_id, branch, owner,
                  source, external_id, feishu_status, project_line, design_reference,
-                 requirement_breakdown, defect_note,
+                 requirement_breakdown, defect_note, delivery_resolution,
                  (SELECT COUNT(*) FROM work_item_attachments
                   WHERE work_item_attachments.work_item_id = work_items.id)
                    AS requirement_screenshot_count,
@@ -139,7 +192,7 @@ export function listWorkItemSummaries(db: AppDatabase, ownerUserId?: string): Wo
   const query =
       `SELECT id, type, title, '' AS description, priority, status, repo_id, branch, owner,
               source, external_id, feishu_status, project_line, design_reference,
-              '' AS requirement_breakdown, defect_note,
+              '' AS requirement_breakdown, defect_note, delivery_resolution,
               (SELECT COUNT(*) FROM work_item_attachments
                WHERE work_item_attachments.work_item_id = work_items.id)
                 AS requirement_screenshot_count,
@@ -168,6 +221,7 @@ export interface WorkItemDeliveryContextInput {
   requirementBreakdown?: unknown
   designReference?: unknown
   defectNote?: unknown
+  defectResolution?: unknown
 }
 
 export interface WorkItemDeliveryContext {
@@ -175,6 +229,8 @@ export interface WorkItemDeliveryContext {
   requirementBreakdown?: string
   designReference?: string
   defectNote?: string
+  defectResolution?: DefectResolution
+  feishuWriteback?: 'direct' | 'cli'
 }
 
 export function getWorkItemDeliveryContext(
@@ -183,11 +239,23 @@ export function getWorkItemDeliveryContext(
   ownerUserId?: string,
 ): WorkItemDeliveryContext {
   const workItem = getWorkItem(db, id, ownerUserId)
+  const owner = db
+    .prepare('SELECT owner_user_id FROM work_items WHERE id = ?')
+    .get(id) as { owner_user_id: string } | undefined
+  const hasDirectIntegration = workItem.source === 'feishu' && Boolean(
+    db
+      .prepare('SELECT 1 FROM feishu_integrations WHERE owner_user_id = ? LIMIT 1')
+      .get(owner?.owner_user_id ?? '') as unknown,
+  )
   return {
     workItem,
     requirementBreakdown: workItem.requirementBreakdown,
     designReference: workItem.designReference,
     defectNote: workItem.defectNote,
+    defectResolution: workItem.defectResolution,
+    feishuWriteback: workItem.source === 'feishu'
+      ? hasDirectIntegration ? 'direct' : 'cli'
+      : undefined,
   }
 }
 
@@ -211,6 +279,10 @@ export function saveWorkItemDeliveryContext(
     rawInput.defectNote === undefined
       ? current.defectNote
       : optionalText(rawInput.defectNote, '缺陷说明', 20_000)
+  const defectResolution =
+    rawInput.defectResolution === undefined
+      ? current.defectResolution
+      : normalizeDefectResolution(rawInput.defectResolution)
 
   if (workItem.type === 'requirement') {
     const issue = requirementDeliveryContextIssue({
@@ -224,9 +296,17 @@ export function saveWorkItemDeliveryContext(
   db.transaction(() => {
     db.prepare(
       `UPDATE work_items
-       SET requirement_breakdown = ?, design_reference = ?, defect_note = ?, updated_at = ?
+       SET requirement_breakdown = ?, design_reference = ?, defect_note = ?,
+           delivery_resolution = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(requirementBreakdown ?? null, designReference ?? null, defectNote ?? null, now, id)
+    ).run(
+      requirementBreakdown ?? null,
+      designReference ?? null,
+      defectNote ?? null,
+      defectResolution ? JSON.stringify(defectResolution) : null,
+      now,
+      id,
+    )
   })()
 
   return getWorkItemDeliveryContext(db, id, ownerUserId)
@@ -243,6 +323,17 @@ export function assertRequirementDeliveryContextReady(
     requirementBreakdown: workItem.requirementBreakdown,
     designReference: workItem.designReference,
   })
+  if (issue) throw unprocessable(issue)
+}
+
+export function assertDefectResolutionReady(
+  db: AppDatabase,
+  id: string,
+  ownerUserId?: string,
+): void {
+  const workItem = getWorkItem(db, id, ownerUserId)
+  if (workItem.type !== 'defect' || workItem.source !== 'feishu') return
+  const issue = defectResolutionIssue(workItem.defectResolution)
   if (issue) throw unprocessable(issue)
 }
 

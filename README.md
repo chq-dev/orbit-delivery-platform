@@ -505,8 +505,24 @@ FEISHU_DEFAULT_REPO_ID=repo-1
 3. 在「账号中心 → 飞书项目绑定」粘贴访问 Token，填写项目标识、需求类型 Key、缺陷类型 Key 和默认仓库。项目标识可填空间 URL 中的 `simple_name`，也可双击空间名称复制 `project_key`；标准需求和缺陷类型通常为 `story`、`issue`，自定义类型可通过 `GET /open_api/:project_key/work_item/all-types` 查询。
 4. 保存时会直接使用该 Token 调用 `GET /open_api/projects/detail` 和两个工作项类型的 `meta` 接口校验权限，不再调用 Plugin Token 交换接口。
 5. 绑定成功后点击“同步工作项”，需求/缺陷会写入本地收件箱并直接更新「需求与缺陷」列表。
-6. 如需自动关闭飞书缺陷，请配置关闭流转 ID；可调用 `POST /open_api/:project_key/work_item/:work_item_type_key/:work_item_id/workflow/query`，从返回的 `connections.transition_id` 中获取目标关闭状态的流转 ID。
+6. 关闭流转 ID 为可选项；未配置时平台会从工作流中自动识别“已解决”状态。需要固定到指定流转时，可调用 `POST /open_api/:project_key/work_item/:work_item_type_key/:work_item_id/workflow/query`，从返回的 `connections.transition_id` 中获取目标流转 ID。
 7. 如需事件推送，在插件构成 → 监听事件中配置回调地址 `/api/integrations/feishu/events` 和回调 Token；生产环境必须是公网 HTTPS。
+
+缺陷交付时勾选“自动关闭缺陷”后，平台会要求填写飞书解决表单：是否遗留BUG、是否修订引入、解决方案、根因分析和影响面分析。本仓库对应的 `rjcloud/issue` 字段为 `field_880d7e`、`field_e34974`、`field_953b68`、`field_462c75`、`field_b70e69`。
+
+- **后端直连模式**：服务端读取字段元数据解析“是/否”选项 ID，在状态流转请求 `POST /open_api/:project_key/workflow/:work_item_type_key/:work_item_id/node/state_change` 的 `fields` 中一次提交五项内容，并流转到 `已解决`。
+- **Meegle CLI 外部授权模式**：只有执行交付的本机持有飞书登录态，因此在平台回写成功前，由本机交付程序调用 `meegle workflow transition-state --params '{"fields":[...]}'` 写入五项内容并流转到 `已解决`。服务器临时执行模式无法使用本机登录态，页面会要求改用当前 Mac 执行或取消自动关闭。
+
+已交付但尚未回写飞书的历史缺陷，可在持有 Meegle 登录态的机器上执行一次性回填：
+
+```bash
+npm run feishu:resolve -- \
+  --external-id rjcloud:issue:7184042791 \
+  --legacy 否 --introduced 否 \
+  --solution "修复问题日志列表缺少根因列" \
+  --root-cause "设备健康度维度未配置根因列" \
+  --impact "影响 MACC 鹰眼设备健康度问题日志列表"
+```
 
 抓包 Token 会过期，通常有效期约 2 小时；长期部署建议改用 `FEISHU_PLUGIN_ID`、`FEISHU_PLUGIN_SECRET`、`FEISHU_USER_KEY` 或页面中的 Plugin 凭据，服务会自动换取并缓存访问 Token。浏览器 Cookie、`goapi` 的 `x-meego-csrf-token` 不能代替 `X-Plugin-Token`；如果 Network 中不存在 `/open_api/` 请求，则当前页面没有可复用的开放接口 Token。Token、Plugin Secret（兼容旧绑定）和回调 Token 均通过 `CredentialVault` 使用 AES-256-GCM 加密保存。
 

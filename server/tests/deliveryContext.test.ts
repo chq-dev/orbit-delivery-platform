@@ -141,12 +141,32 @@ test('缺陷不要求需求拆解、设计稿或截图', () => {
 
     const saved = saveWorkItemDeliveryContext(db, defect.id, {
       defectNote: '复现步骤：AP 漫游后终端无法续租；期望：20 秒内恢复地址。',
+      defectResolution: {
+        legacyBug: false,
+        introduced: true,
+        solution: '修复漫游状态同步',
+        rootCause: '状态机未处理断线重连',
+        impact: '影响 AP 漫游和 DHCP 续租',
+      },
     })
     assert.equal(saved.defectNote, '复现步骤：AP 漫游后终端无法续租；期望：20 秒内恢复地址。')
     assert.equal(saved.workItem.defectNote, saved.defectNote)
     assert.equal(
       listWorkItemSummaries(db).find((item) => item.id === defect.id)?.defectNote,
       saved.defectNote,
+    )
+    assert.deepEqual(saved.defectResolution, {
+      legacyBug: false,
+      introduced: true,
+      solution: '修复漫游状态同步',
+      rootCause: '状态机未处理断线重连',
+      impact: '影响 AP 漫游和 DHCP 续租',
+    })
+    assert.deepEqual(saved.workItem.defectResolution, saved.defectResolution)
+    assert.equal(
+      listWorkItemSummaries(db).find((item) => item.id === defect.id)?.defectResolution
+        ?.solution,
+      '修复漫游状态同步',
     )
   } finally {
     db.close()

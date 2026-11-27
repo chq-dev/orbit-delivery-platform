@@ -359,7 +359,7 @@ export function FeishuIntegrationCard() {
                 placeholder="飞书同步"
               />
             </Field>
-            <Field label="关闭流转 ID" hint="从工作流详情接口的 connections.transition_id 获取">
+            <Field label="关闭流转 ID" hint="可选；留空时自动识别“已解决”状态，也可从工作流详情 connections.transition_id 固定">
               <input
                 value={form.closeTransitionId}
                 onChange={(event) => update('closeTransitionId', event.target.value)}

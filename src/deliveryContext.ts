@@ -34,6 +34,16 @@ export interface RequirementDeliveryContextLike {
   screenshotCount?: number
 }
 
+export interface DefectResolutionLike {
+  legacyBug?: boolean
+  introduced?: boolean
+  solution?: string
+  rootCause?: string
+  impact?: string
+}
+
+export const DEFECT_RESOLUTION_TEXT_MAX_LENGTH = 10_000
+
 export function isMeaningfulRequirementBreakdown(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length >= REQUIREMENT_BREAKDOWN_MIN_LENGTH
 }
@@ -53,4 +63,19 @@ export function requirementDeliveryContextIssue(
 ): string | undefined {
   if (hasRequirementDeliveryContext(context)) return undefined
   return `需求交付前必须提供需求拆解（至少 ${REQUIREMENT_BREAKDOWN_MIN_LENGTH} 字）、设计稿链接/本地路径，或至少一张设计截图`
+}
+
+export function defectResolutionIssue(
+  resolution: DefectResolutionLike | undefined,
+): string | undefined {
+  if (!resolution) return '关闭飞书缺陷前必须填写是否遗留、是否修订引入、解决方案、根因分析和影响面'
+  if (typeof resolution.legacyBug !== 'boolean') return '关闭飞书缺陷前必须选择是否遗留BUG'
+  if (typeof resolution.introduced !== 'boolean') return '关闭飞书缺陷前必须选择是否修订引入'
+  const missing = [
+    ['解决方案', resolution.solution],
+    ['根因分析', resolution.rootCause],
+    ['影响面分析', resolution.impact],
+  ].find(([, value]) => typeof value !== 'string' || value.trim().length === 0)
+  if (missing) return `关闭飞书缺陷前必须填写${missing[0]}`
+  return undefined
 }

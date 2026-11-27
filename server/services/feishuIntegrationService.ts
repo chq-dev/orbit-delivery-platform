@@ -4,11 +4,16 @@ import { config } from '../config.js'
 import { defaultOwnerUserId } from '../db/ownership.js'
 import { AppError, errorMessage, unprocessable } from '../domain/errors.js'
 import { formatDisplayTime, nowIso } from '../domain/time.js'
-import type { WorkItemType } from '../domain/types.js'
+import type { DefectResolution, WorkItemType } from '../domain/types.js'
 import { optionalText, requiredText } from '../domain/validation.js'
 import type { CredentialVault } from '../security/vault.js'
+import { defectResolutionIssue } from '../../src/deliveryContext.js'
 import { getExternalFeishuStatus } from './feishuIngestService.js'
-import { FeishuProjectClient, FeishuProjectError } from './feishuClient.js'
+import {
+  buildFeishuResolutionFields,
+  FeishuProjectClient,
+  FeishuProjectError,
+} from './feishuClient.js'
 import {
   reconcileFeishuWorkItems,
   upsertFeishuWorkItems,
@@ -109,6 +114,7 @@ interface OutboxRow {
   action: 'close'
   status: 'pending' | 'processing' | 'sent' | 'failed'
   attempts: number
+  resolution_json: string | null
 }
 
 function integrationSelect(): string {
@@ -617,16 +623,32 @@ export function disconnectFeishu(
 
 export function enqueueFeishuCloseOutbox(db: AppDatabase, workItemId: string): void {
   const item = db
-    .prepare('SELECT type, source, external_id, owner_user_id FROM work_items WHERE id = ?')
+    .prepare(
+      `SELECT type, source, external_id, owner_user_id, delivery_resolution
+       FROM work_items WHERE id = ?`,
+    )
     .get(workItemId) as
     | {
         type: WorkItemType
-        source: 'local' | 'feishu'
+        source: 'local' | 'feishu' | 'ruijie'
         external_id: string | null
         owner_user_id: string
+        delivery_resolution: string | null
       }
     | undefined
   if (!item || item.type !== 'defect' || item.source !== 'feishu' || !item.external_id) return
+
+  let resolution: DefectResolution | undefined
+  try {
+    const parsed = item.delivery_resolution ? JSON.parse(item.delivery_resolution) : undefined
+    resolution = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as DefectResolution
+      : undefined
+  } catch {
+    resolution = undefined
+  }
+  const issue = defectResolutionIssue(resolution)
+  if (issue) throw unprocessable(issue)
 
   const integration = db
     .prepare(
@@ -641,16 +663,26 @@ export function enqueueFeishuCloseOutbox(db: AppDatabase, workItemId: string): v
   db.prepare(
     `INSERT INTO feishu_outbox
       (id, integration_id, work_item_id, external_id, action, status, attempts,
-       next_attempt_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'close', 'pending', 0, ?, ?, ?)
+       resolution_json, next_attempt_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'close', 'pending', 0, ?, ?, ?, ?)
      ON CONFLICT(work_item_id, action) DO UPDATE SET
        external_id = excluded.external_id,
        status = 'pending',
        attempts = 0,
+       resolution_json = excluded.resolution_json,
        next_attempt_at = excluded.next_attempt_at,
        last_error = NULL,
        updated_at = excluded.updated_at`,
-  ).run(randomUUID(), integration.id, workItemId, item.external_id, now, now, now)
+  ).run(
+    randomUUID(),
+    integration.id,
+    workItemId,
+    item.external_id,
+    resolution ? JSON.stringify(resolution) : null,
+    now,
+    now,
+    now,
+  )
 }
 
 function splitExternalId(
@@ -680,7 +712,8 @@ export async function processFeishuOutbox(
     const now = nowIso()
     const rows = db
       .prepare(
-        `SELECT id, integration_id, work_item_id, external_id, action, status, attempts
+        `SELECT id, integration_id, work_item_id, external_id, action, status, attempts,
+                resolution_json
          FROM feishu_outbox
          WHERE status IN ('pending', 'failed') AND next_attempt_at <= ? AND attempts < ?
          ORDER BY created_at ASC LIMIT ?`,
@@ -703,11 +736,27 @@ export async function processFeishuOutbox(
       const target = splitExternalId(row.external_id, integration.project_key, fallbackTypeKey)
 
       try {
-        await buildClient(db, integration, vault).closeWorkItem(
+        const resolution = row.resolution_json
+          ? JSON.parse(row.resolution_json) as DefectResolution
+          : undefined
+        const resolutionIssue = defectResolutionIssue(resolution)
+        if (resolutionIssue) throw unprocessable(resolutionIssue)
+        const client = buildClient(db, integration, vault)
+        const metadata = await client.getWorkItemFieldMetadata(target.typeKey)
+        const fields = buildFeishuResolutionFields(metadata, resolution!)
+        if (fields.length < 5) {
+          throw new AppError(
+            422,
+            'FEISHU_RESOLUTION_FIELDS_MISSING',
+            '飞书缺陷字段配置不完整，未能匹配是否遗留、是否修订引入、解决方案、根因分析和影响面',
+          )
+        }
+        await client.closeWorkItem(
           target.projectKey,
           target.typeKey,
           target.workItemId,
           integration.close_transition_id ?? undefined,
+          fields,
         )
         db.prepare(
           `UPDATE feishu_outbox SET status = 'sent', last_error = NULL, updated_at = ?

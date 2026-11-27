@@ -314,7 +314,14 @@ test('版本 26 数据库升级后保留旧工作项并允许写入锐捷来源'
         updated_at TEXT NOT NULL,
         UNIQUE (owner_user_id, source, external_id)
       );
-      INSERT INTO work_items_ruijie_old SELECT * FROM work_items;
+      INSERT INTO work_items_ruijie_old
+        (id, owner_user_id, type, title, description, priority, status, repo_id, branch,
+         owner, source, external_id, feishu_status, project_line, design_reference,
+         requirement_breakdown, defect_note, archived_at, created_at, updated_at)
+      SELECT id, owner_user_id, type, title, description, priority, status, repo_id, branch,
+             owner, source, external_id, feishu_status, project_line, design_reference,
+             requirement_breakdown, defect_note, archived_at, created_at, updated_at
+      FROM work_items;
       DROP TABLE work_items;
       ALTER TABLE work_items_ruijie_old RENAME TO work_items;
       PRAGMA user_version = 26;

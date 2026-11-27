@@ -22,6 +22,7 @@
     "sync:feishu:snapshot": "tsx server/cli/feishuSync.ts --snapshot-only",
     "sync:feishu:snapshot:watch": "tsx server/cli/feishuSync.ts --snapshot-only --watch",
     "snapshot:from-db": "tsx server/cli/exportFeishuSnapshot.ts",
+    "feishu:resolve": "tsx server/cli/resolveFeishuDefect.ts",
     "tls:generate": "bash scripts/generate-dev-cert.sh",
     "build:agent": "esbuild server/cli/feishuClientAgent.ts server/cli/feishuSync.ts server/cli/localDelivery.ts --bundle --platform=node --format=esm --target=node18 --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --out-extension:.js=.mjs --outdir=public/downloads && esbuild server/mcp/meegleServer.ts --bundle --platform=node --format=esm --target=node18 --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=public/downloads/meegleServer.mjs && cp node_modules/wasm-webp/dist/esm/webp-wasm.wasm public/downloads/webp-wasm.wasm",
     "typecheck:server": "tsc -p tsconfig.server.json",

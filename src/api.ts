@@ -2,6 +2,7 @@ import type {
   Account,
   BuildJobInfo,
   BuildTriggerResult,
+  DefectResolution,
   FeishuInboxItem,
   FeishuAgentPairingSummary,
   FeishuIntegrationStatus,
@@ -98,6 +99,7 @@ export interface WorkItemDeliveryContextInput {
   requirementBreakdown?: string
   designReference?: string
   defectNote?: string
+  defectResolution?: DefectResolution
 }
 
 export interface WorkItemDeliveryContext {
@@ -105,6 +107,8 @@ export interface WorkItemDeliveryContext {
   requirementBreakdown?: string
   designReference?: string
   defectNote?: string
+  defectResolution?: DefectResolution
+  feishuWriteback?: 'direct' | 'cli'
 }
 
 export interface ImportResult<T> {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { Priority, WorkItemType } from '../domain/types.js'
+import type { DefectResolution, Priority, WorkItemType } from '../domain/types.js'
 import { nowIso } from '../domain/time.js'
 
 const DEFAULT_PAGE_SIZE = 200
@@ -32,6 +32,19 @@ export interface FeishuInboxRecord {
   updatedAt: string
 }
 
+export interface FeishuWorkItemField {
+  field_key: string
+  field_value: unknown
+}
+
+const RESOLUTION_FIELD_NAMES = {
+  legacyBug: '是否遗留BUG',
+  introduced: '是否修订引入',
+  solution: '解决方案',
+  rootCause: '根因分析',
+  impact: '影响面分析',
+} as const
+
 export interface FeishuConnectionTest {
   projectKey: string
   projectName?: string
@@ -53,6 +66,56 @@ export class FeishuProjectError extends Error {
   }
 }
 
+export function buildFeishuResolutionFields(
+  metadata: unknown[],
+  resolution: DefectResolution,
+): FeishuWorkItemField[] {
+  const fields = metadata
+    .filter(isRecord)
+    .map((field) => ({
+      key: scalarText(field.field_key ?? field.key),
+      name: scalarText(field.field_name ?? field.name),
+      options: Array.isArray(field.option) ? field.option.filter(isRecord) : [],
+    }))
+    .filter((field) => field.key && field.name)
+
+  const findField = (key: string, name: string) =>
+    fields.find((field) => field.key === key) ?? fields.find((field) => field.name === name)
+  const optionValue = (
+    field: ReturnType<typeof findField>,
+    name: string,
+  ): unknown => {
+    if (!field) return undefined
+    const option = field.options.find((item) => scalarText(item.option_name ?? item.label) === name)
+    const value = option ? scalarText(option.option_id ?? option.value) : ''
+    return value ? { label: name, value } : undefined
+  }
+
+  const result: FeishuWorkItemField[] = []
+  const add = (key: string, name: string, value: unknown) => {
+    const field = findField(key, name)
+    if (!field || value === undefined) return
+    result.push({ field_key: field.key, field_value: value })
+  }
+
+  const legacy = findField('field_880d7e', RESOLUTION_FIELD_NAMES.legacyBug)
+  const introduced = findField('field_e34974', RESOLUTION_FIELD_NAMES.introduced)
+  add(
+    'field_880d7e',
+    RESOLUTION_FIELD_NAMES.legacyBug,
+    optionValue(legacy, resolution.legacyBug ? '是' : '否'),
+  )
+  add(
+    'field_e34974',
+    RESOLUTION_FIELD_NAMES.introduced,
+    optionValue(introduced, resolution.introduced ? '是' : '否'),
+  )
+  add('field_953b68', RESOLUTION_FIELD_NAMES.solution, resolution.solution?.trim())
+  add('field_462c75', RESOLUTION_FIELD_NAMES.rootCause, resolution.rootCause?.trim())
+  add('field_b70e69', RESOLUTION_FIELD_NAMES.impact, resolution.impact?.trim())
+  return result
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -66,7 +129,7 @@ function extractItems(payload: unknown): unknown[] {
   const data = unwrapData(payload)
   if (Array.isArray(data)) return data
   if (!isRecord(data)) return []
-  const keys = ['work_items', 'work_item_list', 'items', 'list', 'records', 'projects']
+  const keys = ['work_items', 'work_item_list', 'items', 'list', 'records', 'projects', 'fields']
   for (const key of keys) {
     const value = data[key]
     if (Array.isArray(value)) return value
@@ -520,6 +583,7 @@ export class FeishuProjectClient {
     typeKey: string,
     workItemId: string,
     closeTransitionId?: string,
+    fields?: FeishuWorkItemField[],
   ): Promise<void> {
     const resolvedTransitionId = closeTransitionId?.trim()
       ? closeTransitionId.trim()
@@ -532,9 +596,20 @@ export class FeishuProjectClient {
       `/open_api/${encodeURIComponent(projectKey)}/workflow/${encodeURIComponent(typeKey)}/${encodeURIComponent(workItemId)}/node/state_change`,
       {
         method: 'POST',
-        body: JSON.stringify({ transition_id: transitionId }),
+        body: JSON.stringify({
+          transition_id: transitionId,
+          ...(fields && fields.length > 0 ? { fields } : {}),
+        }),
       },
     )
+  }
+
+  async getWorkItemFieldMetadata(typeKey: string): Promise<unknown[]> {
+    const payload = await this.authorizedRequest(
+      `/open_api/${encodeURIComponent(this.config.projectKey)}/work_item/${encodeURIComponent(typeKey)}/meta`,
+      { method: 'GET' },
+    )
+    return extractItems(payload)
   }
 
   private async resolveCloseTransitionId(
