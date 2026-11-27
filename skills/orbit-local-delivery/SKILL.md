@@ -125,7 +125,14 @@ local defect as closed and reuses the platform's Feishu close outbox.
   scripts or unrelated files. Tests may be executed as verification evidence but
   must remain uncommitted. Put transient harness assets under
   `delivery-artifacts/<work-item>/` or the system temp directory instead of the
-  source tree. Build,
+  source tree. For a Feishu defect with auto-close enabled, validate
+  `delivery-artifacts/<work-item>/feishu-resolution.md` before commit/push and
+  run a dedicated Codex generation pass when it is missing or incomplete. A
+  resolution failure must stop delivery before the commit is pushed. After a
+  successful or recorded-failed platform write-back, remove the current work
+  item's generated reports, screenshots, logs and `delivery-artifacts/<work-item>`
+  directory; keep them only when the platform itself could not record the outcome.
+  Build,
   device-upgrade and test stages stay `pending` unless `build-report.md`/`build.log`,
   `upgrade-report.md`/`upgrade.log`, and `test-report.md` actually exist.
 - The server rejects `POST /api/pipelines` and `/advance`; only

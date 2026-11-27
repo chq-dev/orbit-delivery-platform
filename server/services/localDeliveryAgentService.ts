@@ -455,7 +455,12 @@ const CODEX_PHASE_KEYS = new Set(['analysis', 'ldd', 'coding'])
 export function resolveLocalDeliveryFailureStep(
   message: string,
   runningStepKey?: string,
+  executorStage?: string,
 ): string {
+  if (executorStage === 'writeback') return 'writeback'
+  if (executorStage === 'push' || executorStage === 'commit') return 'commit'
+  if (executorStage === 'evidence') return 'evidence'
+  if (executorStage === 'connectivity') return 'connectivity'
   const failedKey = classifyLocalDeliveryFailure(message)
   if (CONNECTIVITY_FAILURE_KEYS.has(failedKey)) return 'connectivity'
   if (failedKey !== 'codex') return failedKey

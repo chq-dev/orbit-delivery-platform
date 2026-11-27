@@ -82,6 +82,35 @@ test('代理心跳保留截图接收能力，供页面提前校验', () => {
     maxTotalBytes: 5 * 1024 * 1024,
     requestBodyBytes: 11 * 1024 * 1024,
   })
+  assert.deepEqual(sanitized.deliveryCapabilities, {
+    defectResolutionArtifact: false,
+    failureStageFromExecutor: false,
+  })
+})
+
+test('自动关闭缺陷拒绝未上报解决信息生成能力的旧代理', () => {
+  const db = createDatabase({ filename: ':memory:' })
+  try {
+    recordFeishuAgentHeartbeat(db, testClient)
+    assert.throws(
+      () =>
+        enqueueFeishuAgentCommand(db, 'delivery_start', {
+          workItemId: 'BUG-5749',
+          repoId: 'repo-1',
+          autoCommit: true,
+          pushAfterAcceptance: true,
+          runBuild: false,
+          autoClose: true,
+          temporaryCheckout: false,
+        }, TEST_CLIENT_ID),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 422 &&
+        /代理版本过旧/.test(error.message),
+    )
+  } finally {
+    db.close()
+  }
 })
 
 test('代理心跳只保存脱敏状态并据此判断在线', () => {

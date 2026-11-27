@@ -49,7 +49,7 @@ import { loadDeliveryFeishuContext } from '../services/deliveryFeishuContext.js'
 import { adaptCodexImages } from '../services/imageAdaptation.js'
 import { adaptCodexVideos } from '../services/videoAdaptation.js'
 import {
-  cleanupDeliveryArtifactDirectory,
+  cleanupDeliveryWorkspaceArtifacts,
   cleanupGeneratedDeliveryFiles,
   isolatePreexistingDeliveryChanges,
   restorePreexistingDeliveryChanges,
@@ -67,7 +67,10 @@ import {
   type DeliveryBuildOutcome,
 } from '../services/deliveryBuildService.js'
 import { resolveMeegleDefect } from '../services/meegleResolutionService.js'
-import { readDefectResolutionArtifact } from '../services/defectResolutionArtifact.js'
+import {
+  buildDefectResolutionPrompt,
+  readDefectResolutionArtifact,
+} from '../services/defectResolutionArtifact.js'
 import type { DefectResolution, Repository, WorkItem } from '../../src/types'
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -82,6 +85,10 @@ const codexTimeoutMs = positiveInteger(
 const commitTimeoutMs = positiveInteger(
   process.env.LOCAL_DELIVERY_COMMIT_TIMEOUT_MS,
   30 * 60_000,
+)
+const resolutionTimeoutMs = positiveInteger(
+  process.env.LOCAL_DELIVERY_RESOLUTION_TIMEOUT_MS,
+  10 * 60_000,
 )
 
 function writeDeliveryLog(
@@ -191,6 +198,8 @@ interface DeliveryAttemptContext {
   reports?: ReturnType<typeof deliveryReports>
   commit?: string
   stagedFileCount?: number
+  excludedFiles?: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles']
+  defectResolution?: DefectResolution
   failureRecorded?: boolean
   workspaceIsolation?: DeliveryWorktreeIsolation
 }
@@ -630,6 +639,105 @@ function commitDeliveredChanges(input: {
     )
   }
   return { head, excludedFiles: staged.excludedFiles }
+}
+
+function ensureDefectResolutionBeforeCommit(input: {
+  checkout: string
+  artifactDir: string
+  item: WorkItem
+  codexCommand: string
+}): DefectResolution {
+  const resolutionPath = join(input.artifactDir, 'feishu-resolution.md')
+  let previousError: string | undefined
+  try {
+    const existing = readDefectResolutionArtifact(resolutionPath)
+    if (existing) return existing
+  } catch (error) {
+    previousError = error instanceof Error ? error.message : String(error)
+    console.warn(`已有飞书缺陷解决信息不完整，将重新生成：${previousError}`)
+  }
+
+  const promptPath = join(input.artifactDir, 'codex-resolution-prompt.md')
+  const lastMessagePath = join(input.artifactDir, 'codex-resolution-last-message.md')
+  const logPath = join(input.artifactDir, 'codex-resolution.log')
+  const prompt = buildDefectResolutionPrompt({
+    checkout: input.checkout,
+    artifactDir: input.artifactDir,
+    workItem: input.item,
+  })
+  writeFileSync(promptPath, `${prompt}\n`, 'utf8')
+  console.log('正在生成并校验飞书缺陷解决信息，完成前不会提交或推送代码')
+  const result = spawnSync(
+    input.codexCommand,
+    buildCodexExecArgs({
+      checkout: input.checkout,
+      prompt,
+      lastMessagePath,
+      imagePaths: [],
+      mcpArgs: [],
+      sandbox: 'danger-full-access',
+    }),
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: resolutionTimeoutMs,
+      killSignal: 'SIGKILL',
+    },
+  )
+  writeDeliveryLog(logPath, result.stdout, result.stderr)
+  if (result.error) {
+    if ((result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+      throw new Error(
+        `生成飞书缺陷解决信息失败：超过 ${Math.round(resolutionTimeoutMs / 60_000)} 分钟未完成`,
+      )
+    }
+    throw result.error
+  }
+  if (result.status !== 0) {
+    const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim().slice(-4_000)
+    throw new Error(
+      `生成飞书缺陷解决信息失败：Codex 退出码 ${result.status ?? 1}${
+        detail ? `：${detail}` : ''
+      }`,
+    )
+  }
+
+  const resolution = readDefectResolutionArtifact(resolutionPath)
+  const issue = defectResolutionIssue(resolution)
+  if (issue) {
+    throw new Error(
+      `${issue}；Codex 未生成有效的 delivery-artifacts/${input.item.id}/feishu-resolution.md${
+        previousError ? `（原文件问题：${previousError}）` : ''
+      }`,
+    )
+  }
+  return resolution!
+}
+
+function cleanupAttemptArtifacts(attempt: DeliveryAttemptContext, label: string): void {
+  if (!attempt.artifactDir || !attempt.localPath) return
+  try {
+    const cleaned = cleanupDeliveryWorkspaceArtifacts(
+      attempt.localPath,
+      attempt.item.id,
+      attempt.excludedFiles ?? [],
+      attempt.workspaceIsolation?.preexistingFiles ?? [],
+    )
+    if (cleaned.cleanedFiles.length > 0 || cleaned.artifactDirectoryRemoved) {
+      const parts = [
+        cleaned.cleanedFiles.length > 0 ? `${cleaned.cleanedFiles.length} 个生成文件` : '',
+        cleaned.artifactDirectoryRemoved ? `delivery-artifacts/${attempt.item.id}` : '',
+      ].filter(Boolean)
+      console.log(`${label}，已清理 ${parts.join('、') || '交付临时文件'}`)
+    }
+  } catch (error) {
+    console.warn(
+      `LOCAL_DELIVERY_CLEANUP_WARNING: ${label}后清理失败：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+  }
 }
 
 function restoreDeliveryWorkspace(
@@ -1496,6 +1604,17 @@ async function main(): Promise<void> {
       )
     }
 
+    let defectResolution: DefectResolution | undefined
+    if (args.close && deliveryItem.type === 'defect' && deliveryItem.source === 'feishu') {
+      defectResolution = ensureDefectResolutionBeforeCommit({
+        checkout: checkout.checkout,
+        artifactDir,
+        item: deliveryItem,
+        codexCommand,
+      })
+      attempt.defectResolution = defectResolution
+    }
+
     let finalHead: string | undefined
     let excludedFiles: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles'] = []
     if (args.noCommit) {
@@ -1516,6 +1635,7 @@ async function main(): Promise<void> {
       excludedFiles = committed.excludedFiles
       attempt.commit = finalHead
     }
+    attempt.excludedFiles = excludedFiles
     const stageResults = deliveryStageResults(
       evidence,
       !args.noCommit,
@@ -1609,13 +1729,6 @@ async function main(): Promise<void> {
     removeInterruptHandlers()
     const reports = deliveryReports(artifactDir)
     attempt.reports = reports
-    const defectResolution = deliveryItem.type === 'defect' && deliveryItem.source === 'feishu'
-      ? readDefectResolutionArtifact(join(artifactDir, 'feishu-resolution.md'))
-      : undefined
-    const resolutionIssue = defectResolutionIssue(defectResolution)
-    if (args.close && deliveryItem.type === 'defect' && deliveryItem.source === 'feishu' && resolutionIssue) {
-      throw new Error(`${resolutionIssue}；交付程序未能从 feishu-resolution.md 读取由 Codex 生成的结构化解决报告`)
-    }
 
     let platformPipeline: unknown = null
     let feishuResolution: Record<string, unknown> | undefined
@@ -1659,26 +1772,7 @@ async function main(): Promise<void> {
       throw new Error(`${completedWork}，但${error instanceof Error ? error.message : String(error)}`)
     }
 
-    if (attempt.workspaceIsolation) {
-      try {
-        const evidenceCleanup = cleanupGeneratedDeliveryFiles(
-          checkout.checkout,
-          excludedFiles,
-          attempt.workspaceIsolation.preexistingFiles,
-          { includeEvidenceFiles: true },
-        )
-        if (evidenceCleanup.length > 0) {
-          console.log(`平台回写完成，已清理本次交付生成的 LDD、测试和交付产物 ${evidenceCleanup.length} 个`)
-        }
-        if (cleanupDeliveryArtifactDirectory(checkout.checkout, item.id)) {
-          console.log(`已清理本次交付产物目录 delivery-artifacts/${item.id}`)
-        }
-      } catch (error) {
-        console.warn(
-          `LOCAL_DELIVERY_CLEANUP_WARNING: 清理交付产物失败：${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }
+    cleanupAttemptArtifacts(attempt, '平台回写完成')
 
     console.log(JSON.stringify({
       status: 'success',
@@ -1743,6 +1837,9 @@ async function main(): Promise<void> {
           recordError instanceof Error ? recordError.message : String(recordError)
         console.error(`LOCAL_DELIVERY_RECORD_ERROR: ${recordErrorMessage}`)
       }
+    }
+    if (attempt.failureRecorded) {
+      cleanupAttemptArtifacts(attempt, '失败流水线记录完成')
     }
     if (recordedPipelineId) {
       throw new Error(`${message}（平台已记录失败流水线 ${recordedPipelineId}）`)

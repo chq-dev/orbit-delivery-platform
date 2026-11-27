@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import {
   cleanupDeliveryArtifactDirectory,
+  cleanupDeliveryWorkspaceArtifacts,
   cleanupGeneratedDeliveryFiles,
   isolatePreexistingDeliveryChanges,
   restorePreexistingDeliveryChanges,
@@ -170,6 +171,61 @@ test('平台回写完成后只删除当前工作项的交付产物目录', () =>
       readFileSync(join(checkout, 'delivery-artifacts', 'BUG-2', 'report.md'), 'utf8'),
       '# keep\n',
     )
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('失败流水线记录完成后同样清理当前工作项的全部临时产物', () => {
+  const checkout = createCheckout()
+  try {
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'evidence'), { recursive: true })
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-2'), { recursive: true })
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'codex.log'), 'log\n')
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'feishu-resolution.md'), '# resolution\n')
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'evidence', 'shot.png'), 'png')
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-2', 'report.md'), '# keep\n')
+
+    const result = cleanupDeliveryWorkspaceArtifacts(checkout, 'BUG-1', [
+      { path: 'delivery-artifacts/BUG-1/codex.log', reason: '日志或临时文件' },
+      { path: 'delivery-artifacts/BUG-1/feishu-resolution.md', reason: '交付产物目录' },
+      { path: 'delivery-artifacts/BUG-1/evidence/shot.png', reason: '交付产物目录' },
+    ])
+
+    assert.equal(result.artifactDirectoryRemoved, true)
+    assert.deepEqual(result.cleanedFiles.sort(), [
+      'delivery-artifacts/BUG-1/codex.log',
+      'delivery-artifacts/BUG-1/evidence/shot.png',
+      'delivery-artifacts/BUG-1/feishu-resolution.md',
+    ])
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-1')), false)
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-2', 'report.md')), true)
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('清理失败交付产物时保留交付前已存在的同工作项文件', () => {
+  const checkout = createCheckout()
+  try {
+    mkdirSync(join(checkout, 'delivery-artifacts', 'BUG-1'), { recursive: true })
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'old.md'), '# user evidence\n')
+    writeFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'new.log'), 'generated log\n')
+
+    const result = cleanupDeliveryWorkspaceArtifacts(
+      checkout,
+      'BUG-1',
+      [{ path: 'delivery-artifacts/BUG-1/new.log', reason: '日志或临时文件' }],
+      ['delivery-artifacts/BUG-1/old.md'],
+    )
+
+    assert.equal(result.artifactDirectoryRemoved, false)
+    assert.deepEqual(result.cleanedFiles, ['delivery-artifacts/BUG-1/new.log'])
+    assert.equal(
+      readFileSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'old.md'), 'utf8'),
+      '# user evidence\n',
+    )
+    assert.equal(existsSync(join(checkout, 'delivery-artifacts', 'BUG-1', 'new.log')), false)
   } finally {
     rmSync(checkout, { recursive: true, force: true })
   }

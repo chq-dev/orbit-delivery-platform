@@ -128,6 +128,10 @@ export interface FeishuAgentHealth {
     maxTotalBytes: number
     requestBodyBytes: number
   }
+  deliveryCapabilities?: {
+    defectResolutionArtifact?: boolean
+    failureStageFromExecutor?: boolean
+  }
   delivery?: FeishuAgentDeliveryJob | null
 }
 
@@ -360,6 +364,9 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
   const deliveryScreenshots = isRecord(value.deliveryScreenshots)
     ? value.deliveryScreenshots
     : null
+  const deliveryCapabilities = isRecord(value.deliveryCapabilities)
+    ? value.deliveryCapabilities
+    : null
 
   return {
     ok: true,
@@ -420,6 +427,10 @@ export function sanitizeFeishuAgentHealth(value: unknown): FeishuAgentHealth {
           },
         }
       : {}),
+    deliveryCapabilities: {
+      defectResolutionArtifact: boolean(deliveryCapabilities?.defectResolutionArtifact),
+      failureStageFromExecutor: boolean(deliveryCapabilities?.failureStageFromExecutor),
+    },
     delivery: value.delivery === null ? null : sanitizeDeliveryJob(value.delivery),
   }
 }
@@ -628,6 +639,26 @@ function commandOwnerUserId(
   return fallback
 }
 
+function assertDefectResolutionCapability(
+  db: AppDatabase,
+  clientId: string,
+  ownerUserId: string,
+): void {
+  const row = db
+    .prepare(
+      'SELECT health_json FROM feishu_agent_state WHERE id = ? AND owner_user_id = ?',
+    )
+    .get(clientId, ownerUserId) as { health_json: string } | undefined
+  const health = row ? parseJson(row.health_json) : undefined
+  const capabilities = isRecord(health) && isRecord(health.deliveryCapabilities)
+    ? health.deliveryCapabilities
+    : undefined
+  if (capabilities?.defectResolutionArtifact === true) return
+  throw unprocessable(
+    '执行客户端代理版本过旧，无法保证自动关闭缺陷前生成解决信息；请重新安装 Orbit 本机代理后重试',
+  )
+}
+
 export function enqueueFeishuAgentCommand(
   db: AppDatabase,
   type: unknown,
@@ -669,6 +700,9 @@ export function enqueueFeishuAgentCommand(
     buildRequest?.accountId,
     requestedOwnerUserId ?? '',
   )
+  if (deliveryRequest?.autoClose) {
+    assertDefectResolutionCapability(db, clientId, ownerUserId)
+  }
   if (!isBuildCommand) {
     const existing = db
       .prepare(

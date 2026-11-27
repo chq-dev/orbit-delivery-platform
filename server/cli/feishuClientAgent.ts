@@ -774,6 +774,10 @@ async function currentHealth(): Promise<{
     maxTotalBytes: number
     requestBodyBytes: number
   }
+  deliveryCapabilities: {
+    defectResolutionArtifact: true
+    failureStageFromExecutor: true
+  }
   feishuMcp: FeishuMcpPublicStatus
   meegleMcp: MeegleMcpPublicStatus
   codex: {
@@ -790,7 +794,7 @@ async function currentHealth(): Promise<{
   const codexBinary = resolveCodexBinary()
   return {
     ok: true,
-    version: 9,
+    version: 10,
     config: {
       ...publicFeishuAgentConfig(config),
       ...(pendingPairing
@@ -809,6 +813,10 @@ async function currentHealth(): Promise<{
       maxScreenshotBytes: MAX_DELIVERY_SCREENSHOT_BYTES,
       maxTotalBytes: MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
       requestBodyBytes: DELIVERY_SCREENSHOT_REQUEST_MAX_BYTES,
+    },
+    deliveryCapabilities: {
+      defectResolutionArtifact: true,
+      failureStageFromExecutor: true,
     },
     feishuMcp,
     meegleMcp: meegleMcp.status,
@@ -1192,9 +1200,10 @@ async function recordFailedDeliveryFallback(
   config: FeishuAgentStoredConfig,
   request: LocalDeliveryAgentRequest,
   message: string,
+  executorStage?: LocalDeliveryExecutionStage,
 ): Promise<string> {
   const runningKey = job.steps.find((step) => step.status === 'running')?.key
-  const failedStepKey = resolveLocalDeliveryFailureStep(message, runningKey)
+  const failedStepKey = resolveLocalDeliveryFailureStep(message, runningKey, executorStage)
   const body = buildFailedDeliveryPipelinePayload({
     workItemId: request.workItemId,
     repoId: request.repoId,
@@ -1237,9 +1246,13 @@ const DELIVERY_STEP_ORDER = [
   'writeback',
 ]
 
-function markDeliveryFailure(job: LocalDeliveryJob, message: string): void {
+function markDeliveryFailure(
+  job: LocalDeliveryJob,
+  message: string,
+  executorStage?: LocalDeliveryExecutionStage,
+): void {
   const runningKey = job.steps.find((step) => step.status === 'running')?.key
-  const failedKey = resolveLocalDeliveryFailureStep(message, runningKey)
+  const failedKey = resolveLocalDeliveryFailureStep(message, runningKey, executorStage)
   const failedIndex = DELIVERY_STEP_ORDER.indexOf(failedKey)
   job.steps.forEach((step) => {
     const index = DELIVERY_STEP_ORDER.indexOf(step.key)
@@ -1439,6 +1452,7 @@ async function executeLocalDelivery(
   screenshotPaths: string[],
 ): Promise<void> {
   let temporaryCheckoutRoot = ''
+  let lastExecutorStage: LocalDeliveryExecutionStage | undefined
   try {
     job.steps = createLocalDeliveryAgentSteps()
     setStep(job, 'connectivity', 'running', '正在连接平台健康检查接口')
@@ -1552,6 +1566,7 @@ async function executeLocalDelivery(
             /LOCAL_DELIVERY_STAGE:(connectivity|codex|evidence|commit|push|writeback)/,
           )?.[1] as LocalDeliveryExecutionStage | undefined
           if (executorStage) {
+            lastExecutorStage = executorStage
             advanceDeliveryExecutionStage(job, executorStage)
           }
           if (executorStage === 'codex' && !stopPhaseTracker) {
@@ -1588,7 +1603,13 @@ async function executeLocalDelivery(
       let message = commandFailureMessage(result)
       if (!recordedFailurePipelineId(result)) {
         try {
-          const fallbackId = await recordFailedDeliveryFallback(job, config, request, message)
+          const fallbackId = await recordFailedDeliveryFallback(
+            job,
+            config,
+            request,
+            message,
+            lastExecutorStage,
+          )
           message = `${message}（本机代理已补录失败流水线 ${fallbackId}）`
         } catch (fallbackError) {
           message = `${message}\n本机代理补录失败流水线失败：${errorMessage(fallbackError)}`
@@ -1653,7 +1674,7 @@ async function executeLocalDelivery(
     if (temporaryCheckoutRoot) {
       message = message.split(temporaryCheckoutRoot).join('[Mac 临时工作区]')
     }
-    markDeliveryFailure(job, message)
+    markDeliveryFailure(job, message, lastExecutorStage)
     job.status = 'failed'
     job.error = message
   } finally {

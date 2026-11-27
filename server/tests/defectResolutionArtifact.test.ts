@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseDefectResolutionArtifact } from '../services/defectResolutionArtifact.js'
+import {
+  buildDefectResolutionPrompt,
+  parseDefectResolutionArtifact,
+} from '../services/defectResolutionArtifact.js'
 
 test('自动生成的飞书解决报告按章节解析五个字段', () => {
   assert.deepEqual(
@@ -51,4 +54,22 @@ test('缺少字段的自动解决报告会被拒绝', () => {
     () => parseDefectResolutionArtifact('## 解决方案\n仅有一段内容'),
     /是否遗留BUG/,
   )
+})
+
+test('解决信息生成提示强制在提交前写入五个真实字段', () => {
+  const prompt = buildDefectResolutionPrompt({
+    checkout: '/tmp/checkout',
+    artifactDir: '/tmp/checkout/delivery-artifacts/BUG-5749',
+    workItem: {
+      id: 'BUG-5749',
+      title: '选择接口时样式重叠',
+      description: '接口名称与 UP 标签重叠',
+    },
+  })
+  assert.match(prompt, /\/tmp\/checkout\/delivery-artifacts\/BUG-5749\/feishu-resolution\.md/)
+  for (const heading of ['是否遗留BUG', '是否修订引入', '解决方案', '根因分析', '影响面分析']) {
+    assert.match(prompt, new RegExp(`## ${heading}`))
+  }
+  assert.match(prompt, /不要执行 git add、git commit 或 git push/)
+  assert.match(prompt, /git diff HEAD/)
 })

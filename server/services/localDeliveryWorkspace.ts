@@ -271,3 +271,31 @@ export function cleanupDeliveryArtifactDirectory(checkout: string, workItemId: s
   }
   return true
 }
+
+export interface DeliveryWorkspaceCleanupResult {
+  cleanedFiles: string[]
+  artifactDirectoryRemoved: boolean
+}
+
+export function cleanupDeliveryWorkspaceArtifacts(
+  checkout: string,
+  workItemId: string,
+  excludedFiles: readonly ExcludedDeliveryCommitFile[],
+  protectedFiles: readonly string[] = [],
+): DeliveryWorkspaceCleanupResult {
+  const artifactDirectory = join(checkout, 'delivery-artifacts', workItemId)
+  const artifactDirectoryExisted = existsSync(artifactDirectory)
+  const artifactPrefix = `${DELIVERY_ARTIFACT_PREFIX}${workItemId}/`
+  const hasProtectedArtifact = protectedFiles
+    .map(normalizeDeliveryPath)
+    .some((path) => path.startsWith(artifactPrefix))
+  const cleanedFiles = cleanupGeneratedDeliveryFiles(
+    checkout,
+    excludedFiles,
+    protectedFiles,
+    { includeEvidenceFiles: true },
+  )
+  if (!hasProtectedArtifact) cleanupDeliveryArtifactDirectory(checkout, workItemId)
+  const artifactDirectoryRemoved = artifactDirectoryExisted && !existsSync(artifactDirectory)
+  return { cleanedFiles, artifactDirectoryRemoved }
+}

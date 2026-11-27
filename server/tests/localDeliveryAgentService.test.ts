@@ -450,4 +450,12 @@ test('交付超时按已进入的阶段生成可分类的失败信息', () => {
   )
   assert.match(writeback, /回写平台超时/)
   assert.equal(classifyLocalDeliveryFailure(writeback), 'writeback')
+  assert.equal(
+    resolveLocalDeliveryFailureStep(
+      '回写平台交付结果失败（HTTP 422）：关闭飞书缺陷前必须生成解决信息',
+      'connectivity',
+      'writeback',
+    ),
+    'writeback',
+  )
 })

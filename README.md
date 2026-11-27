@@ -508,7 +508,7 @@ FEISHU_DEFAULT_REPO_ID=repo-1
 6. 关闭流转 ID 为可选项；未配置时平台会从工作流中自动识别“已解决”状态。需要固定到指定流转时，可调用 `POST /open_api/:project_key/work_item/:work_item_type_key/:work_item_id/workflow/query`，从返回的 `connections.transition_id` 中获取目标流转 ID。
 7. 如需事件推送，在插件构成 → 监听事件中配置回调地址 `/api/integrations/feishu/events` 和回调 Token；生产环境必须是公网 HTTPS。
 
-缺陷交付时勾选“自动关闭缺陷”后，不需要在页面手工填写解决表单。Codex 会在代码修复和验证完成后，根据真实代码变更、根因和测试结果生成 `delivery-artifacts/<work-item-id>/feishu-resolution.md`，包含是否遗留BUG、是否修订引入、解决方案、根因分析和影响面分析。本仓库对应的 `rjcloud/issue` 字段为 `field_880d7e`、`field_e34974`、`field_953b68`、`field_462c75`、`field_b70e69`。
+缺陷交付时勾选“自动关闭缺陷”后，不需要在页面手工填写解决表单。Codex 会在代码修复和验证完成后，根据真实代码变更、根因和测试结果生成 `delivery-artifacts/<work-item-id>/feishu-resolution.md`，包含是否遗留BUG、是否修订引入、解决方案、根因分析和影响面分析。本机 runner 会在提交和推送前再次解析并校验该文件；缺失或字段不完整时会单独启动一次 Codex 生成任务，校验仍失败则停止交付，避免代码已推送后平台才因解决信息缺失返回 422。本仓库对应的 `rjcloud/issue` 字段为 `field_880d7e`、`field_e34974`、`field_953b68`、`field_462c75`、`field_b70e69`。
 
 - **后端直连模式**：服务端读取自动生成的解决报告和字段元数据，解析“是/否”选项 ID，在状态流转请求 `POST /open_api/:project_key/workflow/:work_item_type_key/:work_item_id/node/state_change` 的 `fields` 中一次提交五项内容，并流转到 `已解决`。
 - **Meegle CLI 外部授权模式**：只有执行交付的本机持有飞书登录态，因此在平台回写成功前，由本机交付程序读取自动生成的解决报告，调用 `meegle workflow transition-state --params '{"fields":[...]}'` 写入五项内容并流转到 `已解决`。服务器临时执行模式无法使用本机登录态，页面会要求改用当前 Mac 执行或取消自动关闭。
