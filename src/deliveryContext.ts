@@ -68,14 +68,14 @@ export function requirementDeliveryContextIssue(
 export function defectResolutionIssue(
   resolution: DefectResolutionLike | undefined,
 ): string | undefined {
-  if (!resolution) return '关闭飞书缺陷前必须填写是否遗留、是否修订引入、解决方案、根因分析和影响面'
-  if (typeof resolution.legacyBug !== 'boolean') return '关闭飞书缺陷前必须选择是否遗留BUG'
-  if (typeof resolution.introduced !== 'boolean') return '关闭飞书缺陷前必须选择是否修订引入'
+  if (!resolution) return '关闭飞书缺陷前必须生成是否遗留、是否修订引入、解决方案、根因分析和影响面'
+  if (typeof resolution.legacyBug !== 'boolean') return '关闭飞书缺陷前必须生成是否遗留BUG'
+  if (typeof resolution.introduced !== 'boolean') return '关闭飞书缺陷前必须生成是否修订引入'
   const missing = [
     ['解决方案', resolution.solution],
     ['根因分析', resolution.rootCause],
     ['影响面分析', resolution.impact],
   ].find(([, value]) => typeof value !== 'string' || value.trim().length === 0)
-  if (missing) return `关闭飞书缺陷前必须填写${missing[0]}`
+  if (missing) return `关闭飞书缺陷前必须生成${missing[0]}`
   return undefined
 }

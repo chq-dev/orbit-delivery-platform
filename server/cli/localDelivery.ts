@@ -67,6 +67,7 @@ import {
   type DeliveryBuildOutcome,
 } from '../services/deliveryBuildService.js'
 import { resolveMeegleDefect } from '../services/meegleResolutionService.js'
+import { readDefectResolutionArtifact } from '../services/defectResolutionArtifact.js'
 import type { DefectResolution, Repository, WorkItem } from '../../src/types'
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -729,6 +730,7 @@ function deliveryReports(artifactDir: string): {
     optionalArtifact('upgrade', '设备升级报告', ['upgrade-report.md', 'upgrade.log']),
     optionalArtifact('staging', '交付提交暂存报告', ['commit-staging-report.md']),
     optionalArtifact('feishu-context', '飞书缺陷上下文与截图清单', ['feishu-context.md']),
+    optionalArtifact('feishu-resolution', '飞书缺陷解决报告', ['feishu-resolution.md']),
     optionalArtifact('codex-summary', 'Codex 编码结果', ['codex-last-message.md']),
     optionalArtifact('codex-log', 'Codex 编码日志', ['codex.log']),
     optionalArtifact('aicr-log', 'AICR 提交日志', ['codex-commit.log']),
@@ -841,6 +843,7 @@ async function recordPlatformDelivery(
   reports: ReturnType<typeof deliveryReports>,
   workspaceWarning?: string,
   feishuResolutionApplied = false,
+  defectResolution?: DefectResolution,
 ): Promise<unknown> {
   let payload: {
     id?: unknown
@@ -886,6 +889,7 @@ async function recordPlatformDelivery(
                 : '；飞书缺陷已进入关闭队列'
               : ''
           }${workspaceWarning ? `；${workspaceWarning}` : ''}`,
+          ...(defectResolution ? { defectResolution } : {}),
           stageResults,
           reports,
         }),
@@ -1089,6 +1093,8 @@ function buildPrompt(
 ): string {
   const phaseMarkerPath = join(localPath, 'delivery-artifacts', item.id, '.phase-current')
   const isDefect = item.type === 'defect'
+  const isFeishuDefect = isDefect && item.source === 'feishu'
+  const resolutionPath = join(localPath, 'delivery-artifacts', item.id, 'feishu-resolution.md')
   return [
     buildLocalSkillInstruction(
       item,
@@ -1122,6 +1128,9 @@ function buildPrompt(
     isDefect
       ? 'Before coding, extract every defect reproduction condition, expected behavior, acceptance point and unresolved item from feishu-context.md, including comments, static screenshots, animated-image frame sheets and video frame sheets. Resolve the unresolved items in the implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.'
       : 'Before writing the LDD, extract every requirement detail, acceptance condition and unresolved item from feishu-context.md, including comments, static screenshots, animated-image frame sheets and video frame sheets. Resolve the unresolved items in the design and implementation, or mark an item out of scope with a concrete reason; do not leave TBD, 未定 or 待确认 without justification.',
+    isFeishuDefect
+      ? `After the fix and verification are complete, create ${resolutionPath} from the actual code diff and test evidence. Use exactly these level-2 headings: 是否遗留BUG, 是否修订引入, 解决方案, 根因分析, 影响面分析. The two yes/no sections must contain only 是 or 否. The 解决方案 section is the authoritative summary of what changed and why it fixes the defect; 根因分析 and 影响面分析 must be derived from and remain consistent with that solution and the observed evidence. Include affected devices, versions, modules, user scenarios, and regression scope. Do not invent facts and do not leave placeholders.`
+      : '',
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: ${isDefect ? 'integration-report.md and test-report.md' : 'design-report.md, integration-report.md, and test-report.md'} when the corresponding work actually ran.`,
     'Unit tests may be added or run as verification, but test files are not part of the delivery commit and must remain uncommitted.',
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
@@ -1207,14 +1216,6 @@ async function main(): Promise<void> {
 
   try {
     if (contextIssue) throw new Error(contextIssue)
-    const externalFeishuWriteback =
-      deliveryItem.type === 'defect' &&
-      deliveryItem.source === 'feishu' &&
-      context.feishuWriteback === 'cli'
-    if (args.close && externalFeishuWriteback) {
-      const resolutionIssue = defectResolutionIssue(deliveryItem.defectResolution)
-      if (resolutionIssue) throw new Error(resolutionIssue)
-    }
     if (!localPath) {
       throw new Error('未配置客户端代码路径，请先在仓库配置中填写本地绝对路径')
     }
@@ -1607,6 +1608,13 @@ async function main(): Promise<void> {
     removeInterruptHandlers()
     const reports = deliveryReports(artifactDir)
     attempt.reports = reports
+    const defectResolution = deliveryItem.type === 'defect' && deliveryItem.source === 'feishu'
+      ? readDefectResolutionArtifact(join(artifactDir, 'feishu-resolution.md'))
+      : undefined
+    const resolutionIssue = defectResolutionIssue(defectResolution)
+    if (args.close && deliveryItem.type === 'defect' && deliveryItem.source === 'feishu' && resolutionIssue) {
+      throw new Error(`${resolutionIssue}；交付程序未能从 feishu-resolution.md 读取由 Codex 生成的结构化解决报告`)
+    }
 
     let platformPipeline: unknown = null
     let feishuResolution: Record<string, unknown> | undefined
@@ -1620,7 +1628,7 @@ async function main(): Promise<void> {
       ) {
         feishuResolution = resolveMeegleDefect(
           deliveryItem.externalId ?? '',
-          deliveryItem.defectResolution!,
+          defectResolution!,
         )
         console.log(
           feishuResolution.alreadyResolved
@@ -1641,6 +1649,7 @@ async function main(): Promise<void> {
         reports,
         workspaceRestore.warning,
         Boolean(feishuResolution),
+        defectResolution,
       )
     } catch (error) {
       const completedWork = args.noCommit

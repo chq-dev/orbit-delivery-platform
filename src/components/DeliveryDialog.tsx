@@ -22,7 +22,6 @@ import {
   MAX_DELIVERY_SCREENSHOTS,
   MAX_DELIVERY_SCREENSHOTS_TOTAL_BYTES,
   REQUIREMENT_BREAKDOWN_MIN_LENGTH,
-  defectResolutionIssue,
   requirementDeliveryContextIssue,
   type DeliveryScreenshotUpload,
 } from '../deliveryContext'
@@ -415,11 +414,6 @@ export function DeliveryDialog({
   const [requirementBreakdown, setRequirementBreakdown] = useState('')
   const [designReference, setDesignReference] = useState('')
   const [defectNote, setDefectNote] = useState('')
-  const [legacyBug, setLegacyBug] = useState<'' | '是' | '否'>('')
-  const [introduced, setIntroduced] = useState<'' | '是' | '否'>('')
-  const [resolutionSolution, setResolutionSolution] = useState('')
-  const [resolutionRootCause, setResolutionRootCause] = useState('')
-  const [resolutionImpact, setResolutionImpact] = useState('')
   const [screenshots, setScreenshots] = useState<DeliveryScreenshotUpload[]>([])
   const [screenshotError, setScreenshotError] = useState('')
   const [compressingScreenshots, setCompressingScreenshots] = useState(false)
@@ -434,7 +428,6 @@ export function DeliveryDialog({
   const screenshotInputRef = useRef<HTMLInputElement | null>(null)
   const requirementContextDirtyRef = useRef(false)
   const defectNoteDirtyRef = useRef(false)
-  const defectResolutionDirtyRef = useRef(false)
   const screenshotsDirtyRef = useRef(false)
   const screenshotDraftWorkItemRef = useRef('')
   const canControlLocalAgent = Boolean(
@@ -538,16 +531,6 @@ export function DeliveryDialog({
           screenshotCount: screenshots.length,
         })
       : undefined
-  const defectResolutionValidationIssue =
-    selectedItem?.type === 'defect' && selectedItem.source === 'feishu' && autoClose
-      ? defectResolutionIssue({
-          legacyBug: legacyBug === '' ? undefined : legacyBug === '是',
-          introduced: introduced === '' ? undefined : introduced === '是',
-          solution: resolutionSolution,
-          rootCause: resolutionRootCause,
-          impact: resolutionImpact,
-        })
-      : undefined
   const externalFeishuWriteback = feishuIntegration.authMode === 'cli'
   const deliveryStages = useMemo(
     () => {
@@ -603,25 +586,11 @@ export function DeliveryDialog({
     setRequirementBreakdown(preferred?.requirementBreakdown ?? '')
     setDesignReference(preferred?.designReference ?? '')
     setDefectNote(preferred?.defectNote ?? '')
-    setLegacyBug(
-      preferred?.defectResolution?.legacyBug === undefined
-        ? ''
-        : preferred.defectResolution.legacyBug ? '是' : '否',
-    )
-    setIntroduced(
-      preferred?.defectResolution?.introduced === undefined
-        ? ''
-        : preferred.defectResolution.introduced ? '是' : '否',
-    )
-    setResolutionSolution(preferred?.defectResolution?.solution ?? '')
-    setResolutionRootCause(preferred?.defectResolution?.rootCause ?? '')
-    setResolutionImpact(preferred?.defectResolution?.impact ?? '')
     setScreenshots([])
     setScreenshotError('')
     setCompressingScreenshots(false)
     requirementContextDirtyRef.current = false
     defectNoteDirtyRef.current = false
-    defectResolutionDirtyRef.current = false
     screenshotsDirtyRef.current = false
     screenshotDraftWorkItemRef.current = ''
     setDeliveryJob(null)
@@ -641,20 +610,8 @@ export function DeliveryDialog({
           if (requirementContextDirtyRef.current) return
           setRequirementBreakdown(context.requirementBreakdown ?? '')
           setDesignReference(context.designReference ?? '')
-        } else {
-          if (!defectNoteDirtyRef.current) setDefectNote(context.defectNote ?? '')
-          if (!defectResolutionDirtyRef.current) {
-            const resolution = context.defectResolution
-            setLegacyBug(
-              resolution?.legacyBug === undefined ? '' : resolution.legacyBug ? '是' : '否',
-            )
-            setIntroduced(
-              resolution?.introduced === undefined ? '' : resolution.introduced ? '是' : '否',
-            )
-            setResolutionSolution(resolution?.solution ?? '')
-            setResolutionRootCause(resolution?.rootCause ?? '')
-            setResolutionImpact(resolution?.impact ?? '')
-          }
+        } else if (!defectNoteDirtyRef.current) {
+          setDefectNote(context.defectNote ?? '')
         }
         setScreenshotError('')
       })
@@ -778,17 +735,10 @@ export function DeliveryDialog({
     setRequirementBreakdown(item?.requirementBreakdown ?? '')
     setDesignReference(item?.designReference ?? '')
     setDefectNote(item?.defectNote ?? '')
-    const resolution = item?.defectResolution
-    setLegacyBug(resolution?.legacyBug === undefined ? '' : resolution.legacyBug ? '是' : '否')
-    setIntroduced(resolution?.introduced === undefined ? '' : resolution.introduced ? '是' : '否')
-    setResolutionSolution(resolution?.solution ?? '')
-    setResolutionRootCause(resolution?.rootCause ?? '')
-    setResolutionImpact(resolution?.impact ?? '')
     setScreenshots([])
     setScreenshotError('')
     requirementContextDirtyRef.current = false
     defectNoteDirtyRef.current = false
-    defectResolutionDirtyRef.current = false
     screenshotsDirtyRef.current = false
     screenshotDraftWorkItemRef.current = ''
     setDeliveryJob(null)
@@ -921,19 +871,19 @@ export function DeliveryDialog({
         (serverExecution || autoCommit),
       temporaryCheckout: serverExecution,
     }
-    if (selectedItem?.type === 'defect' && selectedItem.source === 'feishu' && deliveryInput.autoClose) {
-      if (defectResolutionValidationIssue) {
-        notify('缺少飞书缺陷解决信息', defectResolutionValidationIssue, 'warning')
-        return
-      }
-      if (externalFeishuWriteback && serverExecution) {
-        notify(
-          '服务器执行无法回写飞书',
-          '当前飞书使用 Meegle CLI 外部授权，只有本机执行客户端持有登录态；请改用当前 Mac 执行，或取消自动关闭缺陷',
-          'warning',
-        )
-        return
-      }
+    if (
+      selectedItem?.type === 'defect' &&
+      selectedItem.source === 'feishu' &&
+      deliveryInput.autoClose &&
+      externalFeishuWriteback &&
+      serverExecution
+    ) {
+      notify(
+        '服务器执行无法回写飞书',
+        '当前飞书使用 Meegle CLI 外部授权，只有本机执行客户端持有登录态；请改用当前 Mac 执行，或取消自动关闭缺陷',
+        'warning',
+      )
+      return
     }
     const directLocalDelivery = canControlLocalAgent && !serverExecution
     if (screenshots.length > 0 && !directLocalDelivery) {
@@ -971,13 +921,6 @@ export function DeliveryDialog({
       if (selectedItem?.type === 'defect' && selectedItem.source === 'feishu') {
         await api.saveWorkItemDeliveryContext(workItemId, {
           defectNote: defectNote.trim(),
-          defectResolution: {
-            legacyBug: legacyBug === '' ? undefined : legacyBug === '是',
-            introduced: introduced === '' ? undefined : introduced === '是',
-            solution: resolutionSolution.trim(),
-            rootCause: resolutionRootCause.trim(),
-            impact: resolutionImpact.trim(),
-          },
         })
       }
       const pending = createPendingLocalDeliveryJob({
@@ -1550,98 +1493,11 @@ export function DeliveryDialog({
               </div>
 
               {selectedItem.source === 'feishu' && (
-                <>
-              <div className="field-row">
-                <label className="field">
-                  <span className="field-label">
-                    是否遗留BUG
-                    <small>{autoClose ? '关闭飞书缺陷时必填' : '自动关闭时必填'}</small>
+                <div className="form-note">
+                  <Sparkles size={15} />
+                  <span>
+                    交付完成后由 Codex 根据实际代码变更和验证结果自动生成是否遗留、是否修订引入、解决方案、根因分析与影响面，并写入飞书缺陷。
                   </span>
-                  <select
-                    value={legacyBug}
-                    onChange={(event) => {
-                      defectResolutionDirtyRef.current = true
-                      setLegacyBug(event.target.value as '' | '是' | '否')
-                    }}
-                  >
-                    <option value="">请选择</option>
-                    <option value="否">否</option>
-                    <option value="是">是</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span className="field-label">
-                    是否修订引入
-                    <small>{autoClose ? '关闭飞书缺陷时必填' : '自动关闭时必填'}</small>
-                  </span>
-                  <select
-                    value={introduced}
-                    onChange={(event) => {
-                      defectResolutionDirtyRef.current = true
-                      setIntroduced(event.target.value as '' | '是' | '否')
-                    }}
-                  >
-                    <option value="">请选择</option>
-                    <option value="否">否</option>
-                    <option value="是">是</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="field">
-                <span className="field-label">
-                  解决方案
-                  <small>{autoClose ? '关闭飞书缺陷时必填' : '自动关闭时必填'}</small>
-                </span>
-                <textarea
-                  value={resolutionSolution}
-                  onChange={(event) => {
-                    defectResolutionDirtyRef.current = true
-                    setResolutionSolution(event.target.value)
-                  }}
-                  placeholder="说明本次代码变更如何修复该缺陷"
-                  rows={2}
-                />
-              </div>
-
-              <div className="field">
-                <span className="field-label">
-                  根因分析
-                  <small>{autoClose ? '关闭飞书缺陷时必填' : '自动关闭时必填'}</small>
-                </span>
-                <textarea
-                  value={resolutionRootCause}
-                  onChange={(event) => {
-                    defectResolutionDirtyRef.current = true
-                    setResolutionRootCause(event.target.value)
-                  }}
-                  placeholder="说明问题产生的直接原因和根本原因"
-                  rows={2}
-                />
-              </div>
-
-              <div className="field">
-                <span className="field-label">
-                  影响面分析
-                  <small>{autoClose ? '关闭飞书缺陷时必填' : '自动关闭时必填'}</small>
-                </span>
-                <textarea
-                  value={resolutionImpact}
-                  onChange={(event) => {
-                    defectResolutionDirtyRef.current = true
-                    setResolutionImpact(event.target.value)
-                  }}
-                  placeholder="说明影响的设备、版本、模块、用户场景和回归范围"
-                  rows={2}
-                />
-              </div>
-                </>
-              )}
-
-              {defectResolutionValidationIssue && autoClose && (
-                <div className="form-error requirement-context-error">
-                  <AlertTriangle size={14} />
-                  <span>{defectResolutionValidationIssue}</span>
                 </div>
               )}
 
@@ -1867,7 +1723,7 @@ export function DeliveryDialog({
                 <small>
                   {externalFeishuWriteback && serverExecution
                     ? '当前飞书登录态只在本机客户端；请改用当前 Mac 执行后才能自动关闭'
-                    : '代码提交并推送成功后，写入解决方案、根因、影响面等字段并将飞书缺陷更新为已解决'}
+                    : '交付完成后自动生成解决方案、根因和影响面，并将飞书缺陷更新为已解决'}
                 </small>
               </span>
             </label>

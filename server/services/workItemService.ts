@@ -11,10 +11,7 @@ import type {
   WorkItemType,
 } from '../domain/types.js'
 import { optionalText, oneOf, requiredText } from '../domain/validation.js'
-import {
-  defectResolutionIssue,
-  requirementDeliveryContextIssue,
-} from '../../src/deliveryContext.js'
+import { requirementDeliveryContextIssue } from '../../src/deliveryContext.js'
 
 const workItemTypes = ['requirement', 'defect'] as const
 const priorities = ['紧急', '高', '中', '低'] as const
@@ -323,17 +320,6 @@ export function assertRequirementDeliveryContextReady(
     requirementBreakdown: workItem.requirementBreakdown,
     designReference: workItem.designReference,
   })
-  if (issue) throw unprocessable(issue)
-}
-
-export function assertDefectResolutionReady(
-  db: AppDatabase,
-  id: string,
-  ownerUserId?: string,
-): void {
-  const workItem = getWorkItem(db, id, ownerUserId)
-  if (workItem.type !== 'defect' || workItem.source !== 'feishu') return
-  const issue = defectResolutionIssue(workItem.defectResolution)
   if (issue) throw unprocessable(issue)
 }
 

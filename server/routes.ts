@@ -90,7 +90,6 @@ import {
 import {
   createWorkItem,
   assertRequirementDeliveryContextReady,
-  assertDefectResolutionReady,
   getWorkItemDeliveryContext,
   getWorkItem,
   importWorkItems,
@@ -459,7 +458,6 @@ export function createApiRouter(db: AppDatabase, vault: CredentialVault): Router
     if (request.body?.type === 'delivery_start') {
       const payload = parseLocalDeliveryAgentRequest(request.body?.payload)
       assertRequirementDeliveryContextReady(db, payload.workItemId, user.id)
-      if (payload.autoClose) assertDefectResolutionReady(db, payload.workItemId, user.id)
     }
     response
       .status(202)

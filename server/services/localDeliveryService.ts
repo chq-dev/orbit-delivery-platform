@@ -2,7 +2,8 @@ import type { AppDatabase } from '../db/database.js'
 import { nextSequence } from '../db/sequences.js'
 import { notFound, unprocessable } from '../domain/errors.js'
 import { nowIso } from '../domain/time.js'
-import type { PipelineRun, WorkItemType } from '../domain/types.js'
+import type { DefectResolution, PipelineRun, WorkItemType } from '../domain/types.js'
+import { defectResolutionIssue } from '../../src/deliveryContext.js'
 import { booleanValue, oneOf, optionalText, requiredText } from '../domain/validation.js'
 import { enqueueFeishuCloseOutbox } from './feishuIntegrationService.js'
 import {
@@ -27,6 +28,7 @@ export interface LocalDeliveryInput {
   summary?: unknown
   stageResults?: unknown
   reports?: unknown
+  defectResolution?: unknown
 }
 
 interface LocalDeliveryStageResult {
@@ -40,6 +42,21 @@ interface LocalDeliveryReport {
   title: string
   summary: string
   content: string
+}
+
+function normalizeDefectResolution(value: unknown): DefectResolution | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw unprocessable('飞书缺陷解决信息格式不正确')
+  }
+  const record = value as Record<string, unknown>
+  const resolution: DefectResolution = {}
+  if (typeof record.legacyBug === 'boolean') resolution.legacyBug = record.legacyBug
+  if (typeof record.introduced === 'boolean') resolution.introduced = record.introduced
+  if (typeof record.solution === 'string') resolution.solution = record.solution.trim()
+  if (typeof record.rootCause === 'string') resolution.rootCause = record.rootCause.trim()
+  if (typeof record.impact === 'string') resolution.impact = record.impact.trim()
+  return resolution
 }
 
 interface LocalDeliveryProgressStep {
@@ -527,13 +544,27 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
   const autoClose = autoCloseRequested
   const summary = optionalText(rawInput.summary, '交付摘要', 2_000)
   const reports = reportsFrom(rawInput.reports)
+  const defectResolution = normalizeDefectResolution(rawInput.defectResolution)
 
   const workItem = db
-    .prepare('SELECT id, owner_user_id, type, title, branch FROM work_items WHERE id = ?')
+    .prepare(
+      'SELECT id, owner_user_id, type, title, branch, source FROM work_items WHERE id = ?',
+    )
     .get(workItemId) as
-    | { id: string; owner_user_id: string; type: WorkItemType; title: string; branch: string }
+    | {
+        id: string
+        owner_user_id: string
+        type: WorkItemType
+        title: string
+        branch: string
+        source: 'local' | 'feishu' | 'ruijie'
+      }
     | undefined
   if (!workItem) throw notFound('工作项')
+  if (autoClose && workItem.type === 'defect' && workItem.source === 'feishu') {
+    const issue = defectResolutionIssue(defectResolution)
+    if (issue) throw unprocessable(issue)
+  }
   const repository = db
     .prepare(
       `SELECT id, name, branch, local_path, latest_version
@@ -685,8 +716,13 @@ export function recordLocalDelivery(db: AppDatabase, rawInput: LocalDeliveryInpu
     }
 
     if (finalStatus) {
-      db.prepare('UPDATE work_items SET status = ?, updated_at = ? WHERE id = ?').run(
+      db.prepare(
+        `UPDATE work_items
+         SET status = ?, delivery_resolution = COALESCE(?, delivery_resolution), updated_at = ?
+         WHERE id = ?`,
+      ).run(
         finalStatus,
+        defectResolution ? JSON.stringify(defectResolution) : null,
         now,
         workItem.id,
       )

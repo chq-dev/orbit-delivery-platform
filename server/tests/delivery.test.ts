@@ -827,15 +827,13 @@ test('关闭系统编译后仍完成推送并关闭飞书缺陷', () => {
     },
   ])
   const item = imported.items[0]
-  saveWorkItemDeliveryContext(db, item.id, {
-    defectResolution: {
-      legacyBug: false,
-      introduced: false,
-      solution: '修复缺陷逻辑',
-      rootCause: '边界条件未处理',
-      impact: '影响相关配置页面',
-    },
-  })
+  const defectResolution = {
+    legacyBug: false,
+    introduced: false,
+    solution: '修复缺陷逻辑',
+    rootCause: '边界条件未处理',
+    impact: '影响相关配置页面',
+  }
   const run = recordLocalDelivery(db, {
     workItemId: item.id,
     repoId: repositoryId,
@@ -844,6 +842,7 @@ test('关闭系统编译后仍完成推送并关闭飞书缺陷', () => {
     commit: '3333333444444455555556666666777777788888888',
     pushed: true,
     autoClose: true,
+    defectResolution,
     summary: '代码已推送，仓库关闭系统编译，飞书缺陷已进入关闭队列',
     stageResults: [
       { index: 0, status: 'success', log: '真实完成需求分析' },
@@ -864,6 +863,41 @@ test('关闭系统编译后仍完成推送并关闭飞书缺陷', () => {
   assert.equal(run.stages[5].status, 'pending')
   assert.match(run.stages[5].log ?? '', /仓库已关闭系统编译/)
   assert.equal(getWorkItem(db, item.id).status, '已关闭')
+  assert.deepEqual(getWorkItem(db, item.id).defectResolution, defectResolution)
+})
+
+test('自动关闭飞书缺陷必须携带 Codex 生成的结构化解决信息', () => {
+  const item = importWorkItems(db, [{
+    type: 'defect',
+    title: '缺少自动解决报告',
+    description: '验证飞书缺陷关闭前必须存在自动生成报告',
+    priority: '中',
+    repoId: repositoryId,
+    owner: '飞书同步',
+    source: 'feishu',
+    externalId: 'rjcloud:issue:9201',
+  }]).items[0]
+  assert.throws(
+    () =>
+      recordLocalDelivery(db, {
+        workItemId: item.id,
+        repoId: repositoryId,
+        branch: 'develop',
+        localPath: '/Users/chenhuaqu/sme/sme-main',
+        commit: '2222222333333344444445555555666666677777777',
+        pushed: true,
+        autoClose: true,
+        stageResults: [
+          { index: 0, status: 'success', log: '真实解析缺陷' },
+          { index: 2, status: 'success', log: '真实修改代码' },
+          { index: 4, status: 'success', log: '真实创建提交' },
+        ],
+      }),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.statusCode === 422 &&
+      /关闭飞书缺陷前必须生成是否遗留/.test(error.message),
+  )
 })
 
 test('客户端本地交付只记录实际证据并保存真实报告', () => {
