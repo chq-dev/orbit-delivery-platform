@@ -10,6 +10,7 @@ import {
   describeFetchError,
   failedDeliveryStageIndex,
   fetchJsonWithRetry,
+  localDeliveryBootstrapEndpoints,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryBranch,
   resolveLocalDeliveryFailureStep,
@@ -134,6 +135,22 @@ test('本机实际分支优先于平台默认分支，并标记已适配', () =>
     adapted: false,
   })
   assert.throws(() => resolveLocalDeliveryBranch('', 'main-harvey'), /无法读取本地仓库当前分支/)
+})
+
+test('本机交付启动只读取仓库清单与当前工作项，不拉取全量工作项', () => {
+  const endpoints = localDeliveryBootstrapEndpoints(
+    'https://orbit.example.com/',
+    'BUG-5573',
+  )
+  assert.deepEqual(endpoints, {
+    repositories: 'https://orbit.example.com/api/repositories',
+    workItem: 'https://orbit.example.com/api/work-items/BUG-5573/delivery-context',
+  })
+  assert.equal(endpoints.repositories.includes('/bootstrap'), false)
+  assert.equal(
+    localDeliveryBootstrapEndpoints('https://orbit.example.com', 'REQ/1082').workItem,
+    'https://orbit.example.com/api/work-items/REQ%2F1082/delivery-context',
+  )
 })
 
 test('平台未配置默认分支时仍可使用本机实际分支', () => {

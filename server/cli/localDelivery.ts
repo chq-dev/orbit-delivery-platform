@@ -484,8 +484,9 @@ function workTreeFiles(checkout: string): string[] {
 function stageDeliveryCommitFiles(
   checkout: string,
   artifactDir: string,
+  workItemId: string,
 ): { stagedFiles: string[]; excludedFiles: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles'] } {
-  const plan = planDeliveryCommitFiles(checkout, workTreeFiles(checkout))
+  const plan = planDeliveryCommitFiles(checkout, workTreeFiles(checkout), { workItemId })
   if (plan.allowedFiles.length === 0) {
     throw new Error(
       '没有符合项目提交规则的编码文件；LDD/设计文档仅作交付证据，不参与提交',
@@ -566,7 +567,7 @@ function commitDeliveredChanges(input: {
   if (clearStaleGitIndexLock(input.checkout)) {
     console.log('已清理陈旧的 Git 索引锁')
   }
-  const staged = stageDeliveryCommitFiles(input.checkout, input.artifactDir)
+  const staged = stageDeliveryCommitFiles(input.checkout, input.artifactDir, input.item.id)
   const prompt = buildDeliveryCommitPrompt({
     checkout: input.checkout,
     branch: input.branch,
@@ -1132,7 +1133,7 @@ function buildPrompt(
       ? `After the fix and verification are complete, create ${resolutionPath} from the actual code diff and test evidence. Use exactly these level-2 headings: 是否遗留BUG, 是否修订引入, 解决方案, 根因分析, 影响面分析. The two yes/no sections must contain only 是 or 否. The 解决方案 section is the authoritative summary of what changed and why it fixes the defect; 根因分析 and 影响面分析 must be derived from and remain consistent with that solution and the observed evidence. Include affected devices, versions, modules, user scenarios, and regression scope. Do not invent facts and do not leave placeholders.`
       : '',
     `Create these evidence files under ${join(localPath, 'delivery-artifacts', item.id)}: ${isDefect ? 'integration-report.md and test-report.md' : 'design-report.md, integration-report.md, and test-report.md'} when the corresponding work actually ran.`,
-    'Unit tests may be added or run as verification, but test files are not part of the delivery commit and must remain uncommitted.',
+    'Unit tests and temporary browser harnesses may be added or run as verification, but test files, harness directories, dedicated vite/vitest configs, screenshots and verification scripts are not part of the delivery commit. Put transient harness assets under delivery-artifacts/<work-item>/ or the system temp directory instead of the source tree, and leave any required test files uncommitted.',
     'Write build-report.md or build.log only for a real build, and upgrade-report.md or upgrade.log only for a real authorized device upgrade. Do not create placeholder evidence.',
     'Do not create, amend, stage, or push any Git commit. After this coding run, a separate Codex invocation executes the repository /aicr-commit skill to review the staged diff, write the AICR gate report, and create the local commit. Leave the code changes in the working tree; do not run git add.',
     `At least one non-Markdown source file must change under ${localPath}. Reports and delivery-artifacts alone are not a code delivery.`,
@@ -1499,7 +1500,7 @@ async function main(): Promise<void> {
     let excludedFiles: ReturnType<typeof planDeliveryCommitFiles>['excludedFiles'] = []
     if (args.noCommit) {
       console.log('LOCAL_DELIVERY_STAGE:commit')
-      const staged = stageDeliveryCommitFiles(checkout.checkout, artifactDir)
+      const staged = stageDeliveryCommitFiles(checkout.checkout, artifactDir, deliveryItem.id)
       attempt.stagedFileCount = staged.stagedFiles.length
       excludedFiles = staged.excludedFiles
     } else {

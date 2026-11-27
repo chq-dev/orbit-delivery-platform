@@ -120,8 +120,12 @@ local defect as closed and reuses the platform's Feishu close outbox.
   even if design or report documents were generated, and it fails instead of
   creating a commit when AICR review is missing, stale, or not `approved: true`.
   The commit pass must never stage `.env*`, secrets, `delivery-artifacts/**`, logs,
-  build output, test files (`__tests__/**`, `*.test.*`, `*.spec.*`) or unrelated files.
-  Tests may be executed as verification evidence but must remain uncommitted. Build,
+  build output, test files (`__tests__/**`, `*.test.*`, `*.spec.*`), temporary
+  harness directories, work-item-specific `vite`/`vitest` configs, verification
+  scripts or unrelated files. Tests may be executed as verification evidence but
+  must remain uncommitted. Put transient harness assets under
+  `delivery-artifacts/<work-item>/` or the system temp directory instead of the
+  source tree. Build,
   device-upgrade and test stages stay `pending` unless `build-report.md`/`build.log`,
   `upgrade-report.md`/`upgrade.log`, and `test-report.md` actually exist.
 - The server rejects `POST /api/pipelines` and `/advance`; only

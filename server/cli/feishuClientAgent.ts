@@ -58,6 +58,7 @@ import {
   fetchJsonWithRetry,
   deliveryTimeoutFailureMessage,
   LOCAL_DELIVERY_CONTRACT_VERSION,
+  localDeliveryBootstrapEndpoints,
   parseLocalDeliveryAgentRequest,
   resolveLocalDeliveryTarget,
   resolveLocalDeliveryBranch,
@@ -936,6 +937,10 @@ async function fetchDeliveryBootstrap(
   workItemId: string,
 ): Promise<LocalDeliveryBootstrap> {
   const headers = { authorization: `Bearer ${config.syncToken}` }
+  const endpoints = localDeliveryBootstrapEndpoints(
+    config.platformBaseUrl,
+    workItemId,
+  )
   const retryLog = (label: string) =>
     ({ attempt, attempts, error }: { attempt: number; attempts: number; error: string }) => {
       setStep(
@@ -946,7 +951,7 @@ async function fetchDeliveryBootstrap(
       )
     }
   const [repositoriesPayload, contextPayload] = await Promise.all([
-    fetchJsonWithRetry<unknown>(`${config.platformBaseUrl}/api/repositories`, {
+    fetchJsonWithRetry<unknown>(endpoints.repositories, {
       label: '读取平台仓库配置',
       attempts: 2,
       timeoutMs: 15_000,
@@ -954,7 +959,7 @@ async function fetchDeliveryBootstrap(
       onRetry: retryLog('读取平台仓库配置'),
     }),
     fetchJsonWithRetry<unknown>(
-      `${config.platformBaseUrl}/api/work-items/${encodeURIComponent(workItemId)}/delivery-context`,
+      endpoints.workItem,
       {
         label: '读取平台工作项配置',
         attempts: 2,

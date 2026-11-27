@@ -15,6 +15,11 @@ const SECRET_FILE_PATTERN =
 const SECRET_EXTENSION_PATTERN = /\.(?:pem|key|p12|pfx|keystore|jks)$/i
 const STALE_GIT_INDEX_LOCK_MS = 2 * 60_000
 const PROJECT_RESTRICTED_CONFIG = 'web/scripts/git/husky/restricted-files.json'
+const HARNESS_PATH_PATTERN =
+  /(?:^|\/)(?:[^/]*[-_.])?harness(?:[-_.][^/]*)?\//i
+const QUALIFIED_VITE_TEST_CONFIG_PATTERN =
+  /(?:^|\/)(?:vitest\.[^/]+\.config\.(?:[cm]?[jt]s)|vite\.[^/]*(?:test|spec|e2e|browser|unit|integration)[^/]*\.config\.(?:[cm]?[jt]s))$/i
+const GENERATED_VERIFICATION_REASON = '测试文件或验证脚手架仅作验证，不参与交付提交'
 
 interface ProjectRestrictedRule {
   pattern: string
@@ -36,6 +41,10 @@ export interface ExcludedDeliveryCommitFile {
 export interface DeliveryCommitFilePlan {
   allowedFiles: string[]
   excludedFiles: ExcludedDeliveryCommitFile[]
+}
+
+export interface DeliveryCommitPlanOptions {
+  workItemId?: string
 }
 
 export function clearStaleGitIndexLock(checkout: string, now = Date.now()): boolean {
@@ -129,7 +138,25 @@ function matchesProjectPattern(pattern: string, path: string): boolean {
   }
 }
 
-function excludedDeliveryFileReason(checkout: string, file: string): string | undefined {
+function workItemPathTokens(workItemId: string | undefined): string[] {
+  const id = workItemId?.trim().toLowerCase()
+  if (!id) return []
+  const compact = id.replace(/[^a-z0-9]/g, '')
+  const dashed = id.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  return [...new Set([id, compact, dashed])].filter((token) => token.length >= 3)
+}
+
+function isWorkItemQualifiedViteConfig(path: string, workItemId: string | undefined): boolean {
+  const fileName = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  if (!/^(?:vite|vitest)\..+\.config\.(?:[cm]?[jt]s)$/i.test(fileName)) return false
+  return workItemPathTokens(workItemId).some((token) => fileName.includes(token))
+}
+
+function excludedDeliveryFileReason(
+  checkout: string,
+  file: string,
+  workItemId?: string,
+): string | undefined {
   const path = normalizeDeliveryPath(file)
   if (!path) return '空路径'
   if (path.startsWith('delivery-artifacts/')) return '交付产物目录'
@@ -142,6 +169,13 @@ function excludedDeliveryFileReason(checkout: string, file: string): string | un
   if (/(?:\.min\.|\.bundle\.|\.chunk\.|(^|\/)remoteEntry\.js$)/i.test(path)) return '构建产物'
   if (/(^|\/)(?:\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(path)) return '操作系统文件'
   if (isDeliveryTestFile(path)) return '测试文件仅作验证，不参与交付提交'
+  if (
+    HARNESS_PATH_PATTERN.test(path) ||
+    QUALIFIED_VITE_TEST_CONFIG_PATTERN.test(path) ||
+    isWorkItemQualifiedViteConfig(path, workItemId)
+  ) {
+    return GENERATED_VERIFICATION_REASON
+  }
   if (
     /(^|\/)docs\/(?:design|ldd)\/.+\.md$/i.test(path) ||
     /(?:^|[-_ ])L[LD]D\.md$/i.test(path)
@@ -172,6 +206,7 @@ function excludedDeliveryFileReason(checkout: string, file: string): string | un
 export function planDeliveryCommitFiles(
   checkout: string,
   files: readonly string[],
+  options: DeliveryCommitPlanOptions = {},
 ): DeliveryCommitFilePlan {
   const allowedFiles: string[] = []
   const excludedFiles: ExcludedDeliveryCommitFile[] = []
@@ -180,7 +215,7 @@ export function planDeliveryCommitFiles(
     const path = normalizeDeliveryPath(file)
     if (!path || seen.has(path)) continue
     seen.add(path)
-    const reason = excludedDeliveryFileReason(checkout, path)
+    const reason = excludedDeliveryFileReason(checkout, path, options.workItemId)
     if (reason) excludedFiles.push({ path, reason })
     else allowedFiles.push(path)
   }
@@ -214,6 +249,7 @@ export function buildDeliveryCommitPrompt(input: DeliveryCommitPromptInput): str
     '3. 禁止再执行 `git add`、`git reset`、`git restore --staged` 或暂存任何额外文件；不要修改业务代码。若发现缺少必要文件，停止并说明，不要自行补充。',
     '    LDD、设计报告和其他 Markdown 文档只作为交付证据保留在工作区，不得暂存或提交。',
     '    测试文件（如 `__tests__/**`、`*.test.*`、`*.spec.*`）只用于验证，也不得暂存或提交。',
+    '    临时验证脚手架、按工作项命名的 vite/vitest 配置、截图和验证脚本也不得暂存或提交。',
     '4. 按 aicr-commit 对当前暂存区执行 AICR 审查，并写入 `.git/aicr-ai-review-latest.json`：`scope` 必须为 `staged`，`stagedDiffHash` 必须等于 `git diff --cached --unified=80 | shasum -a 256` 的 hash，审查通过时 `approved` 必须为 `true`。',
     '5. 如果 AICR 审查发现 HIGH 及以上问题或 `approved` 无法为 `true`，不要提交，直接说明阻断原因后退出；不要伪造审查结果。',
     '6. 使用上面的完整提交标题执行一次普通 `git commit`。不要 `--amend`、不要 `--force`、不要创建分支或合并提交。',

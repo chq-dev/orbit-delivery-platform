@@ -175,6 +175,17 @@ export interface LocalDeliveryTarget {
   temporaryCheckout: boolean
 }
 
+export function localDeliveryBootstrapEndpoints(
+  platformBaseUrl: string,
+  workItemId: string,
+): { repositories: string; workItem: string } {
+  const baseUrl = platformBaseUrl.replace(/\/+$/, '')
+  return {
+    repositories: `${baseUrl}/api/repositories`,
+    workItem: `${baseUrl}/api/work-items/${encodeURIComponent(workItemId)}/delivery-context`,
+  }
+}
+
 export interface LocalDeliveryBranchResolution {
   branch: string
   configuredBranch?: string

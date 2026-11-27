@@ -40,6 +40,7 @@ test('提交提示词要求第二次 Codex 执行 /aicr-commit 且只本地提�
   assert.match(prompt, /不要 push/)
   assert.match(prompt, /禁止再执行 `git add`/)
   assert.match(prompt, /测试文件.*不得暂存或提交/)
+  assert.match(prompt, /临时验证脚手架/)
   assert.ok(prompt.includes(message))
 })
 
@@ -191,6 +192,49 @@ test('暂存计划只允许源码和 zh 词条，不提交测试与 LDD 设计�
         (file) => file.path === 'web/components/views/__tests__/privateMetrics.test.ts',
       )?.reason,
       '测试文件仅作验证，不参与交付提交',
+    )
+  } finally {
+    rmSync(checkout, { recursive: true, force: true })
+  }
+})
+
+test('暂存计划排除临时验证脚手架和按工作项命名的 vite/vitest 配置', () => {
+  const checkout = mkdtempSync(join(tmpdir(), 'orbit-commit-harness-'))
+  try {
+    const plan = planDeliveryCommitFiles(
+      checkout,
+      [
+        'web/components/views/modules/DeviceOverviewDashboard/components/InterfaceDataCard.vue',
+        'web/bug5749-harness/index.html',
+        'web/bug5749-harness/verify.mjs',
+        'web/vite.bug5749.browser.config.ts',
+        'web/vite.bug5749.config.ts',
+        'web/vitest.bug5749.config.ts',
+        'web/vite.config.ts',
+        'web/vitest.config.ts',
+      ],
+      { workItemId: 'BUG-5749' },
+    )
+
+    assert.deepEqual(plan.allowedFiles, [
+      'web/components/views/modules/DeviceOverviewDashboard/components/InterfaceDataCard.vue',
+      'web/vite.config.ts',
+      'web/vitest.config.ts',
+    ])
+    assert.deepEqual(
+      plan.excludedFiles.map((file) => file.path),
+      [
+        'web/bug5749-harness/index.html',
+        'web/bug5749-harness/verify.mjs',
+        'web/vite.bug5749.browser.config.ts',
+        'web/vite.bug5749.config.ts',
+        'web/vitest.bug5749.config.ts',
+      ],
+    )
+    assert.ok(
+      plan.excludedFiles.every(
+        (file) => file.reason === '测试文件或验证脚手架仅作验证，不参与交付提交',
+      ),
     )
   } finally {
     rmSync(checkout, { recursive: true, force: true })
